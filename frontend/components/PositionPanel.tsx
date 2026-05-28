@@ -1,0 +1,121 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import { TrendingUp, TrendingDown } from "lucide-react";
+import { api, Position, Margin } from "@/lib/api";
+
+function Num({ value }: { value: number }) {
+  const pos = value >= 0;
+  return (
+    <span className={`font-mono ${pos ? "text-[#00e676]" : "text-[#ff1744]"}`}>
+      {pos ? "+" : ""}
+      {value.toLocaleString()}
+    </span>
+  );
+}
+
+export default function PositionPanel() {
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [margin, setMargin] = useState<Margin | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    try {
+      const [pos, mar] = await Promise.all([
+        api.position.list(),
+        api.position.margin(),
+      ]);
+      setPositions(pos);
+      setMargin(mar);
+      setError(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "無法取得部位資料");
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+    const id = setInterval(loadData, 2000);
+    return () => clearInterval(id);
+  }, [loadData]);
+
+  const totalPnl = positions.reduce((sum, p) => sum + p.pnl, 0);
+
+  return (
+    <div className="bg-[#141420] rounded-xl border border-[#1e1e3a] p-5">
+      <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest mb-4">
+        部位 / 損益
+      </h2>
+
+      {error ? (
+        <p className="text-xs text-[#ff1744]/70 bg-[#ff1744]/5 border border-[#ff1744]/10 rounded p-3">
+          {error}
+        </p>
+      ) : (
+        <>
+          {/* Margin grid */}
+          {margin && (
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              {[
+                { label: "權益數", value: margin.equity.toLocaleString(), plain: true },
+                { label: "未實現總損益", value: totalPnl, plain: false },
+                { label: "原始保證金", value: margin.initial_margin.toLocaleString(), plain: true },
+                { label: "維持保證金", value: margin.maintenance_margin.toLocaleString(), plain: true },
+              ].map(({ label, value, plain }) => (
+                <div key={label} className="bg-[#0d0d14] rounded-lg p-3">
+                  <div className="text-[11px] text-[#7070a0] mb-1">{label}</div>
+                  {plain ? (
+                    <div className="font-mono text-sm text-[#e0e0f0]">{value}</div>
+                  ) : (
+                    <Num value={value as number} />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Positions */}
+          {positions.length === 0 ? (
+            <p className="text-sm text-[#404060] text-center py-6">目前無持倉</p>
+          ) : (
+            <div className="space-y-2">
+              {positions.map((p, i) => (
+                <div
+                  key={i}
+                  className="bg-[#0d0d14] rounded-lg px-4 py-3 flex items-center justify-between"
+                >
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={`flex items-center gap-1 text-sm font-semibold ${
+                        p.direction === "Buy" ? "text-[#00e676]" : "text-[#ff1744]"
+                      }`}
+                    >
+                      {p.direction === "Buy" ? (
+                        <TrendingUp size={14} />
+                      ) : (
+                        <TrendingDown size={14} />
+                      )}
+                      {p.direction === "Buy" ? "多" : "空"}
+                    </span>
+                    <div>
+                      <div className="font-mono text-sm text-[#e0e0f0]">{p.code}</div>
+                      <div className="text-[11px] text-[#7070a0]">
+                        {p.quantity} 口 @ {p.price.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <Num value={p.pnl} />
+                    <div className="text-[11px] text-[#7070a0] mt-0.5">
+                      現價 {p.last_price.toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
