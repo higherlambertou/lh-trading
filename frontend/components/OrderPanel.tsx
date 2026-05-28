@@ -6,8 +6,16 @@ import { api } from "@/lib/api";
 
 type Action = "Buy" | "Sell";
 type PriceType = "MKT" | "LMT";
+type Contract = "TMF" | "MXF" | "TXF";
+
+const CONTRACT_OPTIONS: { value: Contract; label: string; sub: string }[] = [
+  { value: "TMF", label: "微台 TMFR1", sub: "10元/點" },
+  { value: "MXF", label: "小台 MXFR1", sub: "50元/點" },
+  { value: "TXF", label: "大台 TXFR1",  sub: "200元/點" },
+];
 
 export default function OrderPanel() {
+  const [contract, setContract] = useState<Contract>("TMF");
   const [action, setAction] = useState<Action>("Buy");
   const [quantity, setQuantity] = useState(1);
   const [priceType, setPriceType] = useState<PriceType>("MKT");
@@ -26,6 +34,7 @@ export default function OrderPanel() {
         price_type: priceType,
         order_type: orderType as "ROD" | "IOC" | "FOK",
         octype: "Auto",
+        contract,
       });
       setResult({ ok: true, text: `委託成功 — ${res.trade_id}` });
     } catch (e: unknown) {
@@ -41,8 +50,30 @@ export default function OrderPanel() {
   return (
     <div className="bg-[#141420] rounded-xl border border-[#1e1e3a] p-5">
       <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest mb-4">
-        手動下單 — TMFR1（微台）
+        手動下單
       </h2>
+
+      {/* Contract selector */}
+      <div className="flex gap-2 mb-4">
+        {CONTRACT_OPTIONS.map((c) => {
+          const active = contract === c.value;
+          return (
+            <button
+              key={c.value}
+              onClick={() => setContract(c.value)}
+              className="flex-1 flex flex-col items-center py-2 rounded-lg border text-xs transition-colors"
+              style={{
+                borderColor: active ? "#3b82f680" : "#1e1e3a",
+                backgroundColor: active ? "#3b82f618" : "transparent",
+                color: active ? "#93c5fd" : "#404060",
+              }}
+            >
+              <span className="font-semibold">{c.value}</span>
+              <span className="text-[10px] opacity-70">{c.sub}</span>
+            </button>
+          );
+        })}
+      </div>
 
       {/* Buy / Sell toggle */}
       <div className="flex gap-2 mb-4">

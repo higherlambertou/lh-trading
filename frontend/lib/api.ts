@@ -50,13 +50,25 @@ export interface Margin {
   maintenance_margin: number;
 }
 
+export interface ProfitLoss {
+  code: string;
+  quantity: number;
+  price: number;
+  pnl: number;
+  dseq: string;
+  date: string;
+}
+
 export interface Trade {
   id: string;
   action: string;
   price: number;
+  deal_price: number;
   quantity: number;
   status: string;
   deal_quantity: number;
+  order_time: string;
+  deal_time: string;
 }
 
 export interface OrderRequest {
@@ -66,6 +78,7 @@ export interface OrderRequest {
   price_type: "MKT" | "LMT";
   order_type: "ROD" | "IOC" | "FOK";
   octype: string;
+  contract: "TMF" | "MXF" | "TXF";
 }
 
 // ─── API client ───────────────────────────────────────────────────
@@ -85,6 +98,7 @@ export const api = {
   position: {
     list: () => req<Position[]>("/position/"),
     margin: () => req<Margin>("/position/margin"),
+    pnl: () => req<ProfitLoss[]>("/position/pnl"),
   },
   order: {
     place: (data: OrderRequest) =>

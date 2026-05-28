@@ -116,7 +116,7 @@ class BaseStrategy(ABC):
         """可選覆寫：處理成交/委託回報"""
         logger.info("策略 [%s] 委託回報: %s", self.name, msg)
 
-    def place_order(
+    async def place_order(
         self,
         action: sj.constant.Action,
         quantity: int = 1,
@@ -133,8 +133,11 @@ class BaseStrategy(ABC):
             octype=sj.constant.FuturesOCType.Auto,
             account=broker.api.futopt_account,
         )
+        loop = asyncio.get_running_loop()
         try:
-            trade = broker.api.place_order(broker.tmf_contract(), order)
+            trade = await loop.run_in_executor(
+                None, broker.api.place_order, broker.tmf_contract(), order
+            )
             logger.info(
                 "策略 [%s] 下單: %s %d口 @ %s",
                 self.name, action.value, quantity, price or "市價"

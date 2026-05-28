@@ -52,9 +52,11 @@ export default function TradesPanel() {
             <thead>
               <tr className="text-[11px] text-[#7070a0] border-b border-[#1e1e3a]">
                 <th className="text-left pb-2 font-normal">方向</th>
-                <th className="text-right pb-2 font-normal">價格</th>
+                <th className="text-right pb-2 font-normal">委託價</th>
+                <th className="text-right pb-2 font-normal">成交均價</th>
                 <th className="text-right pb-2 font-normal">委 / 成</th>
                 <th className="text-right pb-2 font-normal">狀態</th>
+                <th className="text-right pb-2 font-normal">時間</th>
                 <th className="pb-2 w-6"></th>
               </tr>
             </thead>
@@ -73,10 +75,18 @@ export default function TradesPanel() {
                     <td className="text-right text-[#e0e0f0]">
                       {t.price === 0 ? "市價" : t.price.toLocaleString()}
                     </td>
+                    <td className="text-right">
+                      {t.deal_price > 0
+                        ? <span className="text-[#ffc107]">{t.deal_price.toLocaleString()}</span>
+                        : <span className="text-[#404060]">—</span>}
+                    </td>
                     <td className="text-right text-[#7070a0]">
                       {t.deal_quantity} / {t.quantity}
                     </td>
                     <td className={`text-right ${st.color}`}>{st.label}</td>
+                    <td className="text-right text-[#404060] text-[11px]">
+                      {t.deal_time || t.order_time || "—"}
+                    </td>
                     <td className="text-right pl-2">
                       {t.status === "Submitted" && (
                         <button

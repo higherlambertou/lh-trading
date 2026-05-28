@@ -35,11 +35,12 @@ def get_pnl() -> list[dict[str, Any]]:
         raise HTTPException(500, f"查詢損益失敗: {e}")
     return [
         {
-            "code": pl.code,
-            "quantity": pl.quantity,
-            "price": float(pl.price),
-            "pnl": float(pl.pnl),
-            "dseq": pl.dseq,
+            "code": getattr(pl, "code", ""),
+            "quantity": int(getattr(pl, "quantity", 0) or 0),
+            "price": float(getattr(pl, "price", 0) or 0),
+            "pnl": float(getattr(pl, "pnl", 0) or 0),
+            "dseq": str(getattr(pl, "dseq", "")),
+            "date": str(getattr(pl, "date", "") or ""),
         }
         for pl in profit_loss
     ]

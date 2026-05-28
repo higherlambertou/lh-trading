@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { TrendingUp, TrendingDown } from "lucide-react";
-import { api, Position, Margin } from "@/lib/api";
+import { api, Position, Margin, ProfitLoss } from "@/lib/api";
 
 function Num({ value }: { value: number }) {
   const pos = value >= 0;
@@ -17,16 +17,19 @@ function Num({ value }: { value: number }) {
 export default function PositionPanel() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [margin, setMargin] = useState<Margin | null>(null);
+  const [pnlList, setPnlList] = useState<ProfitLoss[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     try {
-      const [pos, mar] = await Promise.all([
+      const [pos, mar, pnl] = await Promise.all([
         api.position.list(),
         api.position.margin(),
+        api.position.pnl(),
       ]);
       setPositions(pos);
       setMargin(mar);
+      setPnlList(pnl);
       setError(null);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "無法取得部位資料");
@@ -40,6 +43,7 @@ export default function PositionPanel() {
   }, [loadData]);
 
   const totalPnl = positions.reduce((sum, p) => sum + p.pnl, 0);
+  const totalRealizedPnl = pnlList.reduce((sum, p) => sum + p.pnl, 0);
 
   return (
     <div className="bg-[#141420] rounded-xl border border-[#1e1e3a] p-5">
@@ -58,7 +62,8 @@ export default function PositionPanel() {
             <div className="grid grid-cols-2 gap-2 mb-4">
               {[
                 { label: "權益數", value: margin.equity.toLocaleString(), plain: true },
-                { label: "未實現總損益", value: totalPnl, plain: false },
+                { label: "未實現損益", value: totalPnl, plain: false },
+                { label: "已實現損益", value: totalRealizedPnl, plain: false },
                 { label: "原始保證金", value: margin.initial_margin.toLocaleString(), plain: true },
                 { label: "維持保證金", value: margin.maintenance_margin.toLocaleString(), plain: true },
               ].map(({ label, value, plain }) => (
@@ -71,6 +76,37 @@ export default function PositionPanel() {
                   )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Realized PnL detail */}
+          {pnlList.length > 0 && (
+            <div className="mb-4">
+              <div className="text-[11px] text-[#7070a0] mb-2">已實現損益明細</div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs font-mono">
+                  <thead>
+                    <tr className="text-[#404060] border-b border-[#1e1e3a]">
+                      <th className="text-left pb-1.5 font-normal">商品</th>
+                      <th className="text-right pb-1.5 font-normal">口數</th>
+                      <th className="text-right pb-1.5 font-normal">均價</th>
+                      <th className="text-right pb-1.5 font-normal">損益</th>
+                      <th className="text-right pb-1.5 font-normal">日期</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#0d0d14]">
+                    {pnlList.map((pl) => (
+                      <tr key={pl.dseq} className="hover:bg-[#1a1a2e]/40">
+                        <td className="py-1.5 text-[#e0e0f0]">{pl.code}</td>
+                        <td className="text-right text-[#7070a0]">{pl.quantity}</td>
+                        <td className="text-right text-[#7070a0]">{pl.price.toLocaleString()}</td>
+                        <td className="text-right"><Num value={pl.pnl} /></td>
+                        <td className="text-right text-[#404060]">{pl.date || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

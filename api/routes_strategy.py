@@ -7,6 +7,10 @@ from pydantic import BaseModel
 
 from strategies.base import BaseStrategy, StrategyState
 from strategies.ma_cross import MACrossStrategy
+from strategies.breakout import BreakoutStrategy
+from strategies.rsi import RSIStrategy
+from strategies.bollinger import BollingerStrategy
+from strategies.momentum import MomentumStrategy
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -20,6 +24,10 @@ class StrategyEngine:
     def __init__(self) -> None:
         self.strategies: dict[str, BaseStrategy] = {
             "ma_cross": MACrossStrategy(),
+            "breakout": BreakoutStrategy(),
+            "rsi": RSIStrategy(),
+            "bollinger": BollingerStrategy(),
+            "momentum": MomentumStrategy(),
         }
         self.loop: asyncio.AbstractEventLoop | None = None
 
