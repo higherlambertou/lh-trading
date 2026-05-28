@@ -31,11 +31,11 @@ class StrategyEngine:
         }
         self.loop: asyncio.AbstractEventLoop | None = None
 
-    def stop_all(self) -> None:
+    async def stop_all(self) -> None:
         for s in self.strategies.values():
             if s.state.is_running:
                 try:
-                    s.stop()
+                    await s.stop()
                 except Exception as e:
                     logger.warning("停止策略時發生錯誤: %s", e)
 
@@ -85,13 +85,13 @@ def start_strategy(name: str, req: StartRequest) -> dict[str, str]:
 
 
 @router.post("/{name}/stop")
-def stop_strategy(name: str) -> dict[str, str]:
+async def stop_strategy(name: str) -> dict[str, str]:
     s = strategy_engine.strategies.get(name)
     if not s:
         raise HTTPException(404, f"Strategy '{name}' not found")
     if not s.state.is_running:
         raise HTTPException(400, "Strategy not running")
-    s.stop()
+    await s.stop()
     return {"status": "stopped", "name": name}
 
 

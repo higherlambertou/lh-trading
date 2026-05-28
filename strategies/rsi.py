@@ -40,6 +40,7 @@ class RSIStrategy(BaseStrategy):
             "period": self.period,
             "oversold": self.oversold,
             "overbought": self.overbought,
+            **self._base_params,
         }
 
     @property
@@ -48,6 +49,7 @@ class RSIStrategy(BaseStrategy):
             {"key": "period",     "label": "RSI 週期", "type": "number", "min": 2,  "max": 100},
             {"key": "oversold",   "label": "超賣門檻", "type": "number", "min": 1,  "max": 50},
             {"key": "overbought", "label": "超買門檻", "type": "number", "min": 50, "max": 99},
+            *self._base_param_schema,
         ]
 
     def _apply_params(self, params: dict[str, Any]) -> None:

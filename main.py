@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     strategy_engine.loop = asyncio.get_event_loop()
     logger.info("系統啟動完成")
     yield
-    strategy_engine.stop_all()
+    await strategy_engine.stop_all()
     broker.logout()
     logger.info("系統已關閉")
 

@@ -95,8 +95,8 @@ export default function PositionPanel() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#0d0d14]">
-                    {pnlList.map((pl) => (
-                      <tr key={pl.dseq} className="hover:bg-[#1a1a2e]/40">
+                    {pnlList.map((pl, i) => (
+                      <tr key={pl.dseq || i} className="hover:bg-[#1a1a2e]/40">
                         <td className="py-1.5 text-[#e0e0f0]">{pl.code}</td>
                         <td className="text-right text-[#7070a0]">{pl.quantity}</td>
                         <td className="text-right text-[#7070a0]">{pl.price.toLocaleString()}</td>

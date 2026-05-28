@@ -32,6 +32,7 @@ class MACrossStrategy(BaseStrategy):
         return {
             "short_period": self.short_period,
             "long_period": self.long_period,
+            **self._base_params,
         }
 
     @property
@@ -39,6 +40,7 @@ class MACrossStrategy(BaseStrategy):
         return [
             {"key": "short_period", "label": "快線週期", "type": "number", "min": 1,  "max": 50},
             {"key": "long_period",  "label": "慢線週期", "type": "number", "min": 2,  "max": 200},
+            *self._base_param_schema,
         ]
 
     def _apply_params(self, params: dict[str, Any]) -> None:

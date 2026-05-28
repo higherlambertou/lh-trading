@@ -27,12 +27,13 @@ class BreakoutStrategy(BaseStrategy):
 
     @property
     def params(self) -> dict[str, Any]:
-        return {"lookback": self.lookback}
+        return {"lookback": self.lookback, **self._base_params}
 
     @property
     def param_schema(self) -> list[dict[str, Any]]:
         return [
             {"key": "lookback", "label": "回顧筆數", "type": "number", "min": 2, "max": 200},
+            *self._base_param_schema,
         ]
 
     def _apply_params(self, params: dict[str, Any]) -> None:

@@ -29,13 +29,14 @@ class MomentumStrategy(BaseStrategy):
 
     @property
     def params(self) -> dict[str, Any]:
-        return {"period": self.period, "threshold_pct": self.threshold_pct}
+        return {"period": self.period, "threshold_pct": self.threshold_pct, **self._base_params}
 
     @property
     def param_schema(self) -> list[dict[str, Any]]:
         return [
             {"key": "period",        "label": "回顧筆數",   "type": "number", "min": 1, "max": 200},
             {"key": "threshold_pct", "label": "進場門檻(%)", "type": "number", "min": 0, "max": 10},
+            *self._base_param_schema,
         ]
 
     def _apply_params(self, params: dict[str, Any]) -> None:

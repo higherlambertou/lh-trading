@@ -30,13 +30,14 @@ class BollingerStrategy(BaseStrategy):
 
     @property
     def params(self) -> dict[str, Any]:
-        return {"period": self.period, "num_std": self.num_std}
+        return {"period": self.period, "num_std": self.num_std, **self._base_params}
 
     @property
     def param_schema(self) -> list[dict[str, Any]]:
         return [
             {"key": "period",  "label": "通道週期",   "type": "number", "min": 2, "max": 200},
             {"key": "num_std", "label": "標準差倍數", "type": "number", "min": 1, "max": 4},
+            *self._base_param_schema,
         ]
 
     def _apply_params(self, params: dict[str, Any]) -> None:
