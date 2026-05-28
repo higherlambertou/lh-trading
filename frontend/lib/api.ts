@@ -79,6 +79,8 @@ export interface OrderRequest {
   order_type: "ROD" | "IOC" | "FOK";
   octype: string;
   contract: "TMF" | "MXF" | "TXF";
+  stop_loss_pts?: number;
+  take_profit_pts?: number;
 }
 
 // ─── API client ───────────────────────────────────────────────────
@@ -102,7 +104,7 @@ export const api = {
   },
   order: {
     place: (data: OrderRequest) =>
-      req<{ trade_id: string; status: string }>("/order/place", {
+      req<{ trade_id: string; status: string; watch_id?: string }>("/order/place", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),

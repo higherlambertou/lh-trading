@@ -9,6 +9,7 @@ from core.broker import broker
 from api.routes_order import router as order_router
 from api.routes_position import router as position_router
 from api.routes_strategy import router as strategy_router, strategy_engine
+from core.manual_monitor import manual_monitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,10 +21,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     broker.login()
-    strategy_engine.loop = asyncio.get_event_loop()
+    loop = asyncio.get_event_loop()
+    strategy_engine.loop = loop
+    manual_monitor.setup(loop)
     logger.info("系統啟動完成")
     yield
     await strategy_engine.stop_all()
+    await manual_monitor.shutdown()
     broker.logout()
     logger.info("系統已關閉")
 

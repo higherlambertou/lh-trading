@@ -21,6 +21,8 @@ export default function OrderPanel() {
   const [priceType, setPriceType] = useState<PriceType>("MKT");
   const [limitPrice, setLimitPrice] = useState("");
   const [orderType, setOrderType] = useState("IOC");
+  const [stopLoss, setStopLoss] = useState("");
+  const [takeProfit, setTakeProfit] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -35,8 +37,11 @@ export default function OrderPanel() {
         order_type: orderType as "ROD" | "IOC" | "FOK",
         octype: "Auto",
         contract,
+        stop_loss_pts: stopLoss ? Number(stopLoss) : undefined,
+        take_profit_pts: takeProfit ? Number(takeProfit) : undefined,
       });
-      setResult({ ok: true, text: `委託成功 — ${res.trade_id}` });
+      const sltp = res.watch_id ? `，停損停利監控已啟動 (${res.watch_id})` : "";
+      setResult({ ok: true, text: `委託成功 — ${res.trade_id}${sltp}` });
     } catch (e: unknown) {
       setResult({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -146,6 +151,29 @@ export default function OrderPanel() {
             <option value="ROD">ROD（當日有效）</option>
             <option value="FOK">FOK（全部成交）</option>
           </select>
+        </div>
+
+        <div>
+          <label className="text-[11px] text-[#ff1744] block mb-1">停損點數（留空=停用）</label>
+          <input
+            type="number"
+            min={0}
+            value={stopLoss}
+            onChange={(e) => setStopLoss(e.target.value)}
+            placeholder="例：30"
+            className="w-full bg-[#0d0d14] border border-[#1e1e3a] rounded px-3 py-2 font-mono text-sm text-[#e0e0f0] focus:outline-none focus:border-[#ff1744]"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] text-[#00e676] block mb-1">停利點數（留空=停用）</label>
+          <input
+            type="number"
+            min={0}
+            value={takeProfit}
+            onChange={(e) => setTakeProfit(e.target.value)}
+            placeholder="例：50"
+            className="w-full bg-[#0d0d14] border border-[#1e1e3a] rounded px-3 py-2 font-mono text-sm text-[#e0e0f0] focus:outline-none focus:border-[#00e676]"
+          />
         </div>
       </div>
 

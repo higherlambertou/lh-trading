@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from core.broker import broker
+from core.manual_monitor import manual_monitor
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -26,6 +27,8 @@ class ManualOrderRequest(BaseModel):
     order_type: str = "IOC"      # "ROD", "IOC", "FOK"
     octype: str = "Auto"
     contract: str = "TMF"        # "TMF", "MXF", "TXF"
+    stop_loss_pts: int = 0       # 0 = 停用
+    take_profit_pts: int = 0     # 0 = 停用
 
     @field_validator("action")
     @classmethod
@@ -75,9 +78,23 @@ def place_order(req: ManualOrderRequest) -> dict[str, str]:
         logger.error("手動下單失敗: %s", e)
         raise HTTPException(500, f"下單失敗: {e}")
 
+    watch_id = None
+    if req.stop_loss_pts > 0 or req.take_profit_pts > 0:
+        direction = 1 if req.action == "Buy" else -1
+        entry_price = req.price or 0.0  # MKT 單 entry_price=0，monitor 會補
+        watch_id = manual_monitor.add(
+            contract=req.contract,
+            direction=direction,
+            quantity=req.quantity,
+            entry_price=entry_price,
+            stop_loss_pts=req.stop_loss_pts,
+            take_profit_pts=req.take_profit_pts,
+        )
+
     return {
         "trade_id": trade.status.id,
         "status": trade.status.status.value,
+        **({"watch_id": watch_id} if watch_id else {}),
     }
 
 
@@ -99,6 +116,19 @@ def cancel_order(trade_id: str) -> dict[str, str]:
         raise HTTPException(500, f"取消委託失敗: {e}")
 
     return {"status": "cancelled", "trade_id": trade_id}
+
+
+@router.get("/watches")
+def list_watches() -> list[dict[str, Any]]:
+    return manual_monitor.list_watches()
+
+
+@router.delete("/watches/{watch_id}")
+def cancel_watch(watch_id: str) -> dict[str, str]:
+    if watch_id not in {w["id"] for w in manual_monitor.list_watches()}:
+        raise HTTPException(404, f"找不到 watch_id={watch_id}")
+    manual_monitor.remove(watch_id)
+    return {"status": "removed", "watch_id": watch_id}
 
 
 @router.get("/trades")
