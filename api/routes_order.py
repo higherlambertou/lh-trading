@@ -73,7 +73,7 @@ def place_order(req: ManualOrderRequest) -> dict[str, str]:
     )
 
     try:
-        trade = broker.api.place_order(_CONTRACT_MAP[req.contract](), order)
+        trade = broker.call(broker.api.place_order, _CONTRACT_MAP[req.contract](), order)
     except Exception as e:
         logger.error("手動下單失敗: %s", e)
         raise HTTPException(500, f"下單失敗: {e}")
@@ -101,7 +101,7 @@ def place_order(req: ManualOrderRequest) -> dict[str, str]:
 @router.post("/cancel/{trade_id}")
 def cancel_order(trade_id: str) -> dict[str, str]:
     try:
-        broker.api.update_status(broker.api.futopt_account)
+        broker.call(broker.api.update_status, broker.api.futopt_account)
         trades = broker.api.list_trades()
     except Exception as e:
         raise HTTPException(500, f"更新委託狀態失敗: {e}")
@@ -111,7 +111,7 @@ def cancel_order(trade_id: str) -> dict[str, str]:
         raise HTTPException(404, f"找不到 trade_id={trade_id}")
 
     try:
-        broker.api.cancel_order(trade)
+        broker.call(broker.api.cancel_order, trade)
     except Exception as e:
         raise HTTPException(500, f"取消委託失敗: {e}")
 
@@ -121,6 +121,19 @@ def cancel_order(trade_id: str) -> dict[str, str]:
 @router.get("/watches")
 def list_watches() -> list[dict[str, Any]]:
     return manual_monitor.list_watches()
+
+
+class WatchUpdateRequest(BaseModel):
+    stop_loss_pts: Optional[int] = None
+    take_profit_pts: Optional[int] = None
+
+
+@router.patch("/watches/{watch_id}")
+def update_watch(watch_id: str, req: WatchUpdateRequest) -> dict[str, str]:
+    ok = manual_monitor.update(watch_id, req.stop_loss_pts, req.take_profit_pts)
+    if not ok:
+        raise HTTPException(404, f"找不到 watch_id={watch_id}")
+    return {"status": "updated", "watch_id": watch_id}
 
 
 @router.delete("/watches/{watch_id}")
@@ -134,7 +147,7 @@ def cancel_watch(watch_id: str) -> dict[str, str]:
 @router.get("/trades")
 def list_trades() -> list[dict[str, Any]]:
     try:
-        broker.api.update_status(broker.api.futopt_account)
+        broker.call(broker.api.update_status, broker.api.futopt_account)
         trades = broker.api.list_trades()
     except Exception as e:
         raise HTTPException(500, f"查詢委託失敗: {e}")

@@ -74,6 +74,25 @@ class ManualOrderMonitor:
     def remove(self, watch_id: str) -> None:
         self._watches.pop(watch_id, None)
 
+    def update(
+        self,
+        watch_id: str,
+        stop_loss_pts: int | None = None,
+        take_profit_pts: int | None = None,
+    ) -> bool:
+        watch = self._watches.get(watch_id)
+        if not watch:
+            return False
+        if stop_loss_pts is not None:
+            watch.stop_loss_pts = stop_loss_pts
+        if take_profit_pts is not None:
+            watch.take_profit_pts = take_profit_pts
+        logger.info(
+            "ManualWatch 更新: id=%s SL=%d TP=%d",
+            watch_id, watch.stop_loss_pts, watch.take_profit_pts,
+        )
+        return True
+
     def list_watches(self) -> list[dict]:
         return [
             {

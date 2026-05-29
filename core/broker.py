@@ -1,6 +1,7 @@
 import os
 import logging
-from typing import Optional
+from typing import Optional, TypeVar, Callable
+from functools import wraps
 
 import shioaji as sj
 from dotenv import load_dotenv
@@ -8,6 +9,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+F = TypeVar("F", bound=Callable)
+
+_SESSION_ERROR_KEYWORDS = ("SessionNotEstablished", "NotReady", "Session error")
+
+
+def _is_session_error(e: Exception) -> bool:
+    msg = str(e)
+    return any(k in msg for k in _SESSION_ERROR_KEYWORDS)
 
 
 class BrokerClient:
@@ -20,6 +30,27 @@ class BrokerClient:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
+
+    def reconnect(self) -> sj.Shioaji:
+        """強制重新登入（session 斷線時使用）"""
+        logger.warning("Shioaji session 斷線，嘗試重新連線...")
+        try:
+            if self._api:
+                self._api.logout()
+        except Exception:
+            pass
+        self._api = None
+        return self.login()
+
+    def call(self, fn: Callable, *args, **kwargs):
+        """呼叫 Shioaji API，遇到 session 斷線時自動重連後重試一次"""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if _is_session_error(e):
+                self.reconnect()
+                return fn(*args, **kwargs)
+            raise
 
     def login(self) -> sj.Shioaji:
         if self._api is not None:

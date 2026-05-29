@@ -8,6 +8,7 @@ from typing import Any, Optional
 import shioaji as sj
 
 from core.broker import broker
+from core.quote_hub import quote_hub
 
 logger = logging.getLogger(__name__)
 
@@ -70,44 +71,15 @@ class BaseStrategy(ABC):
         self._loop = loop
         self.state.is_running = True
         contract = broker.tmf_contract()
-        broker.api.quote.subscribe(
-            contract,
-            quote_type=sj.constant.QuoteType.Quote,
-            version=sj.constant.QuoteVersion.v1,
-        )
+        quote_hub.ensure_contract_subscribed(contract)
         broker.api.set_order_callback(self._order_callback)
-        self._setup_quote_callback()
+        quote_hub.subscribe_strategy(self.name, self._on_quote_async)
         logger.info("策略 [%s] 已啟動", self.name)
 
     async def stop(self) -> None:
         self.state.is_running = False
-        loop = asyncio.get_running_loop()
-        try:
-            await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: broker.api.quote.unsubscribe(
-                        broker.tmf_contract(),
-                        quote_type=sj.constant.QuoteType.Quote,
-                        version=sj.constant.QuoteVersion.v1,
-                    ),
-                ),
-                timeout=5.0,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("策略 [%s] 取消訂閱逾時，強制停止", self.name)
-        except Exception as e:
-            logger.warning("策略 [%s] 取消訂閱時發生錯誤: %s", self.name, e)
+        quote_hub.unsubscribe_strategy(self.name)
         logger.info("策略 [%s] 已停止", self.name)
-
-    def _setup_quote_callback(self) -> None:
-        def on_quote(exchange: sj.Exchange, quote: sj.QuoteFOPv1) -> None:
-            if self._loop and self._loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self._on_quote_async(quote), self._loop
-                )
-
-        broker.api.set_on_quote_fop_v1_callback(on_quote)
 
     async def _check_sl_tp(self, price: float) -> bool:
         """檢查停損停利，觸發時自動平倉並回傳 True。"""

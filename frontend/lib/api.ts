@@ -59,6 +59,16 @@ export interface ProfitLoss {
   date: string;
 }
 
+export interface Watch {
+  id: string;
+  contract: string;
+  direction: "Buy" | "Sell";
+  quantity: number;
+  entry_price: number;
+  stop_loss_pts: number;
+  take_profit_pts: number;
+}
+
 export interface Trade {
   id: string;
   action: string;
@@ -112,5 +122,14 @@ export const api = {
     cancel: (tradeId: string) =>
       req(`/order/cancel/${tradeId}`, { method: "POST" }),
     trades: () => req<Trade[]>("/order/trades"),
+    watches: () => req<Watch[]>("/order/watches"),
+    updateWatch: (watchId: string, data: { stop_loss_pts?: number; take_profit_pts?: number }) =>
+      req(`/order/watches/${watchId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      }),
+    removeWatch: (watchId: string) =>
+      req(`/order/watches/${watchId}`, { method: "DELETE" }),
   },
 };

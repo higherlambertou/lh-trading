@@ -12,9 +12,6 @@ export default function Page() {
         <Activity size={18} className="text-[#3b82f6]" />
         <span className="font-semibold tracking-wide">LH Trading</span>
         <span className="text-xs text-[#7070a0]">台指期貨</span>
-        <span className="ml-auto text-xs font-mono text-[#ffc107] bg-[#ffc107]/10 px-2 py-0.5 rounded border border-[#ffc107]/20">
-          SIMULATION
-        </span>
       </header>
 
       {/* ── 2×2 Grid ───────────────────────────────────────────── */}

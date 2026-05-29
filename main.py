@@ -6,9 +6,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.broker import broker
+from core.quote_hub import quote_hub
 from api.routes_order import router as order_router
 from api.routes_position import router as position_router
 from api.routes_strategy import router as strategy_router, strategy_engine
+from api.routes_quote import router as quote_router
 from core.manual_monitor import manual_monitor
 
 logging.basicConfig(
@@ -23,6 +25,7 @@ async def lifespan(app: FastAPI):
     broker.login()
     loop = asyncio.get_event_loop()
     strategy_engine.loop = loop
+    quote_hub.setup(loop)
     manual_monitor.setup(loop)
     logger.info("系統啟動完成")
     yield
@@ -49,6 +52,7 @@ app.add_middleware(
 app.include_router(order_router,    prefix="/api/order",    tags=["order"])
 app.include_router(position_router, prefix="/api/position", tags=["position"])
 app.include_router(strategy_router, prefix="/api/strategy", tags=["strategy"])
+app.include_router(quote_router,    prefix="/api/quote",    tags=["quote"])
 
 
 @app.get("/api/health")

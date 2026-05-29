@@ -119,7 +119,13 @@ export default function OrderPanel() {
           <label className="text-[11px] text-[#7070a0] block mb-1">價格類型</label>
           <select
             value={priceType}
-            onChange={(e) => setPriceType(e.target.value as PriceType)}
+            onChange={(e) => {
+              const pt = e.target.value as PriceType;
+              setPriceType(pt);
+              // 限價單預設 ROD（掛單等候），市價才用 IOC
+              if (pt === "LMT") setOrderType("ROD");
+              if (pt === "MKT") setOrderType("IOC");
+            }}
             className="w-full bg-[#0d0d14] border border-[#1e1e3a] rounded px-3 py-2 text-sm text-[#e0e0f0] focus:outline-none focus:border-[#3b82f6]"
           >
             <option value="MKT">市價</option>
