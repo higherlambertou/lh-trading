@@ -9,12 +9,19 @@ logger = logging.getLogger(__name__)
 
 QuoteCallback = Callable[[sj.QuoteFOPv1], Awaitable[None]]
 
+# contract code prefix → broker getter name
+_PREFIX_TO_GETTER = {
+    "TMF": "tmf_contract",
+    "TXF": "txf_contract",
+    "MXF": "mxf_contract",
+}
+
 
 class QuoteHub:
     """
     Single Shioaji quote callback dispatcher.
     Fans out to registered strategy coroutines and WebSocket queues.
-    Fixes the "last set_on_quote_fop_v1_callback wins" problem.
+    Survives broker reconnect via reinstall_after_reconnect().
     """
 
     def __init__(self) -> None:
@@ -22,22 +29,37 @@ class QuoteHub:
         self._ws_queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._installed = False
-        self._subscribed_contracts: set[str] = set()
-        # last close price sent to WS per contract — used to skip unchanged ticks
+        self._subscribed_contracts: set[str] = set()   # actual month codes, e.g. TMFF6
+        self._known_contract_types: set[str] = set()   # type prefixes, e.g. TMF, TXF
         self._ws_last_close: dict[str, float] = {}
 
     def setup(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
-    def subscribe_market_contracts(self) -> None:
-        """Subscribe TMF + TXF at startup (call from sync lifespan context)."""
-        from core.broker import broker
-        for get_contract in (broker.tmf_contract, broker.txf_contract):
-            try:
-                self.ensure_contract_subscribed(get_contract())
-            except Exception as e:
-                logger.warning("訂閱市場合約失敗: %s", e)
+    # ── reconnect hook ────────────────────────────────────────────────
+
+    def reinstall_after_reconnect(self) -> None:
+        """Called by broker.reconnect() — re-register callback and re-subscribe contracts."""
+        self._installed = False
+        self._subscribed_contracts.clear()
+        self._ws_last_close.clear()
+
+        if not (self._strategies or self._ws_queues):
+            return  # 沒人在聽，不需要安裝
+
         self._ensure_installed()
+
+        from core.broker import broker
+        for ctype in list(self._known_contract_types):
+            getter = _PREFIX_TO_GETTER.get(ctype)
+            if getter:
+                try:
+                    contract = getattr(broker, getter)()
+                    self.ensure_contract_subscribed(contract)
+                except Exception as e:
+                    logger.warning("重連後重新訂閱 %s 失敗: %s", ctype, e)
+
+        logger.info("QuoteHub 重連後重新安裝完成 (contracts: %s)", self._known_contract_types)
 
     # ── strategy subscriptions ────────────────────────────────────────
 
@@ -62,6 +84,11 @@ class QuoteHub:
         code = getattr(contract, "code", str(contract))
         if code in self._subscribed_contracts:
             return
+        # remember type prefix for reconnect
+        prefix = code[:3]
+        if prefix in _PREFIX_TO_GETTER:
+            self._known_contract_types.add(prefix)
+
         from core.broker import broker
         broker.api.quote.subscribe(
             contract,
@@ -85,24 +112,21 @@ class QuoteHub:
             asyncio.run_coroutine_threadsafe(self._dispatch(quote), self._loop)
 
     async def _dispatch(self, quote: sj.QuoteFOPv1) -> None:
-        # --- strategies: receive every tick ---
         for cb in list(self._strategies.values()):
             try:
                 await cb(quote)
             except Exception as e:
                 logger.error("QuoteHub strategy dispatch error: %s", e)
 
-        # --- WebSocket clients: only push when price changes ---
         if not self._ws_queues:
             return
 
         close = float(quote.close)
         if self._ws_last_close.get(quote.code) == close:
-            return  # price unchanged, skip
+            return
         self._ws_last_close[quote.code] = close
 
         ts_ns = getattr(quote, "ts", None)
-        ts_sec = ts_ns / 1e9 if ts_ns else 0.0
         msg = json.dumps({
             "code": quote.code,
             "close": close,
@@ -112,7 +136,7 @@ class QuoteHub:
             "volume": int(quote.volume),
             "total_volume": int(quote.total_volume),
             "change_price": float(getattr(quote, "change_price", 0) or 0),
-            "ts": ts_sec,
+            "ts": ts_ns / 1e9 if ts_ns else 0.0,
         })
         for q in list(self._ws_queues):
             try:

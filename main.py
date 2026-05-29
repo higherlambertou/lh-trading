@@ -20,6 +20,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _keepalive_loop() -> None:
+    """每 4 分鐘輕量 ping 一次，保持 session 活躍並提早偵測斷線。"""
+    while True:
+        await asyncio.sleep(240)
+        try:
+            broker.call(lambda: broker.api.list_positions(broker.api.futopt_account))
+            logger.debug("keepalive OK")
+        except Exception as e:
+            logger.warning("keepalive 失敗（已嘗試重連）: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     broker.login()
@@ -27,8 +38,10 @@ async def lifespan(app: FastAPI):
     strategy_engine.loop = loop
     quote_hub.setup(loop)
     manual_monitor.setup(loop)
+    keepalive_task = loop.create_task(_keepalive_loop())
     logger.info("系統啟動完成")
     yield
+    keepalive_task.cancel()
     await strategy_engine.stop_all()
     await manual_monitor.shutdown()
     broker.logout()
@@ -65,10 +78,12 @@ def health() -> dict[str, str]:
 
 if __name__ == "__main__":
     import uvicorn
+    import os
+    dev_mode = os.getenv("DEV", "false").lower() == "true"
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8002,
-        reload=True,
-        reload_dirs=["api", "core", "strategies"],
+        reload=dev_mode,
+        reload_dirs=["api", "core", "strategies"] if dev_mode else None,
     )

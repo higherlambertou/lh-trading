@@ -10,7 +10,7 @@ router = APIRouter()
 @router.get("/")
 def get_positions() -> list[dict[str, Any]]:
     try:
-        positions = broker.call(broker.api.list_positions, broker.api.futopt_account)
+        positions = broker.call(lambda: broker.api.list_positions(broker.api.futopt_account))
     except Exception as e:
         raise HTTPException(500, f"查詢部位失敗: {e}")
     return [
@@ -30,7 +30,7 @@ def get_positions() -> list[dict[str, Any]]:
 @router.get("/pnl")
 def get_pnl() -> list[dict[str, Any]]:
     try:
-        profit_loss = broker.call(broker.api.list_profit_loss, broker.api.futopt_account)
+        profit_loss = broker.call(lambda: broker.api.list_profit_loss(broker.api.futopt_account))
     except Exception as e:
         raise HTTPException(500, f"查詢損益失敗: {e}")
     return [
@@ -49,7 +49,7 @@ def get_pnl() -> list[dict[str, Any]]:
 @router.get("/margin")
 def get_margin() -> dict[str, float]:
     try:
-        margin = broker.call(broker.api.margin, broker.api.futopt_account)
+        margin = broker.call(lambda: broker.api.margin(broker.api.futopt_account))
     except Exception as e:
         raise HTTPException(500, f"查詢保證金失敗: {e}")
     return {

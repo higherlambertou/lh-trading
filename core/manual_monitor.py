@@ -169,19 +169,23 @@ class ManualOrderMonitor:
             sj.constant.Action.Sell if watch.direction == 1
             else sj.constant.Action.Buy
         )
-        order = sj.FuturesOrder(
-            action=close_action,
-            price=0,
-            quantity=watch.quantity,
-            price_type=sj.constant.FuturesPriceType.MKT,
-            order_type=sj.constant.OrderType.IOC,
-            octype=sj.constant.FuturesOCType.Auto,
-            account=broker.api.futopt_account,
-        )
-        loop = asyncio.get_running_loop()
+        contract_key = watch.contract
+        quantity = watch.quantity
+
+        def _place():
+            order = sj.FuturesOrder(
+                action=close_action,
+                price=0,
+                quantity=quantity,
+                price_type=sj.constant.FuturesPriceType.MKT,
+                order_type=sj.constant.OrderType.IOC,
+                octype=sj.constant.FuturesOCType.Auto,
+                account=broker.api.futopt_account,
+            )
+            return broker.api.place_order(_CONTRACT_FN[contract_key](), order)
+
         try:
-            contract_fn = _CONTRACT_FN[watch.contract]
-            await loop.run_in_executor(None, broker.api.place_order, contract_fn(), order)
+            await broker.acall(_place)
             self.remove(watch.id)
             logger.info("手動停損停利平倉成功: %s", watch.id)
         except Exception as e:

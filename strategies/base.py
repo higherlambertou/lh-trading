@@ -72,7 +72,7 @@ class BaseStrategy(ABC):
         self.state.is_running = True
         contract = broker.tmf_contract()
         quote_hub.ensure_contract_subscribed(contract)
-        broker.api.set_order_callback(self._order_callback)
+        broker.set_order_callback(self._order_callback)
         quote_hub.subscribe_strategy(self.name, self._on_quote_async)
         logger.info("策略 [%s] 已啟動", self.name)
 
