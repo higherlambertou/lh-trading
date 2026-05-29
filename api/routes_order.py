@@ -165,14 +165,31 @@ def list_trades() -> list[dict[str, Any]]:
             sum(d.price * d.quantity for d in deals) / total_qty
             if total_qty > 0 else 0.0
         )
-        # 成交時間：取最後一筆 deal 的 ts（奈秒），fallback 到委託時間
-        deal_ts = None
-        if deals:
-            raw_ts = getattr(deals[-1], "ts", None)
-            if raw_ts:
-                from datetime import datetime, timezone
-                deal_ts = datetime.fromtimestamp(raw_ts / 1e9, tz=timezone.utc).astimezone().strftime("%H:%M:%S")
-        order_time = str(getattr(t.status, "order_datetime", "") or "")
+        from datetime import datetime, timezone
+
+        def _fmt_time(val) -> str:
+            """把各種時間格式統一轉成 HH:MM:SS，無效值回傳空字串"""
+            if not val:
+                return ""
+            if isinstance(val, (int, float)):
+                # 奈秒 timestamp；年份 < 2020 視為模擬盤假值
+                dt = datetime.fromtimestamp(val / 1e9, tz=timezone.utc).astimezone()
+                return dt.strftime("%H:%M:%S") if dt.year >= 2020 else ""
+            if isinstance(val, str):
+                try:
+                    return datetime.fromisoformat(val).strftime("%H:%M:%S")
+                except ValueError:
+                    pass
+                # 純 HH:MM:SS 字串
+                if len(val) >= 8 and val[2] == ":" and val[5] == ":":
+                    return val[:8]
+                return ""
+            if hasattr(val, "strftime"):
+                return val.strftime("%H:%M:%S")
+            return ""
+
+        deal_ts = _fmt_time(getattr(deals[-1], "ts", None)) if deals else ""
+        order_time = _fmt_time(getattr(t.status, "order_datetime", None))
         result.append({
             "id": t.status.id,
             "action": t.order.action.value,
