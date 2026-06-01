@@ -171,8 +171,9 @@ class BaseStrategy(ABC):
             (action == sj.constant.Action.Sell and self.state.position > 0)
         )
         if not is_reducing and not self._margin_ok():
-            self.state.errors.append("保證金不足，略過開倉")
-            return None
+            msg = "保證金不足，略過開倉"
+            self.state.errors.append(msg)
+            raise RuntimeError(msg)
 
         order = sj.FuturesOrder(
             action=action,
