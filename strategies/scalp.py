@@ -142,6 +142,10 @@ class ScalpStrategy(BaseStrategy):
         price = float(quote.close)
 
         if self._phase == "idle":
+            # 守衛：有未追蹤持倉時禁止新入場
+            if self.state.position != 0:
+                logger.warning("[scalp] idle 但 position=%d，暫停進場", self.state.position)
+                return
             sig = self._get_signal(quote)
             if sig != 0:
                 await self._do_enter(price, sig)
@@ -224,11 +228,43 @@ class ScalpStrategy(BaseStrategy):
         self._phase = "pending"
 
     async def _cancel_entry(self) -> None:
-        logger.info("[scalp] 入場單逾時，取消")
-        await self._cancel_safe(self._entry_trade)
+        logger.info("[scalp] 入場單逾時，嘗試取消")
+        trade = self._entry_trade
+
+        # ── 先更新狀態，再取消 ──────────────────────────────────
+        try:
+            await broker.acall(lambda: broker.api.update_status(broker.api.futopt_account))
+        except Exception as e:
+            logger.warning("[scalp] update_status 失敗: %s", e)
+
+        # 更新後確認是否已成交（race condition：cancel 前剛好 fill）
+        if trade is not None:
+            try:
+                actual_status = str(trade.status.status)
+                if "Filled" in actual_status:
+                    logger.warning("[scalp] 逾時取消時發現已成交，改為 holding")
+                    fill_price = float(
+                        getattr(getattr(trade, "order", None), "price", 0)
+                        or self.state.last_price
+                    ) or self.state.last_price
+                    self._last_entry_price = fill_price
+                    self.state.entry_price = fill_price
+                    self.state.position    = self._direction
+                    self._entry_trade      = None
+                    self._phase            = "holding"
+                    await self._do_tp()
+                    return
+            except Exception as e:
+                logger.warning("[scalp] 確認成交狀態失敗: %s", e)
+
+        await self._cancel_safe(trade)
         self._entry_trade = None
-        self._direction = 0
-        self._phase = "idle"
+        self._direction   = 0
+        # ── 取消後進冷卻，不立刻重入，並清空動量視窗 ────────────
+        self._phase          = "cooldown"
+        self._cooldown_count = 0
+        self._tick_buf.clear()
+        logger.info("[scalp] 入場單取消 → 冷卻 %d ticks", self.cooldown_ticks)
 
     async def _do_tp(self) -> None:
         """掛停利限價單"""
@@ -276,6 +312,22 @@ class ScalpStrategy(BaseStrategy):
         cancelled = "Cancelled" in status or "Cancel" in status
 
         # ── 入場單回報 ─────────────────────────────────────────
+        if self._entry_trade and oid == self._entry_trade.status.id:
+            # 不論 phase 為何，只要是入場單的成交就處理（防 race condition）
+            if self._phase not in ("pending", "holding") and filled:
+                logger.warning("[scalp] 收到遲到入場成交 (phase=%s)，補掛 TP", self._phase)
+                fill_price = float(
+                    getattr(getattr(self._entry_trade, "order", None), "price", 0)
+                    or self.state.last_price
+                ) or self.state.last_price
+                self._last_entry_price = fill_price
+                self.state.entry_price = fill_price
+                self.state.position    = self._direction
+                self._entry_trade      = None
+                self._phase            = "holding"
+                await self._do_tp()
+                return
+
         if self._phase == "pending" and self._entry_trade:
             if oid != self._entry_trade.status.id:
                 return
@@ -313,9 +365,12 @@ class ScalpStrategy(BaseStrategy):
                 await self._do_tp()
 
             elif cancelled:
-                logger.info("[scalp] 入場單取消（未成交）")
-                self._entry_trade = None
-                self._phase = "idle"
+                logger.info("[scalp] 入場單取消（未成交）→ 冷卻")
+                self._entry_trade    = None
+                self._direction      = 0
+                self._phase          = "cooldown"
+                self._cooldown_count = 0
+                self._tick_buf.clear()
 
         # ── 停利單回報 ─────────────────────────────────────────
         elif self._phase == "holding" and self._tp_trade:
