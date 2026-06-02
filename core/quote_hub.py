@@ -29,6 +29,7 @@ class QuoteHub:
         self._ws_queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._installed = False
+        self._quote_seen = False
         self._subscribed_contracts: set[str] = set()   # actual month codes, e.g. TMFF6
         self._known_contract_types: set[str] = set()   # type prefixes, e.g. TMF, TXF
         self._ws_last_close: dict[str, float] = {}
@@ -89,6 +90,10 @@ class QuoteHub:
         if prefix in _PREFIX_TO_GETTER:
             self._known_contract_types.add(prefix)
 
+        # 一定要先掛上 v1 callback，再訂閱；否則 shioaji 會把報價綁到
+        # 預設的 print handler，事後再 set callback 也蓋不掉 → 策略收不到報價
+        self._ensure_installed()
+
         from core.broker import broker
         broker.api.quote.subscribe(
             contract,
@@ -104,10 +109,19 @@ class QuoteHub:
         if self._installed:
             return
         from core.broker import broker
-        broker.api.set_on_quote_fop_v1_callback(self._on_quote_sync)
+        broker.api.quote.set_on_quote_fop_v1_callback(self._on_quote_sync)
         self._installed = True
+        self._quote_seen = False
+        logger.info("QuoteHub 已安裝 on_quote_fop_v1 callback")
 
     def _on_quote_sync(self, exchange: sj.Exchange, quote: sj.QuoteFOPv1) -> None:
+        if not getattr(self, "_quote_seen", False):
+            self._quote_seen = True
+            logger.info(
+                "QuoteHub 收到首筆報價 code=%s close=%s → 開始派發給 %d 個策略",
+                getattr(quote, "code", "?"), getattr(quote, "close", "?"),
+                len(self._strategies),
+            )
         if self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self._dispatch(quote), self._loop)
 

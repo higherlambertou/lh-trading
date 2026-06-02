@@ -81,29 +81,39 @@ class BaseStrategy(ABC):
         self.state.is_running = True
         self.state.events.clear()
         contract = broker.tmf_contract()
-        quote_hub.ensure_contract_subscribed(contract)
         broker.set_order_callback(self._order_callback)
-        quote_hub.subscribe_strategy(self.name, self._on_quote_async)
+        # 先清掉上一輪殘留的未成交委託（此時還沒訂閱報價，避免與報價串流爭用 shioaji client）
         self._cancel_all_pending()
+        # 清理完成後才訂閱報價、開始派發給策略
+        quote_hub.ensure_contract_subscribed(contract)
+        quote_hub.subscribe_strategy(self.name, self._on_quote_async)
         logger.info("策略 [%s] 已啟動", self.name)
 
     def _cancel_all_pending(self) -> None:
         """啟動時取消所有未成交的 TMF 委託，清除上一輪殘留的掛單。"""
+        logger.info("策略 [%s] 啟動清理：查詢殘留委託…", self.name)
         try:
             broker.call(lambda: broker.api.update_status(broker.api.futopt_account))
-            trades = broker.api.list_trades()
+            trades = broker.call(lambda: broker.api.list_trades())
+            pending = [
+                t for t in trades
+                if not any(
+                    k in str(t.status.status) for k in ("Filled", "Cancelled", "Cancel")
+                )
+            ]
+            logger.info(
+                "策略 [%s] 啟動清理：共 %d 筆委託，其中 %d 筆未成交待取消",
+                self.name, len(trades), len(pending),
+            )
             cancelled = 0
-            for t in trades:
-                status = str(t.status.status)
-                if "Filled" in status or "Cancelled" in status or "Cancel" in status:
-                    continue
+            for i, t in enumerate(pending, 1):
                 try:
                     broker.call(lambda tr=t: broker.api.cancel_order(tr))
                     cancelled += 1
+                    logger.info("策略 [%s] 取消殘留委託 %d/%d", self.name, i, len(pending))
                 except Exception as e:
                     logger.warning("策略 [%s] 取消殘留委託失敗: %s", self.name, e)
-            if cancelled:
-                logger.info("策略 [%s] 啟動時取消 %d 筆殘留未成交委託", self.name, cancelled)
+            logger.info("策略 [%s] 啟動清理完成：已取消 %d 筆", self.name, cancelled)
         except Exception as e:
             logger.warning("策略 [%s] 啟動清單查詢失敗，略過: %s", self.name, e)
 
