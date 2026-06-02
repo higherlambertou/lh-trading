@@ -44,6 +44,7 @@ export interface StrategyInfo {
   unrealized_pnl: number;
   realized_pnl: number;
   errors: string[];
+  events: string[];
   params: Record<string, number>;
   param_schema: ParamSchema[];
 }

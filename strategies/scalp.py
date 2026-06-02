@@ -53,6 +53,11 @@ class ScalpStrategy(BaseStrategy):
         self._pending_entry_price: float = 0.0  # 下單時的限價，作為 fill_price 備用
         self._tick_buf: deque[int] = deque(maxlen=100)
 
+        # ── 成交累計（處理分批成交）──────────────────────────────
+        self._entry_filled_qty: int = 0
+        self._entry_filled_value: float = 0.0   # Σ price*qty，用來算均價
+        self._tp_filled_qty: int = 0
+
     # ── 參數介面 ────────────────────────────────────────────────
 
     @property
@@ -228,7 +233,13 @@ class ScalpStrategy(BaseStrategy):
         self._last_entry_price   = 0.0          # 清除舊值，成交後才更新
         self._pending_entry_price = entry_price  # 備用：填單時的限價
         self._entry_tick_count   = 0
+        self._entry_filled_qty   = 0
+        self._entry_filled_value = 0.0
+        self._tp_filled_qty      = 0
         self._phase              = "pending"
+        self._event(
+            f"掛{'多' if direction == 1 else '空'}限價 @ {entry_price:.0f} x{self.max_qty}口"
+        )
 
     async def _cancel_entry(self) -> None:
         """
@@ -237,6 +248,10 @@ class ScalpStrategy(BaseStrategy):
         2. 若已成交（模擬盤常見，callback 不一定觸發）→ 直接切 holding
         3. 若未成交 → 送取消，進冷卻；_entry_trade 保留讓 on_order_event 確認
         """
+        # callback 是主要路徑；這裡只是 callback 沒進來時的補救。
+        if self._phase != "pending" or self._entry_trade is None:
+            return
+
         logger.info("[scalp] 入場單逾時，查詢狀態")
         trade = self._entry_trade
 
@@ -245,6 +260,10 @@ class ScalpStrategy(BaseStrategy):
                 await broker.acall(lambda: broker.api.update_status(broker.api.futopt_account))
             except Exception as e:
                 logger.warning("[scalp] update_status 失敗: %s", e)
+
+            # update_status 期間 callback 可能已處理完，重新確認
+            if self._phase != "pending" or self._entry_trade is None:
+                return
 
             # ── 主動確認是否已成交（模擬盤 callback 不可靠）──────────
             actual_status = ""
@@ -275,6 +294,7 @@ class ScalpStrategy(BaseStrategy):
                     "[scalp] 逾時時發現已成交 @ %.0f（模擬盤/延遲 callback），切換 holding",
                     fill_price,
                 )
+                self._event(f"逾時補抓成交 @ {fill_price:.0f}（callback 未進）")
                 self._last_entry_price  = fill_price
                 self.state.entry_price  = fill_price
                 self.state.position     = self._direction
@@ -301,6 +321,7 @@ class ScalpStrategy(BaseStrategy):
             logger.error("[scalp] _last_entry_price=0，無法計算停利價，略過")
             self.state.errors.append("停利單未掛：entry_price 未知")
             return
+        self._tp_filled_qty = 0
         tp_price = self._last_entry_price + self.tp_pts * self._direction
         action = sj.constant.Action.Sell if self._direction == 1 else sj.constant.Action.Buy
         logger.info("[scalp] 掛停利單 @ %.0f  qty=%d", tp_price, self._entry_qty)
@@ -331,76 +352,155 @@ class ScalpStrategy(BaseStrategy):
         self.state.entry_price = 0.0
         self._phase = "cooldown"
         self._cooldown_count = 0
+        self._event(f"停損出場 -{self.sl_pts}點 x{self._entry_qty}口 → 冷卻")
 
     # ── 成交回報 ────────────────────────────────────────────────
 
-    async def on_order_event(self, stat: Any, msg: Any) -> None:
+    @staticmethod
+    def _trade_ids(trade) -> set[str]:
+        """收集一筆 Trade 可用來比對的所有識別碼（ordno/seqno/id）。"""
+        ids: set[str] = set()
+        if trade is None:
+            return ids
+        for obj in (getattr(trade, "order", None), getattr(trade, "status", None)):
+            if obj is None:
+                continue
+            for attr in ("ordno", "seqno", "id"):
+                v = getattr(obj, attr, None)
+                if v:
+                    ids.add(str(v))
+        return ids
+
+    @staticmethod
+    def _event_ids(msg: Any) -> set[str]:
+        """從 callback 的 msg dict 收集所有識別碼。"""
+        ids: set[str] = set()
+
+        def _grab(d: Any, keys: tuple[str, ...]) -> None:
+            for k in keys:
+                try:
+                    v = d.get(k)
+                except Exception:
+                    v = None
+                if v:
+                    ids.add(str(v))
+
+        # FuturesDeal：識別碼在頂層
+        _grab(msg, ("ordno", "seqno", "trade_id", "id"))
+        # FuturesOrder：識別碼在 order / status 子物件
         try:
-            oid    = stat.status.id
-            status = str(stat.status.status)
+            _grab(msg.get("order") or {}, ("ordno", "seqno", "id"))
+            _grab(msg.get("status") or {}, ("id",))
         except Exception:
+            pass
+        return ids
+
+    async def on_order_event(self, stat: Any, msg: Any) -> None:
+        """
+        永豐 order callback 簽章：callback(stat, msg)
+          stat = OrderState 列舉（FuturesOrder=委託狀態 / FuturesDeal=成交）
+          msg  = dict，成交資料在頂層；委託/取消資料在 operation/order/status
+        """
+        try:
+            state_name = getattr(stat, "name", "") or str(stat)
+        except Exception:
+            state_name = str(stat)
+        is_deal  = "Deal"  in state_name
+        is_order = "Order" in state_name
+
+        ev_ids    = self._event_ids(msg)
+        entry_ids = self._trade_ids(self._entry_trade)
+        tp_ids    = self._trade_ids(self._tp_trade)
+        is_entry  = bool(ev_ids & entry_ids)
+        is_tp     = bool(ev_ids & tp_ids)
+
+        try:
+            msg_keys = list(msg.keys())
+        except Exception:
+            msg_keys = []
+        logger.info(
+            "[scalp] 回報 state=%s entry=%s tp=%s ev_ids=%s keys=%s",
+            state_name, is_entry, is_tp, ev_ids, msg_keys,
+        )
+
+        # ── 成交事件 ────────────────────────────────────────────
+        if is_deal:
+            try:
+                price = float(msg.get("price") or 0)
+                qty   = int(msg.get("quantity") or 0)
+            except Exception:
+                price, qty = 0.0, 0
+            if is_entry and self._entry_trade is not None:
+                await self._on_entry_deal(price, qty)
+            elif is_tp and self._tp_trade is not None:
+                await self._on_tp_deal(qty)
             return
 
-        filled    = "Filled"    in status
-        cancelled = "Cancelled" in status or "Cancel" in status
-
-        # ── 入場單回報 ──────────────────────────────────────────
-        # 只要 _entry_trade 還在就比對，不管目前 phase 是什麼。
-        # _cancel_entry 不再提早清除 _entry_trade，所以這裡一定能收到。
-        if self._entry_trade is not None and oid == self._entry_trade.status.id:
-            if filled:
-                fill_price = 0.0
-                try:
-                    deals = stat.status.deals or []
-                    total_qty = sum(d.quantity for d in deals)
-                    if total_qty > 0:
-                        fill_price = (
-                            sum(float(d.price) * d.quantity for d in deals)
-                            / total_qty
-                        )
-                    else:
-                        fill_price = float(self._entry_trade.order.price)
-                except Exception:
-                    fill_price = float(getattr(
-                        getattr(self._entry_trade, "order", None), "price", 0
-                    ) or 0)
-
-                if fill_price == 0:
-                    # 優先用下單時記錄的限價，比 last_price 可靠
-                    fill_price = self._pending_entry_price or self.state.last_price
-
-                old_phase = self._phase
-                self._last_entry_price = fill_price
-                self.state.entry_price = fill_price
-                self.state.position    = self._direction
-                self._entry_trade      = None
-                self._phase            = "holding"
-                logger.info(
-                    "[scalp] 入場成交 @ %.0f  方向=%s  (was phase=%s)",
-                    fill_price, "多" if self._direction == 1 else "空", old_phase,
-                )
-                await self._do_tp()
-
-            elif cancelled:
-                logger.info("[scalp] 入場單取消確認 (phase=%s) → 冷卻", self._phase)
+        # ── 委託事件：只關心取消確認 ──────────────────────────────
+        if is_order and is_entry:
+            try:
+                op = msg.get("operation") or {}
+            except Exception:
+                op = {}
+            op_type = str(op.get("op_type", ""))
+            op_code = str(op.get("op_code", ""))
+            cancelled = op_type == "Cancel" and op_code in ("", "00")
+            if cancelled and self._phase != "holding":
+                logger.info("[scalp] 入場單取消確認 → 冷卻")
+                self._event("入場單取消（未成交）→ 冷卻")
                 self._entry_trade    = None
                 self._direction      = 0
                 self._phase          = "cooldown"
                 self._cooldown_count = 0
                 self._tick_buf.clear()
 
-            return  # 入場單事件處理完畢，不往下走
+    async def _on_entry_deal(self, price: float, qty: int) -> None:
+        """入場單成交（可能分批）。累計到滿口數才切 holding 並掛停利。"""
+        if qty <= 0:
+            qty = self._entry_qty
+        if price <= 0:
+            price = self._pending_entry_price or self.state.last_price
 
-        # ── 停利單回報 ─────────────────────────────────────────
-        if self._phase == "holding" and self._tp_trade is not None:
-            if oid != self._tp_trade.status.id:
-                return
+        self._entry_filled_value += price * qty
+        self._entry_filled_qty   += qty
+        if self._entry_filled_qty < self._entry_qty:
+            logger.info(
+                "[scalp] 入場部分成交 %d/%d @ %.0f",
+                self._entry_filled_qty, self._entry_qty, price,
+            )
+            return
 
-            if filled:
-                self.state.realized_pnl += self.tp_pts * self.point_value * self._entry_qty
-                self.state.position = 0
-                self.state.entry_price = 0.0
-                self._tp_trade = None
-                self._phase = "cooldown"
-                self._cooldown_count = 0
-                logger.info("[scalp] 停利成交 +%d點 x%d口 → 冷卻", self.tp_pts, self._entry_qty)
+        avg = (
+            self._entry_filled_value / self._entry_filled_qty
+            if self._entry_filled_qty else price
+        )
+        self._last_entry_price = avg
+        self.state.entry_price = avg
+        self.state.position    = self._direction * self._entry_qty
+        self._entry_trade      = None
+        self._phase            = "holding"
+        side = "多" if self._direction == 1 else "空"
+        logger.info(
+            "[scalp] 入場成交完成 均價 %.0f x%d口 方向=%s → 掛停利",
+            avg, self._entry_qty, side,
+        )
+        self._event(f"入場成交 {side} {self._entry_qty}口 @ {avg:.0f}")
+        await self._do_tp()
+
+    async def _on_tp_deal(self, qty: int) -> None:
+        """停利單成交（可能分批）。累計到滿口數才結算 → 冷卻。"""
+        if qty <= 0:
+            qty = self._entry_qty
+        self._tp_filled_qty += qty
+        if self._tp_filled_qty < self._entry_qty:
+            logger.info("[scalp] 停利部分成交 %d/%d", self._tp_filled_qty, self._entry_qty)
+            return
+
+        self.state.realized_pnl += self.tp_pts * self.point_value * self._entry_qty
+        self.state.position    = 0
+        self.state.entry_price = 0.0
+        self._tp_trade         = None
+        self._phase            = "cooldown"
+        self._cooldown_count   = 0
+        logger.info("[scalp] 停利成交完成 +%d點 x%d口 → 冷卻", self.tp_pts, self._entry_qty)
+        self._event(f"停利成交 +{self.tp_pts}點 x{self._entry_qty}口 → 冷卻")

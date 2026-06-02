@@ -3,6 +3,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional
 
 import shioaji as sj
@@ -26,6 +27,7 @@ class StrategyState:
     unrealized_pnl: float = 0.0
     last_price: float = 0.0
     errors: list[str] = field(default_factory=list)
+    events: list[str] = field(default_factory=list)   # 成交/委託事件流（給前端顯示）
 
 
 class BaseStrategy(ABC):
@@ -37,6 +39,13 @@ class BaseStrategy(ABC):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.stop_loss_pts: int = 0    # 0 = 停用
         self.take_profit_pts: int = 0  # 0 = 停用
+
+    def _event(self, text: str) -> None:
+        """記錄一筆事件到事件流（給前端顯示），只保留最近 30 筆。"""
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.state.events.append(f"{ts} {text}")
+        if len(self.state.events) > 30:
+            self.state.events = self.state.events[-30:]
 
     @property
     def _base_params(self) -> dict[str, Any]:
@@ -70,6 +79,7 @@ class BaseStrategy(ABC):
             self._apply_params(params)
         self._loop = loop
         self.state.is_running = True
+        self.state.events.clear()
         contract = broker.tmf_contract()
         quote_hub.ensure_contract_subscribed(contract)
         broker.set_order_callback(self._order_callback)

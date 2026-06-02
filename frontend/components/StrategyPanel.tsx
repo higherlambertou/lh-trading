@@ -188,6 +188,22 @@ export default function StrategyPanel() {
               <span>{s.errors[s.errors.length - 1]}</span>
             </div>
           )}
+
+          {/* Event feed (成交/委託事件) */}
+          {s.is_running && s.events && s.events.length > 0 && (
+            <div className="bg-[#0d0d14] rounded-lg border border-[#1e1e3a] p-2">
+              <div className="text-[10px] text-[#7070a0] uppercase tracking-widest mb-1">
+                事件紀錄
+              </div>
+              <ul className="space-y-0.5 max-h-32 overflow-y-auto">
+                {[...s.events].reverse().map((ev, i) => (
+                  <li key={i} className="font-mono text-[11px] text-[#a0a0c0] leading-tight">
+                    {ev}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       ))}
     </div>

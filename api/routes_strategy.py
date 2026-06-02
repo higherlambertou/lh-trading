@@ -55,6 +55,7 @@ def _strategy_summary(name: str, s: BaseStrategy) -> dict[str, Any]:
         "unrealized_pnl": s.state.unrealized_pnl,
         "realized_pnl": s.state.realized_pnl,
         "errors": s.state.errors[-5:],
+        "events": s.state.events[-10:],
         "params": s.params,
         "param_schema": s.param_schema,
     }
