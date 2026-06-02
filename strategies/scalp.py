@@ -212,6 +212,12 @@ class ScalpStrategy(BaseStrategy):
         """
         # 多單：掛在 price - offset（正 offset = 低於現價，更被動）
         # 空單：掛在 price + offset（正 offset = 高於現價，更被動）
+        # 重入防護：_lmt 內有 await，掛單期間若不先離開 idle，
+        # 下一筆報價可能再次觸發 _do_enter → 送出第二筆入場單。
+        if self._phase != "idle":
+            return
+        self._phase = "pending"   # 立刻佔位，阻止重入
+
         entry_price = price - self.entry_offset * direction
         action = sj.constant.Action.Buy if direction == 1 else sj.constant.Action.Sell
 
@@ -225,6 +231,7 @@ class ScalpStrategy(BaseStrategy):
         except Exception as e:
             logger.error("[scalp] 掛單失敗: %s", e)
             self.state.errors.append(f"掛單失敗: {e}")
+            self._phase = "idle"   # 下單失敗，還原回待機
             return
 
         self._entry_trade        = trade
@@ -333,26 +340,34 @@ class ScalpStrategy(BaseStrategy):
 
     async def _do_sl(self) -> None:
         """停損：取消停利單 + 市價平倉"""
+        # 重入防護：_do_sl 內有 await（送單期間會讓出事件迴圈），
+        # 若不先離開 holding，後續報價的 _dispatch 會再次觸發 _do_sl，
+        # 導致送出第二筆市價單 → OcType.Auto 反手開出幽靈倉。
+        if self._phase != "holding":
+            return
+        direction = self._direction
+        qty       = self._entry_qty
+        self._phase          = "cooldown"   # 立刻離開 holding，阻止重入
+        self._cooldown_count = 0
+
         await self._cancel_safe(self._tp_trade)
         self._tp_trade = None
 
         close_action = (
-            sj.constant.Action.Sell if self._direction == 1
+            sj.constant.Action.Sell if direction == 1
             else sj.constant.Action.Buy
         )
         try:
-            await self.place_order(close_action, self._entry_qty)   # base class 市價單
+            await self.place_order(close_action, qty)   # base class 市價單
         except Exception as e:
             logger.error("[scalp] 停損平倉失敗: %s", e)
             self.state.errors.append(f"停損平倉失敗: {e}")
             return
 
-        self.state.realized_pnl += -self.sl_pts * self.point_value * self._entry_qty
+        self.state.realized_pnl += -self.sl_pts * self.point_value * qty
         self.state.position = 0
         self.state.entry_price = 0.0
-        self._phase = "cooldown"
-        self._cooldown_count = 0
-        self._event(f"停損出場 -{self.sl_pts}點 x{self._entry_qty}口 → 冷卻")
+        self._event(f"停損出場 -{self.sl_pts}點 x{qty}口 → 冷卻")
 
     # ── 成交回報 ────────────────────────────────────────────────
 
@@ -436,16 +451,37 @@ class ScalpStrategy(BaseStrategy):
                 await self._on_tp_deal(qty)
             return
 
-        # ── 委託事件：只關心取消確認 ──────────────────────────────
-        if is_order and is_entry:
+        # ── 委託事件：取消確認 / 失敗原因 ─────────────────────────
+        if is_order:
             try:
                 op = msg.get("operation") or {}
             except Exception:
                 op = {}
             op_type = str(op.get("op_type", ""))
             op_code = str(op.get("op_code", ""))
+            op_msg  = str(op.get("op_msg", ""))
+
+            # 委託被拒 / 失敗：op_code 非 "00"（把原因丟到事件面板方便診斷）
+            if op_code not in ("", "00"):
+                which = "入場單" if is_entry else ("停利單" if is_tp else "委託")
+                logger.warning(
+                    "[scalp] %s失敗 op_type=%s op_code=%s op_msg=%s",
+                    which, op_type, op_code, op_msg,
+                )
+                self._event(f"{which}失敗：{op_msg or op_code}")
+                self.state.errors.append(f"{which}失敗：{op_msg or op_code}")
+                # 入場單失敗 → 別卡在 pending，回冷卻重來
+                if is_entry and self._phase == "pending":
+                    self._entry_trade    = None
+                    self._direction      = 0
+                    self._phase          = "cooldown"
+                    self._cooldown_count = 0
+                    self._tick_buf.clear()
+                return
+
+            # 取消確認
             cancelled = op_type == "Cancel" and op_code in ("", "00")
-            if cancelled and self._phase != "holding":
+            if is_entry and cancelled and self._phase != "holding":
                 logger.info("[scalp] 入場單取消確認 → 冷卻")
                 self._event("入場單取消（未成交）→ 冷卻")
                 self._entry_trade    = None
