@@ -188,9 +188,31 @@ def list_trades() -> list[dict[str, Any]]:
                 return val.strftime("%H:%M:%S")
             return ""
 
-        deal_ts = _fmt_time(getattr(deals[-1], "ts", None)) if deals else ""
-        order_time = _fmt_time(getattr(t.status, "order_datetime", None))
-        result.append({
+        def _epoch(val) -> float:
+            """把各種時間格式轉成 epoch 秒，用於排序；無效值回傳 0。"""
+            if not val:
+                return 0.0
+            if isinstance(val, (int, float)):
+                return val / 1e9 if val > 1e12 else float(val)
+            if isinstance(val, str):
+                try:
+                    return datetime.fromisoformat(val).timestamp()
+                except ValueError:
+                    return 0.0
+            if hasattr(val, "timestamp"):
+                try:
+                    return val.timestamp()
+                except Exception:
+                    return 0.0
+            return 0.0
+
+        order_dt_raw = getattr(t.status, "order_datetime", None)
+        deal_ts_raw  = getattr(deals[-1], "ts", None) if deals else None
+        sort_ts = max(_epoch(order_dt_raw), _epoch(deal_ts_raw))
+
+        deal_ts = _fmt_time(deal_ts_raw)
+        order_time = _fmt_time(order_dt_raw)
+        result.append((sort_ts, {
             "id": t.status.id,
             "action": t.order.action.value,
             "price": t.order.price,
@@ -200,5 +222,8 @@ def list_trades() -> list[dict[str, Any]]:
             "deal_quantity": getattr(t.status, "deal_quantity", 0),
             "order_time": order_time,
             "deal_time": deal_ts or "",
-        })
-    return result
+        }))
+
+    # 依時間由新到舊排序（sort_ts 為 0 的無時間資料排最後）
+    result.sort(key=lambda x: x[0], reverse=True)
+    return [row for _, row in result]
