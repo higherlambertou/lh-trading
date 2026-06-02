@@ -232,25 +232,68 @@ class ScalpStrategy(BaseStrategy):
 
     async def _cancel_entry(self) -> None:
         """
-        逾時取消：送出取消請求，進入冷卻。
-        _entry_trade 保留不清除，由 on_order_event 收到確認後才清除。
-        這樣可以正確處理「取消請求送出後，成交回報才到」的 race condition。
+        逾時取消：
+        1. 先 update_status，主動查詢最新狀態
+        2. 若已成交（模擬盤常見，callback 不一定觸發）→ 直接切 holding
+        3. 若未成交 → 送取消，進冷卻；_entry_trade 保留讓 on_order_event 確認
         """
-        logger.info("[scalp] 入場單逾時，送出取消請求 → 冷卻")
-        if self._entry_trade is not None:
+        logger.info("[scalp] 入場單逾時，查詢狀態")
+        trade = self._entry_trade
+
+        if trade is not None:
             try:
                 await broker.acall(lambda: broker.api.update_status(broker.api.futopt_account))
             except Exception as e:
                 logger.warning("[scalp] update_status 失敗: %s", e)
+
+            # ── 主動確認是否已成交（模擬盤 callback 不可靠）──────────
+            actual_status = ""
             try:
-                t = self._entry_trade
+                actual_status = str(trade.status.status)
+            except Exception:
+                pass
+
+            if "Filled" in actual_status:
+                fill_price = 0.0
+                try:
+                    deals = trade.status.deals or []
+                    total_qty = sum(d.quantity for d in deals)
+                    if total_qty > 0:
+                        fill_price = (
+                            sum(float(d.price) * d.quantity for d in deals) / total_qty
+                        )
+                    else:
+                        fill_price = float(trade.order.price) or 0.0
+                except Exception:
+                    fill_price = float(
+                        getattr(getattr(trade, "order", None), "price", 0) or 0
+                    )
+                if fill_price == 0:
+                    fill_price = self._pending_entry_price or self.state.last_price
+
+                logger.warning(
+                    "[scalp] 逾時時發現已成交 @ %.0f（模擬盤/延遲 callback），切換 holding",
+                    fill_price,
+                )
+                self._last_entry_price  = fill_price
+                self.state.entry_price  = fill_price
+                self.state.position     = self._direction
+                self._entry_trade       = None   # 清除，避免 on_order_event 重複處理
+                self._phase             = "holding"
+                await self._do_tp()
+                return
+
+            # ── 未成交 → 送取消，_entry_trade 保留讓 on_order_event 接收確認 ──
+            try:
+                t = trade
                 await broker.acall(lambda: broker.api.cancel_order(t))
             except Exception as e:
-                logger.warning("[scalp] cancel_order 失敗（可能已成交，等 on_order_event）: %s", e)
-        # _entry_trade 不在這裡清，由 on_order_event 確認 fill/cancel 後清
+                logger.warning("[scalp] cancel_order 失敗: %s", e)
+
         self._phase          = "cooldown"
         self._cooldown_count = 0
         self._tick_buf.clear()
+        logger.info("[scalp] 入場單取消請求已送出 → 冷卻")
 
     async def _do_tp(self) -> None:
         """掛停利限價單"""
