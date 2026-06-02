@@ -39,12 +39,14 @@ class ScalpStrategy(BaseStrategy):
         self.momentum_threshold: float = 0.65   # 觸發所需外/內盤比例
         self.signal_mode: str = "momentum" # "momentum" | "random"
         self.cooldown_ticks: int = 30      # 每次出場後冷卻 tick 數
+        self.max_qty: int = 1              # 單次最多幾口
 
         # ── 內部狀態 ──────────────────────────────────────────────
         self._phase: str = "idle"     # idle / pending / holding / cooldown
         self._direction: int = 0      # 1=多  -1=空
         self._entry_trade = None
         self._tp_trade = None
+        self._entry_qty: int = 1      # 本次實際入場口數
         self._entry_tick_count: int = 0
         self._cooldown_count: int = 0
         self._last_entry_price: float = 0.0
@@ -63,6 +65,7 @@ class ScalpStrategy(BaseStrategy):
             "momentum_threshold": round(self.momentum_threshold, 2),
             "signal_mode_int": 0 if self.signal_mode == "momentum" else 1,
             "cooldown_ticks": self.cooldown_ticks,
+            "max_qty": self.max_qty,
         }
 
     @property
@@ -76,6 +79,7 @@ class ScalpStrategy(BaseStrategy):
             {"key": "momentum_threshold", "label": "動量門檻 0.5~1.0",      "type": "number", "min": 0.5,  "max": 1.0},
             {"key": "signal_mode_int",    "label": "訊號模式 0=動量/1=隨機", "type": "number", "min": 0,    "max": 1},
             {"key": "cooldown_ticks",     "label": "冷卻 Ticks",            "type": "number", "min": 0,    "max": 300},
+            {"key": "max_qty",            "label": "最大口數",               "type": "number", "min": 1,    "max": 10},
         ]
 
     def _apply_params(self, params: dict[str, Any]) -> None:
@@ -87,11 +91,12 @@ class ScalpStrategy(BaseStrategy):
         self.momentum_threshold = float(params.get("momentum_threshold", self.momentum_threshold))
         self.signal_mode        = "random" if int(params.get("signal_mode_int", 0)) else "momentum"
         self.cooldown_ticks     = int(params.get("cooldown_ticks",     self.cooldown_ticks))
+        self.max_qty            = max(1, int(params.get("max_qty",     self.max_qty)))
         self._tick_buf = deque(maxlen=self.momentum_window)
         logger.info(
-            "[scalp] 套用參數: TP=%d SL=%d offset=%d mode=%s window=%d threshold=%.2f cooldown=%d",
+            "[scalp] 套用參數: TP=%d SL=%d offset=%d mode=%s window=%d threshold=%.2f cooldown=%d max_qty=%d",
             self.tp_pts, self.sl_pts, self.entry_offset, self.signal_mode,
-            self.momentum_window, self.momentum_threshold, self.cooldown_ticks,
+            self.momentum_window, self.momentum_threshold, self.cooldown_ticks, self.max_qty,
         )
 
     # ── 訊號 ───────────────────────────────────────────────────────
@@ -201,18 +206,19 @@ class ScalpStrategy(BaseStrategy):
         action = sj.constant.Action.Buy if direction == 1 else sj.constant.Action.Sell
 
         logger.info(
-            "[scalp] %s 掛限價 @ %.0f  (現價=%.0f  offset=%+d  mode=%s)",
+            "[scalp] %s 掛限價 @ %.0f  (現價=%.0f  offset=%+d  mode=%s  qty=%d)",
             "做多" if direction == 1 else "做空",
-            entry_price, price, self.entry_offset, self.signal_mode,
+            entry_price, price, self.entry_offset, self.signal_mode, self.max_qty,
         )
         try:
-            trade = await self._lmt(action, entry_price)
+            trade = await self._lmt(action, entry_price, qty=self.max_qty)
         except Exception as e:
             logger.error("[scalp] 掛單失敗: %s", e)
             self.state.errors.append(f"掛單失敗: {e}")
             return
 
         self._entry_trade = trade
+        self._entry_qty = self.max_qty
         self._direction = direction
         self._entry_tick_count = 0
         self._phase = "pending"
@@ -228,9 +234,9 @@ class ScalpStrategy(BaseStrategy):
         """掛停利限價單"""
         tp_price = self._last_entry_price + self.tp_pts * self._direction
         action = sj.constant.Action.Sell if self._direction == 1 else sj.constant.Action.Buy
-        logger.info("[scalp] 掛停利單 @ %.0f", tp_price)
+        logger.info("[scalp] 掛停利單 @ %.0f  qty=%d", tp_price, self._entry_qty)
         try:
-            self._tp_trade = await self._lmt(action, tp_price)
+            self._tp_trade = await self._lmt(action, tp_price, qty=self._entry_qty)
         except Exception as e:
             logger.error("[scalp] 掛停利單失敗: %s", e)
             self.state.errors.append(f"掛停利單失敗: {e}")
@@ -245,13 +251,13 @@ class ScalpStrategy(BaseStrategy):
             else sj.constant.Action.Buy
         )
         try:
-            await self.place_order(close_action, 1)   # base class 市價單
+            await self.place_order(close_action, self._entry_qty)   # base class 市價單
         except Exception as e:
             logger.error("[scalp] 停損平倉失敗: %s", e)
             self.state.errors.append(f"停損平倉失敗: {e}")
             return
 
-        self.state.realized_pnl += -self.sl_pts * self.point_value
+        self.state.realized_pnl += -self.sl_pts * self.point_value * self._entry_qty
         self.state.position = 0
         self.state.entry_price = 0.0
         self._phase = "cooldown"
@@ -317,10 +323,10 @@ class ScalpStrategy(BaseStrategy):
                 return
 
             if filled:
-                self.state.realized_pnl += self.tp_pts * self.point_value
+                self.state.realized_pnl += self.tp_pts * self.point_value * self._entry_qty
                 self.state.position = 0
                 self.state.entry_price = 0.0
                 self._tp_trade = None
                 self._phase = "cooldown"
                 self._cooldown_count = 0
-                logger.info("[scalp] 停利成交 +%d點 → 冷卻", self.tp_pts)
+                logger.info("[scalp] 停利成交 +%d點 x%d口 → 冷卻", self.tp_pts, self._entry_qty)
