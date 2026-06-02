@@ -11,6 +11,7 @@ from strategies.breakout import BreakoutStrategy
 from strategies.rsi import RSIStrategy
 from strategies.bollinger import BollingerStrategy
 from strategies.momentum import MomentumStrategy
+from strategies.scalp import ScalpStrategy
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,6 +29,7 @@ class StrategyEngine:
             "rsi": RSIStrategy(),
             "bollinger": BollingerStrategy(),
             "momentum": MomentumStrategy(),
+            "scalp": ScalpStrategy(),
         }
         self.loop: asyncio.AbstractEventLoop | None = None
 
