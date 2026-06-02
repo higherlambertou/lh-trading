@@ -42,14 +42,15 @@ class ScalpStrategy(BaseStrategy):
         self.max_qty: int = 1              # 單次最多幾口
 
         # ── 內部狀態 ──────────────────────────────────────────────
-        self._phase: str = "idle"     # idle / pending / holding / cooldown
-        self._direction: int = 0      # 1=多  -1=空
+        self._phase: str = "idle"          # idle / pending / holding / cooldown
+        self._direction: int = 0           # 1=多  -1=空
         self._entry_trade = None
         self._tp_trade = None
-        self._entry_qty: int = 1      # 本次實際入場口數
+        self._entry_qty: int = 1           # 本次實際入場口數
         self._entry_tick_count: int = 0
         self._cooldown_count: int = 0
         self._last_entry_price: float = 0.0
+        self._pending_entry_price: float = 0.0  # 下單時的限價，作為 fill_price 備用
         self._tick_buf: deque[int] = deque(maxlen=100)
 
     # ── 參數介面 ────────────────────────────────────────────────
@@ -221,12 +222,13 @@ class ScalpStrategy(BaseStrategy):
             self.state.errors.append(f"掛單失敗: {e}")
             return
 
-        self._entry_trade       = trade
-        self._entry_qty         = self.max_qty
-        self._direction         = direction
-        self._last_entry_price  = 0.0   # 清除舊值，成交後才更新
-        self._entry_tick_count  = 0
-        self._phase             = "pending"
+        self._entry_trade        = trade
+        self._entry_qty          = self.max_qty
+        self._direction          = direction
+        self._last_entry_price   = 0.0          # 清除舊值，成交後才更新
+        self._pending_entry_price = entry_price  # 備用：填單時的限價
+        self._entry_tick_count   = 0
+        self._phase              = "pending"
 
     async def _cancel_entry(self) -> None:
         """
@@ -321,7 +323,8 @@ class ScalpStrategy(BaseStrategy):
                     ) or 0)
 
                 if fill_price == 0:
-                    fill_price = self.state.last_price
+                    # 優先用下單時記錄的限價，比 last_price 可靠
+                    fill_price = self._pending_entry_price or self.state.last_price
 
                 old_phase = self._phase
                 self._last_entry_price = fill_price
