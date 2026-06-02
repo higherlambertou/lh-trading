@@ -1,7 +1,23 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api";
+const PROD_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8002/api";
+const SIM_URL  = process.env.NEXT_PUBLIC_SIM_URL  ?? "http://localhost:8003/api";
+
+export function getBase(): string {
+  if (typeof window !== "undefined" && localStorage.getItem("trading_mode") === "sim") {
+    return SIM_URL;
+  }
+  return PROD_URL;
+}
+
+export function isSimMode(): boolean {
+  return typeof window !== "undefined" && localStorage.getItem("trading_mode") === "sim";
+}
+
+export function setSimMode(sim: boolean): void {
+  localStorage.setItem("trading_mode", sim ? "sim" : "prod");
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, init);
+  const res = await fetch(`${getBase()}${path}`, init);
   if (!res.ok) {
     const msg = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status} — ${msg}`);

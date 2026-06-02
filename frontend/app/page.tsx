@@ -3,6 +3,7 @@ import StrategyPanel from "@/components/StrategyPanel";
 import PositionPanel from "@/components/PositionPanel";
 import OrderPanel from "@/components/OrderPanel";
 import TradesPanel from "@/components/TradesPanel";
+import ModeToggle from "@/components/ModeToggle";
 
 export default function Page() {
   return (
@@ -12,6 +13,7 @@ export default function Page() {
         <Activity size={18} className="text-[#3b82f6]" />
         <span className="font-semibold tracking-wide">LH Trading</span>
         <span className="text-xs text-[#7070a0]">台指期貨</span>
+        <ModeToggle />
       </header>
 
       {/* ── 2×2 Grid ───────────────────────────────────────────── */}
