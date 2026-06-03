@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -55,9 +56,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# 每台機器的 Tailscale IP 不同 → 由 .env 的 CORS_ORIGINS 指定（逗號分隔），
+# 沒設時退回 localhost，main.py 因此可兩台共用、安心 push。
+_cors_origins = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS", "http://localhost:3002,http://localhost:5173"
+    ).split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3002", "http://localhost:5173"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -78,12 +89,13 @@ def health() -> dict[str, str]:
 
 if __name__ == "__main__":
     import uvicorn
-    import os
     dev_mode = os.getenv("DEV", "false").lower() == "true"
+    # BIND_HOST 由各機器 .env 指定（建議填該機 Tailscale IP 做硬化）；
+    # 沒設時退回 0.0.0.0，確保任何機器都能直接起得來。
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=8002,
+        host=os.getenv("BIND_HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8002")),
         reload=dev_mode,
         reload_dirs=["api", "core", "strategies"] if dev_mode else None,
     )
