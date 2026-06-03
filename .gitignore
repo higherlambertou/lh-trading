@@ -32,6 +32,8 @@ frontend/.next/
 frontend/out/
 frontend/.cache/
 frontend/.turbo/
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
 
 # ── macOS ────────────────────────────────────────────────────────
 .DS_Store
