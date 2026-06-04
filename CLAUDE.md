@@ -16,6 +16,7 @@ shioaji 原生層在永豐 Solace session 不穩時會卡在 I/O 又不釋放 GI
 **這是 SDK 層問題，純 Python 改不掉**，所以用外部 watchdog 監看、偵測凍結就自動重啟。
 重啟是安全的：啟動流程會自動對帳既有部位、清掉殘留委託。
 
+**Linux / macOS（家機部署）**
 ```bash
 # 模擬盤（port 8003，main_sim.py 強制 SIMULATION=true，綁 0.0.0.0）
 nohup ./run_sim.sh  > /tmp/lh_sim_watchdog.log  2>&1 &
@@ -28,8 +29,26 @@ cd frontend && npm run dev      # 開發
 # 或 npm run build && npm run start   # 正式
 ```
 
-watchdog 行為：等 startup（最多 120s）→ 每 15s 檢查 `/health`，
-連續 2 次失敗（≈30s）判定凍結 → `kill -9` + 重啟。
+**Windows（PowerShell，開發機）** — `.sh` 用了 `lsof`/`/tmp`/`trap` 不能在 Windows 跑，
+改用對應的 `.ps1`（行為一致：`Get-NetTCPConnection` 取代 `lsof`、`Invoke-WebRequest` 取代 `curl`、
+`Stop-Process` 取代 `kill -9`、`try/finally` 取代 `trap`）：
+```powershell
+# 模擬盤（port 8003，永遠不碰真錢）
+powershell -ExecutionPolicy Bypass -File .\run_sim.ps1
+
+# 正式盤（port 8002，真錢，確認 .env 的 SIMULATION=false）
+powershell -ExecutionPolicy Bypass -File .\run_live.ps1
+
+# 前端（另開一個 PowerShell 視窗）
+cd frontend; npm run dev
+```
+- log 在 `%TEMP%\lh_sim.out.log`／`lh_sim.err.log`（正式盤為 `lh_live.*`）；
+  PowerShell 的 `Start-Process` 不能把 stdout/stderr 導到同一檔，故拆兩個，且**每次重啟覆寫**。
+- 停止：在該視窗按 **Ctrl+C**，`finally` 會把 python 子進程一起關掉。
+- 想長期掛機正式交易，建議仍用 Linux 家機跑 `.sh`；`.ps1` 主要供 Windows 本地開發/測試。
+
+watchdog 行為（兩版一致）：等 startup（最多 120s）→ 每 15s 檢查 `/health`，
+連續 2 次失敗（≈30s）判定凍結 → kill + 重啟。
 
 **log 位置**
 - watchdog：`/tmp/lh_sim_watchdog.log`、`/tmp/lh_live_watchdog.log`
@@ -85,3 +104,20 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 任何同步 shioaji 呼叫**不可**直接跑在 asyncio event loop 上——一旦 SDK 卡住會凍結整個服務。
 一律用 `broker.acall(...)` 或 `loop.run_in_executor(...)` 丟到 executor。
 （曾因 `main.py` keepalive 直接同步呼叫而整個凍住。）
+
+---
+
+## Shioaji 使用上限（會影響本專案的部分）
+
+官方文件：<https://sinotrade.github.io/zh/tutor/limit/>。超限時行情查詢會**回空值**、
+帳務/委託會被**暫停 1 分鐘**，持續違規會**封 IP 與 person_id**。以下挑出對本專案實際有風險的：
+
+| 限制 | 數字 | 本專案的注意點 |
+|---|---|---|
+| **同一 person_id 連線數** | 最多 **5 條** | sim(8003)+live(8002) 同跑就佔 2 條；**watchdog `kill -9` / `Stop-Process` 不會乾淨 logout**，殘留連線要等券商端逾時才釋放，**頻繁重啟可能累積逼近 5 條**而登不進去。卡住時先停掉所有進程等幾分鐘。 |
+| **登入次數** | **1000 次/日** | 每次 watchdog 重啟都會 login。正常夠用，但若 session 一直不穩狂 flapping 重啟會燒額度。 |
+| **委託操作** | **10 秒 250 次**（下單/改單/取消） | `scalp.py` 掃單頻率高；連反手平倉一次 tick 可能 2 單，掃太密要留意。 |
+| **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、前端 PositionPanel(2s)、TradesPanel(3s)。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |
+| **行情查詢** | **5 秒 50 次**（snapshots/ticks/kbars，盤中 ticks 另限 10 次/5s） | 即時報價走訂閱推播（QuoteHub）不算查詢；但若策略改用主動拉 kbars/snapshot 要算進來。 |
+| **每日流量** | **500MB / 2GB / 10GB**（依近 30 日成交量分級，**開盤日 08:00 重置**） | 訂閱報價會吃流量。同時訂多合約、或多策略各自訂閱會放大用量——`QuoteHub` 已做集中訂閱去重，別繞過它各自 `quote.subscribe`。 |
+| **報價訂閱數** | **200 個** | 本專案只訂 TMF/MXF/TXF，遠低於上限，無虞。 |

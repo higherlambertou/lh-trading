@@ -46,6 +46,25 @@ def get_pnl() -> list[dict[str, Any]]:
     ]
 
 
+@router.get("/usage")
+def get_usage() -> dict[str, Any]:
+    """查詢 Shioaji 當日流量用量與連線數（額度開盤日 08:00 重置）。"""
+    try:
+        u = broker.call(lambda: broker.api.usage())
+    except Exception as e:
+        raise HTTPException(500, f"查詢用量失敗: {e}")
+    used = int(getattr(u, "bytes", 0) or 0)
+    limit = int(getattr(u, "limit_bytes", 0) or 0)
+    remaining = int(getattr(u, "remaining_bytes", max(limit - used, 0)) or 0)
+    return {
+        "connections": int(getattr(u, "connections", 0) or 0),
+        "used_bytes": used,
+        "limit_bytes": limit,
+        "remaining_bytes": remaining,
+        "percent": round(used / limit * 100, 1) if limit > 0 else 0.0,
+    }
+
+
 @router.get("/margin")
 def get_margin() -> dict[str, float]:
     try:

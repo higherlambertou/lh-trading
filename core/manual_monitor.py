@@ -25,6 +25,8 @@ class ManualWatch:
     entry_price: float  # 0 = 市價單尚未填入，等第一次查到部位後補
     stop_loss_pts: int
     take_profit_pts: int
+    seen: bool = False  # 是否曾查到對應部位（＝已成交）
+    waited: int = 0     # 尚未成交前已等待的輪數（每輪約 1s）
 
 
 class ManualOrderMonitor:
@@ -139,9 +141,20 @@ class ManualOrderMonitor:
         )
 
         if pos is None:
-            # 部位已不存在，移除監控
-            self.remove(watch.id)
+            if watch.seen:
+                # 曾經有部位、現在不見了 → 已平倉（可能被停損停利或手動平掉），移除監控
+                logger.info("手動監控 [%s] 部位已平倉，移除監控", watch.id)
+                self.remove(watch.id)
+            else:
+                # 尚未成交（市價剛送出 / 限價未觸發）→ 繼續等，別誤刪
+                watch.waited += 1
+                if watch.waited >= 600:  # 約 10 分鐘仍未成交才放棄，避免幽靈監控
+                    logger.info("手動監控 [%s] 逾 10 分鐘未成交，移除監控", watch.id)
+                    self.remove(watch.id)
             return
+
+        # 查到部位 → 標記已成交
+        watch.seen = True
 
         # 市價單補入場價
         if watch.entry_price == 0:

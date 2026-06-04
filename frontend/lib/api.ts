@@ -76,6 +76,14 @@ export interface ProfitLoss {
   date: string;
 }
 
+export interface Usage {
+  connections: number;
+  used_bytes: number;
+  limit_bytes: number;
+  remaining_bytes: number;
+  percent: number;
+}
+
 export interface Watch {
   id: string;
   contract: string;
@@ -128,6 +136,7 @@ export const api = {
     list: () => req<Position[]>("/position/"),
     margin: () => req<Margin>("/position/margin"),
     pnl: () => req<ProfitLoss[]>("/position/pnl"),
+    usage: () => req<Usage>("/position/usage"),
   },
   order: {
     place: (data: OrderRequest) =>
