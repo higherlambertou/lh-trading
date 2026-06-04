@@ -16,7 +16,15 @@ import os
 os.environ["SIMULATION"] = "true"
 os.environ["DEV"] = "false"
 
-import uvicorn
+# ── 除錯：凍結時用 `kill -USR1 <pid>` 可把所有 thread 的 Python 堆疊印到 log ──
+import faulthandler  # noqa: E402
+import signal        # noqa: E402
+
+faulthandler.enable()
+if hasattr(signal, "SIGUSR1"):
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
+
+import uvicorn  # noqa: E402
 from main import app  # noqa: E402  (app 已在 main.py 定義好)
 
 if __name__ == "__main__":
