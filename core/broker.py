@@ -1,8 +1,9 @@
 import asyncio
 import os
 import logging
+import threading
 import time
-from typing import Optional, Callable, TypeVar
+from typing import Any, Optional, Callable, TypeVar
 
 import shioaji as sj
 from dotenv import load_dotenv
@@ -18,6 +19,44 @@ _SESSION_ERROR_KEYWORDS = ("SessionNotEstablished", "NotReady", "Session error")
 
 def _is_session_error(e: Exception) -> bool:
     return any(k in str(e) for k in _SESSION_ERROR_KEYWORDS)
+
+
+def _login_with_hard_timeout(
+    api: sj.Shioaji,
+    api_key: str,
+    secret_key: str,
+    contracts_timeout: int,
+    hard_timeout: float,
+) -> None:
+    """在 daemon thread 執行 api.login()，超過 hard_timeout 秒未回來就丟 TimeoutError。
+
+    Solace session 中途死亡時，SDK 會卡在死掉的 socket 上、既不回傳也不丟例外，
+    而 contracts_timeout 只管「抓合約」那段、管不到前面的握手。這層硬逾時確保
+    啟動不會無限懸著：逾時就放棄這條連線（卡死的 thread 是 daemon，隨 process 結束），
+    由外層重試迴圈換一個全新的 sj.Shioaji 重連。
+    """
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            api.login(
+                api_key=api_key,
+                secret_key=secret_key,
+                contracts_timeout=contracts_timeout,
+            )
+            box["ok"] = True
+        except Exception as e:  # noqa: BLE001 - 原樣帶回主執行緒處理
+            box["err"] = e
+
+    t = threading.Thread(target=_worker, name="shioaji-login", daemon=True)
+    t.start()
+    t.join(hard_timeout)
+    if t.is_alive():
+        raise TimeoutError(
+            f"登入逾時：{hard_timeout:.0f}s 內未完成（疑似 Solace session 卡死）"
+        )
+    if "err" in box:
+        raise box["err"]
 
 
 class BrokerClient:
@@ -49,23 +88,25 @@ class BrokerClient:
         if not api_key or not secret_key:
             raise RuntimeError("缺少 SHIOAJI_API_KEY 或 SHIOAJI_SECRET_KEY 環境變數")
 
-        # 登入會連永豐 Solace 行情主機，網路間歇不穩時會 timeout（ShioajiConnectionError）。
+        # 登入會連永豐 Solace 行情主機，網路間歇不穩時會 timeout（ShioajiConnectionError），
+        # 更糟的是 session 中途死亡時 SDK 會卡死在 socket 上不回不錯。
         # 重試數次避免一次連線失敗就讓整個 startup 掛掉。
-        # contracts_timeout：最多等 15s 抓合約，避免抓合約時無限卡住。
-        max_attempts = int(os.getenv("LOGIN_RETRIES", "3"))
+        # contracts_timeout：最多等 15s 抓合約；LOGIN_TIMEOUT：整個 login 的硬逾時。
+        max_attempts  = int(os.getenv("LOGIN_RETRIES", "3"))
+        hard_timeout  = float(os.getenv("LOGIN_TIMEOUT", "25"))
         api = None
         last_err: Optional[Exception] = None
         for attempt in range(1, max_attempts + 1):
             api = sj.Shioaji(simulation=simulation)
             try:
                 logger.info(
-                    "Shioaji 登入中…(第 %d/%d 次, simulation=%s)",
-                    attempt, max_attempts, simulation,
+                    "Shioaji 登入中…(第 %d/%d 次, simulation=%s, 逾時 %.0fs)",
+                    attempt, max_attempts, simulation, hard_timeout,
                 )
-                api.login(
-                    api_key=api_key,
-                    secret_key=secret_key,
+                _login_with_hard_timeout(
+                    api, api_key, secret_key,
                     contracts_timeout=15000,
+                    hard_timeout=hard_timeout,
                 )
                 logger.info("Shioaji 登入成功")
                 last_err = None
@@ -75,10 +116,12 @@ class BrokerClient:
                 logger.warning(
                     "Shioaji 登入失敗(第 %d/%d 次): %s", attempt, max_attempts, e
                 )
-                try:
-                    api.logout()
-                except Exception:
-                    pass
+                # 一般錯誤才嘗試登出回收；硬逾時時 session 已卡死，logout 也會跟著卡 → 直接丟棄
+                if not isinstance(e, TimeoutError):
+                    try:
+                        api.logout()
+                    except Exception:
+                        pass
                 api = None
                 if attempt < max_attempts:
                     time.sleep(3)
