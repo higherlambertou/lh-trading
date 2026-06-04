@@ -22,12 +22,25 @@ logger = logging.getLogger(__name__)
 
 
 async def _keepalive_loop() -> None:
-    """每 4 分鐘輕量 ping 一次，保持 session 活躍並提早偵測斷線。"""
+    """每 4 分鐘輕量 ping 一次，保持 session 活躍並提早偵測斷線。
+
+    用 acall（在 worker thread 執行）而非同步 call：否則一旦永豐回應卡住，
+    list_positions 會卡在 event loop 上、凍結整個服務（health 變 000）。
+    再包一層 wait_for 硬逾時，確保即使 worker 卡死，keepalive 任務也不會
+    永遠懸著、下一輪仍會繼續嘗試。
+    """
     while True:
         await asyncio.sleep(240)
         try:
-            broker.call(lambda: broker.api.list_positions(broker.api.futopt_account))
+            await asyncio.wait_for(
+                broker.acall(
+                    lambda: broker.api.list_positions(broker.api.futopt_account)
+                ),
+                timeout=15,
+            )
             logger.debug("keepalive OK")
+        except asyncio.TimeoutError:
+            logger.warning("keepalive 逾時（永豐回應卡住，session 可能異常）")
         except Exception as e:
             logger.warning("keepalive 失敗（已嘗試重連）: %s", e)
 

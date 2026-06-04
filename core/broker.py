@@ -59,6 +59,29 @@ def _login_with_hard_timeout(
         raise box["err"]
 
 
+def _run_with_hard_timeout(fn: Callable[[], Any], timeout: float, what: str) -> bool:
+    """在 daemon thread 跑 fn()，逾時(秒)就放棄並回 False；正常完成回 True。
+
+    用於 logout 這種「session 可能已死、呼叫會無限卡住」的 Solace API：逾時就
+    丟著不等（daemon thread 隨 process 結束），確保呼叫端不會被卡死。
+    """
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            fn()
+        except Exception:
+            pass
+        finally:
+            done.set()
+
+    threading.Thread(target=_worker, name=f"shioaji-{what}", daemon=True).start()
+    if not done.wait(timeout):
+        logger.warning("Shioaji %s 逾時 %.0fs，放棄等待", what, timeout)
+        return False
+    return True
+
+
 class BrokerClient:
     """Shioaji 連線 singleton，整個 process 共用同一個 api 物件"""
 
@@ -147,11 +170,11 @@ class BrokerClient:
     def reconnect(self) -> sj.Shioaji:
         """強制重新登入，reconnect 後重新掛上 callback 和報價訂閱。"""
         logger.warning("Shioaji session 斷線，嘗試重新連線...")
-        try:
-            if self._api:
-                self._api.logout()
-        except Exception:
-            pass
+        # 對「已死的 session」呼叫 logout 會無限卡住，必須加硬逾時，
+        # 否則整個 reconnect（連帶呼叫它的 event loop）會被凍結。
+        if self._api is not None:
+            old = self._api
+            _run_with_hard_timeout(lambda: old.logout(), 5.0, "logout")
         self._api = None
         api = self.login()
 
@@ -190,13 +213,17 @@ class BrokerClient:
             raise
 
     async def acall(self, thunk: Callable[[], T]) -> T:
-        """async 版本：在 executor 執行 thunk()，同樣自動重連。"""
+        """async 版本：在 executor 執行 thunk()，同樣自動重連。
+
+        重連也丟到 executor 跑：reconnect() 內含 logout/login 等阻塞呼叫，
+        若直接在這裡（event loop 上）執行會凍結整個服務。
+        """
         loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(None, thunk)
         except Exception as e:
             if _is_session_error(e):
-                self.reconnect()
+                await loop.run_in_executor(None, self.reconnect)
                 return await loop.run_in_executor(None, thunk)
             raise
 
