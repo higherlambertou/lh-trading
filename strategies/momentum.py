@@ -63,23 +63,9 @@ class MomentumStrategy(BaseStrategy):
         change_pct = (price - ref) / ref * 100.0
 
         if change_pct > self.threshold_pct and self.state.position <= 0:
-            if self.state.position < 0:
-                await self.place_order(sj.constant.Action.Buy, abs(self.state.position))
-                self.state.realized_pnl += (
-                    (self.state.entry_price - price) * abs(self.state.position) * self.point_value
-                )
-            await self.place_order(sj.constant.Action.Buy, 1)
-            self.state.entry_price = price
-            self.state.position = 1
             logger.info("[momentum] 動能 +%.2f%% → 做多 @ %.0f", change_pct, price)
+            await self._go(1, price)
 
         elif change_pct < -self.threshold_pct and self.state.position >= 0:
-            if self.state.position > 0:
-                await self.place_order(sj.constant.Action.Sell, self.state.position)
-                self.state.realized_pnl += (
-                    (price - self.state.entry_price) * self.state.position * self.point_value
-                )
-            await self.place_order(sj.constant.Action.Sell, 1)
-            self.state.entry_price = price
-            self.state.position = -1
             logger.info("[momentum] 動能 %.2f%% → 做空 @ %.0f", change_pct, price)
+            await self._go(-1, price)

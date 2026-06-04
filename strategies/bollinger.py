@@ -67,23 +67,9 @@ class BollingerStrategy(BaseStrategy):
         mean, upper, lower = bands
 
         if price < lower and self.state.position <= 0:
-            if self.state.position < 0:
-                await self.place_order(sj.constant.Action.Buy, abs(self.state.position))
-                self.state.realized_pnl += (
-                    (self.state.entry_price - price) * abs(self.state.position) * self.point_value
-                )
-            await self.place_order(sj.constant.Action.Buy, 1)
-            self.state.entry_price = price
-            self.state.position = 1
             logger.info("[bollinger] 跌破下軌 %.0f → 做多 @ %.0f", lower, price)
+            await self._go(1, price)
 
         elif price > upper and self.state.position >= 0:
-            if self.state.position > 0:
-                await self.place_order(sj.constant.Action.Sell, self.state.position)
-                self.state.realized_pnl += (
-                    (price - self.state.entry_price) * self.state.position * self.point_value
-                )
-            await self.place_order(sj.constant.Action.Sell, 1)
-            self.state.entry_price = price
-            self.state.position = -1
             logger.info("[bollinger] 突破上軌 %.0f → 做空 @ %.0f", upper, price)
+            await self._go(-1, price)

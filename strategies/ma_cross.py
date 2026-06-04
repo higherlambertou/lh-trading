@@ -78,21 +78,7 @@ class MACrossStrategy(BaseStrategy):
         )
 
         if signal == 1 and self.state.position <= 0:
-            if self.state.position < 0:
-                await self.place_order(sj.constant.Action.Buy, abs(self.state.position))
-                self.state.realized_pnl += (
-                    (self.state.entry_price - price) * abs(self.state.position) * self.point_value
-                )
-            await self.place_order(sj.constant.Action.Buy, 1)
-            self.state.entry_price = price
-            self.state.position = 1
+            await self._go(1, price)
 
         elif signal == -1 and self.state.position >= 0:
-            if self.state.position > 0:
-                await self.place_order(sj.constant.Action.Sell, self.state.position)
-                self.state.realized_pnl += (
-                    (price - self.state.entry_price) * self.state.position * self.point_value
-                )
-            await self.place_order(sj.constant.Action.Sell, 1)
-            self.state.entry_price = price
-            self.state.position = -1
+            await self._go(-1, price)

@@ -56,23 +56,9 @@ class BreakoutStrategy(BaseStrategy):
         self.prices.append(price)
 
         if price > highest and self.state.position <= 0:
-            if self.state.position < 0:
-                await self.place_order(sj.constant.Action.Buy, abs(self.state.position))
-                self.state.realized_pnl += (
-                    (self.state.entry_price - price) * abs(self.state.position) * self.point_value
-                )
-            await self.place_order(sj.constant.Action.Buy, 1)
-            self.state.entry_price = price
-            self.state.position = 1
             logger.info("[breakout] 突破上緣 %.0f → 做多 @ %.0f", highest, price)
+            await self._go(1, price)
 
         elif price < lowest and self.state.position >= 0:
-            if self.state.position > 0:
-                await self.place_order(sj.constant.Action.Sell, self.state.position)
-                self.state.realized_pnl += (
-                    (price - self.state.entry_price) * self.state.position * self.point_value
-                )
-            await self.place_order(sj.constant.Action.Sell, 1)
-            self.state.entry_price = price
-            self.state.position = -1
             logger.info("[breakout] 跌破下緣 %.0f → 做空 @ %.0f", lowest, price)
+            await self._go(-1, price)

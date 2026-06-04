@@ -81,6 +81,13 @@ def start_strategy(name: str, req: StartRequest) -> dict[str, str]:
         raise HTTPException(404, f"Strategy '{name}' not found")
     if s.state.is_running:
         raise HTTPException(400, "Strategy already running")
+    # 同帳戶、同合約（TMF）只允許單一策略執行，否則多策略會互相搶倉、
+    # 透過 OcType.Auto 彼此平倉，造成幽靈部位與重複下單。
+    running = [n for n, st in strategy_engine.strategies.items() if st.state.is_running]
+    if running:
+        raise HTTPException(
+            409, f"已有策略執行中: {running[0]}（同帳戶同合約，請先停止再啟動其他策略）"
+        )
     if strategy_engine.loop is None:
         raise HTTPException(503, "Event loop not ready")
     s.start(strategy_engine.loop, params=req.params or None)

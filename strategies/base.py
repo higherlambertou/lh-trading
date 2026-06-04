@@ -84,6 +84,8 @@ class BaseStrategy(ABC):
         broker.set_order_callback(self._order_callback)
         # 先清掉上一輪殘留的未成交委託（此時還沒訂閱報價，避免與報價串流爭用 shioaji client）
         self._cancel_all_pending()
+        # 與券商對帳既有部位，避免帶倉重啟時策略以為自己空手而疊單
+        self._sync_position_from_broker()
         # 清理完成後才訂閱報價、開始派發給策略
         quote_hub.ensure_contract_subscribed(contract)
         quote_hub.subscribe_strategy(self.name, self._on_quote_async)
@@ -134,15 +136,101 @@ class BaseStrategy(ABC):
         elif self.stop_loss_pts > 0 and pts <= -self.stop_loss_pts:
             logger.info("策略 [%s] 停損觸發: %.0f點 @ %.0f", self.name, pts, price)
             triggered = True
-        if triggered:
-            action = sj.constant.Action.Sell if self.state.position > 0 else sj.constant.Action.Buy
-            qty = abs(self.state.position)
+        if not triggered:
+            return False
+
+        # 重入防護：先把部位歸零，再送平倉單。
+        # 否則 await place_order 期間，下一筆報價的 dispatch 會再次進來、
+        # 看到 position 仍非 0 而重複觸發停損 → 重複平倉甚至 OcType.Auto 反向開倉。
+        prev_pos   = self.state.position
+        prev_entry = self.state.entry_price
+        action = sj.constant.Action.Sell if prev_pos > 0 else sj.constant.Action.Buy
+        qty = abs(prev_pos)
+        self.state.position = 0
+        self.state.entry_price = 0.0
+        self.state.unrealized_pnl = 0.0
+        try:
             await self.place_order(action, qty)
-            self.state.realized_pnl += pts * qty * self.point_value
-            self.state.position = 0
-            self.state.entry_price = 0.0
-            self.state.unrealized_pnl = 0.0
-        return triggered
+        except Exception as e:
+            # 平倉失敗 → 還原部位，讓下一筆報價可重試
+            self.state.position = prev_pos
+            self.state.entry_price = prev_entry
+            logger.error("策略 [%s] 停損停利平倉失敗，還原部位: %s", self.name, e)
+            self.state.errors.append(f"停損停利平倉失敗: {e}")
+            return True
+        self.state.realized_pnl += pts * qty * self.point_value
+        return True
+
+    async def _go(self, direction: int, price: float) -> None:
+        """通用進場：依 direction(+1 多 / -1 空) 建立 1 口部位。
+
+        若目前持有反向部位，先平掉再反手。所有 state 變更都在 await 之前完成，
+        避免報價 dispatch 重入時看到舊部位而重複下單（OcType.Auto 反向疊單）。
+        """
+        prev_pos   = self.state.position
+        prev_entry = self.state.entry_price
+        if direction > 0 and prev_pos > 0:
+            return
+        if direction < 0 and prev_pos < 0:
+            return
+
+        action = sj.constant.Action.Buy if direction > 0 else sj.constant.Action.Sell
+        # 先樂觀更新 state，擋住重入
+        self.state.position = direction
+        self.state.entry_price = price
+        self.state.unrealized_pnl = 0.0
+        try:
+            # 有反向部位 → 先平倉並結算已實現損益
+            if prev_pos != 0:
+                close_qty = abs(prev_pos)
+                await self.place_order(action, close_qty)
+                pts = (price - prev_entry) * (1 if prev_pos > 0 else -1)
+                self.state.realized_pnl += pts * close_qty * self.point_value
+            # 再開 1 口新倉
+            await self.place_order(action, 1)
+        except Exception as e:
+            # 任一腳失敗 → 還原 state（保守處理，下一筆報價可重試）
+            self.state.position = prev_pos
+            self.state.entry_price = prev_entry
+            logger.error("策略 [%s] 進場下單失敗，還原部位: %s", self.name, e)
+            self.state.errors.append(f"進場下單失敗: {e}")
+            return
+        self._event(f"{'多' if direction > 0 else '空'}單進場 @ {price:.0f}")
+
+    def _sync_position_from_broker(self) -> None:
+        """啟動時與券商對帳 TMF 既有部位，避免帶倉重啟時策略以為自己空手而疊單。"""
+        try:
+            positions = broker.call(
+                lambda: broker.api.list_positions(broker.api.futopt_account)
+            )
+        except Exception as e:
+            logger.warning("策略 [%s] 啟動對帳部位失敗，略過: %s", self.name, e)
+            return
+
+        net = 0
+        avg_price = 0.0
+        for p in positions or []:
+            code = str(getattr(p, "code", ""))
+            if not code.startswith("TMF"):
+                continue
+            qty = int(getattr(p, "quantity", 0) or 0)
+            direction = getattr(p, "direction", None)
+            dir_str = str(getattr(direction, "value", direction))
+            signed = qty if "Buy" in dir_str else -qty
+            net += signed
+            avg_price = float(getattr(p, "price", 0) or 0)
+
+        self.state.position = net
+        self.state.entry_price = avg_price if net != 0 else 0.0
+        self.state.unrealized_pnl = 0.0
+        if net != 0:
+            logger.info(
+                "策略 [%s] 啟動對帳：券商既有 TMF 部位 %+d 口 @ %.0f",
+                self.name, net, avg_price,
+            )
+            self._event(f"啟動對帳：既有部位 {net:+d}口 @ {avg_price:.0f}")
+        else:
+            logger.info("策略 [%s] 啟動對帳：券商無 TMF 部位", self.name)
 
     async def _on_quote_async(self, quote: sj.QuoteFOPv1) -> None:
         price = float(quote.close)

@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+import time
 from typing import Optional, Callable, TypeVar
 
 import shioaji as sj
@@ -42,21 +43,56 @@ class BrokerClient:
             return self._api
 
         simulation = os.getenv("SIMULATION", "true").lower() == "true"
-        api = sj.Shioaji(simulation=simulation)
 
         api_key    = os.getenv("SHIOAJI_API_KEY")
         secret_key = os.getenv("SHIOAJI_SECRET_KEY")
         if not api_key or not secret_key:
             raise RuntimeError("缺少 SHIOAJI_API_KEY 或 SHIOAJI_SECRET_KEY 環境變數")
 
-        api.login(api_key=api_key, secret_key=secret_key)
-        logger.info("Shioaji 登入成功 (simulation=%s)", simulation)
+        # 登入會連永豐 Solace 行情主機，網路間歇不穩時會 timeout（ShioajiConnectionError）。
+        # 重試數次避免一次連線失敗就讓整個 startup 掛掉。
+        # contracts_timeout：最多等 15s 抓合約，避免抓合約時無限卡住。
+        max_attempts = int(os.getenv("LOGIN_RETRIES", "3"))
+        api = None
+        last_err: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            api = sj.Shioaji(simulation=simulation)
+            try:
+                logger.info(
+                    "Shioaji 登入中…(第 %d/%d 次, simulation=%s)",
+                    attempt, max_attempts, simulation,
+                )
+                api.login(
+                    api_key=api_key,
+                    secret_key=secret_key,
+                    contracts_timeout=15000,
+                )
+                logger.info("Shioaji 登入成功")
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    "Shioaji 登入失敗(第 %d/%d 次): %s", attempt, max_attempts, e
+                )
+                try:
+                    api.logout()
+                except Exception:
+                    pass
+                api = None
+                if attempt < max_attempts:
+                    time.sleep(3)
+        if api is None:
+            raise RuntimeError(
+                f"Shioaji 登入連續 {max_attempts} 次失敗（行情主機連線逾時？）: {last_err}"
+            )
 
         ca_path    = os.getenv("CA_PATH")
         ca_password = os.getenv("CA_PASSWORD")
         person_id  = os.getenv("PERSON_ID")
         if ca_path and ca_password and person_id:
             try:
+                logger.info("CA 憑證啟用中…")
                 api.activate_ca(ca_path=ca_path, ca_passwd=ca_password, person_id=person_id)
                 logger.info("CA 憑證啟用成功")
             except Exception as e:
