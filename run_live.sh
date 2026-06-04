@@ -20,7 +20,11 @@
 set -u
 
 PORT=8002
-HEALTH_URL="http://localhost:${PORT}/api/health"
+# 正式盤 main.py 綁定 .env 的 BIND_HOST（多機部署用的 Tailscale IP），
+# 不是 localhost，所以健康檢查必須打同一個 host，否則會誤判「啟動失敗」而狂殺健康進程。
+BIND_HOST=$(grep -E '^BIND_HOST=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"' ")
+HEALTH_HOST="${BIND_HOST:-localhost}"
+HEALTH_URL="http://${HEALTH_HOST}:${PORT}/api/health"
 APP_LOG="/tmp/lh_live.log"
 CHECK_INTERVAL=15      # 每幾秒檢查一次 health
 STARTUP_TIMEOUT=120    # 啟動最多等幾秒（登入不穩時會重試，故給寬一點）
@@ -46,7 +50,8 @@ health_code() {
 # 啟動前先清掉任何佔用 8002 的殘留進程，避免綁不上 port
 free_port() {
     local pids
-    pids=$(lsof -ti:"$PORT" 2>/dev/null)
+    # 只抓「監聽」該 port 的 server，避免誤殺瀏覽器等 client 連線
+    pids=$(lsof -ti:"$PORT" -sTCP:LISTEN 2>/dev/null)
     if [ -n "$pids" ]; then
         log "清掉殘留佔用 ${PORT} 的進程: $pids"
         echo "$pids" | xargs kill -9 2>/dev/null
@@ -54,6 +59,7 @@ free_port() {
     fi
 }
 
+log "健康檢查目標：${HEALTH_URL}"
 while true; do
     free_port
     log "啟動 main.py（正式盤）…"

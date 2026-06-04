@@ -40,7 +40,8 @@ health_code() {
 # 啟動前先清掉任何佔用 8003 的殘留進程，避免綁不上 port
 free_port() {
     local pids
-    pids=$(lsof -ti:"$PORT" 2>/dev/null)
+    # 只抓「監聽」該 port 的 server，避免誤殺瀏覽器等 client 連線
+    pids=$(lsof -ti:"$PORT" -sTCP:LISTEN 2>/dev/null)
     if [ -n "$pids" ]; then
         log "清掉殘留佔用 ${PORT} 的進程: $pids"
         echo "$pids" | xargs kill -9 2>/dev/null
