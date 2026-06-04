@@ -52,6 +52,7 @@ class ScalpStrategy(BaseStrategy):
         self._last_entry_price: float = 0.0
         self._pending_entry_price: float = 0.0  # 下單時的限價，作為 fill_price 備用
         self._tick_buf: deque[int] = deque(maxlen=100)
+        self._need_tp_resubmit: bool = False    # 帶倉接管後，待第一筆報價補掛停利單
 
         # ── 成交累計（處理分批成交）──────────────────────────────
         self._entry_filled_qty: int = 0
@@ -104,6 +105,36 @@ class ScalpStrategy(BaseStrategy):
             self.tp_pts, self.sl_pts, self.entry_offset, self.signal_mode,
             self.momentum_window, self.momentum_threshold, self.cooldown_ticks, self.max_qty,
         )
+
+    # ── 啟動帶倉接管 ──────────────────────────────────────────────
+
+    def _on_position_synced(self, net: int, avg_price: float) -> None:
+        """啟動對帳後，把券商既有部位接管進掃單狀態機。
+
+        否則 _phase 停在 idle、卻看到 position!=0，每個 tick 只會狂噴
+        「idle 但 position=N，暫停進場」並完全不動（不停損、不掛停利）。
+        這裡直接視為已成交的持倉 → 進 holding，並於第一筆報價補掛停利單。
+        """
+        if net == 0:
+            self._phase = "idle"
+            return
+        self._direction          = 1 if net > 0 else -1
+        self._entry_qty          = abs(net)
+        self._last_entry_price   = avg_price
+        self.state.entry_price   = avg_price
+        self._entry_filled_qty   = self._entry_qty
+        self._entry_filled_value = avg_price * self._entry_qty
+        self._tp_filled_qty      = 0
+        self._tp_trade           = None
+        self._entry_trade        = None
+        self._need_tp_resubmit   = True          # 待第一筆報價補掛停利
+        self._phase              = "holding"
+        side = "多" if self._direction == 1 else "空"
+        logger.info(
+            "[scalp] 啟動帶倉接管：%s %d口 @ %.0f → holding，待補掛停利",
+            side, self._entry_qty, avg_price,
+        )
+        self._event(f"接管既有部位 {side} {self._entry_qty}口 @ {avg_price:.0f}")
 
     # ── 訊號 ───────────────────────────────────────────────────────
 
@@ -162,6 +193,10 @@ class ScalpStrategy(BaseStrategy):
                 await self._cancel_entry()
 
         elif self._phase == "holding":
+            # 帶倉接管後，補掛一次停利單（先清旗標擋住報價重入時重複掛單）
+            if self._need_tp_resubmit:
+                self._need_tp_resubmit = False
+                await self._do_tp()
             pts = (price - self._last_entry_price) * self._direction
             if self.sl_pts > 0 and pts <= -self.sl_pts:
                 logger.info("[scalp] 停損觸發 %.0f點 @ %.0f", pts, price)

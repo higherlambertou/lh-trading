@@ -232,6 +232,18 @@ class BaseStrategy(ABC):
         else:
             logger.info("策略 [%s] 啟動對帳：券商無 TMF 部位", self.name)
 
+        # 通知子類別接管既有部位（有自家狀態機者覆寫此 hook）
+        self._on_position_synced(net, self.state.entry_price)
+
+    def _on_position_synced(self, net: int, avg_price: float) -> None:
+        """對帳完成後的 hook。
+
+        預設 no-op：`_go` 系列策略直接以 `state.position` 為真相，無需額外處理。
+        有自家狀態機的策略（如 scalp）需覆寫此方法，把既有部位接管進狀態機，
+        否則狀態機會停在 idle 卻看到 position!=0，導致卡死。
+        """
+        pass
+
     async def _on_quote_async(self, quote: sj.QuoteFOPv1) -> None:
         price = float(quote.close)
         self.state.last_price = price
