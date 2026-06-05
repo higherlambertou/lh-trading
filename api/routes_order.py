@@ -94,6 +94,7 @@ def place_order(req: ManualOrderRequest) -> dict[str, str]:
             entry_price=entry_price,
             stop_loss_pts=req.stop_loss_pts,
             take_profit_pts=req.take_profit_pts,
+            order_id=str(getattr(trade.status, "id", "") or ""),
         )
 
     return {
