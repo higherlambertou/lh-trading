@@ -13,6 +13,20 @@
 #
 set -u
 
+# ── 單例鎖：防止同時跑兩個 watchdog 互相殘殺（用 mkdir 原子鎖，macOS/Linux 皆可）──
+# 兩個 watchdog 會互相 kill -9 對方的子進程、每輪各 login 一次，狂燒登入額度。
+LOCK_DIR="/tmp/lh_sim_watchdog.lock.d"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    _old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+    if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  已有另一個 run_sim.sh 在執行（PID=$_old_pid），本次拒絕啟動。"
+        echo "若確定要重開，先停掉它：kill $_old_pid"
+        exit 1
+    fi
+    echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  偵測到陳舊鎖（前持有者 PID=${_old_pid:-未知} 已不存在），接管。"
+fi
+echo $$ > "$LOCK_DIR/pid"
+
 PORT=8003
 HEALTH_URL="http://localhost:${PORT}/api/health"
 APP_LOG="/tmp/lh_sim.log"
@@ -29,6 +43,7 @@ cleanup() {
     [ -n "$CHILD_PID" ] && kill "$CHILD_PID" 2>/dev/null
     sleep 2
     [ -n "$CHILD_PID" ] && kill -9 "$CHILD_PID" 2>/dev/null
+    rm -rf "$LOCK_DIR"   # 釋放單例鎖
     exit 0
 }
 trap cleanup INT TERM

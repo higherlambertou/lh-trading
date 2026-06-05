@@ -19,6 +19,23 @@
 #
 set -u
 
+# ── 單例鎖：防止同時跑兩個 watchdog 互相殘殺 ──────────────────────
+# 慘痛教訓：曾經不小心開了兩個 run_live.sh，兩個的 free_port 互相 kill -9
+# 對方的子進程，每 15 秒互殺一輪、每輪各 login 一次，半天燒掉 ~1900 次登入，
+# 遠超永豐 1000 次/日 上限。這裡用 mkdir 原子鎖（macOS/Linux 皆可，免裝 flock）
+# 確保「同一台機器只會有一個」watchdog；並能偵測上一輪 kill -9 沒清掉的陳舊鎖。
+LOCK_DIR="/tmp/lh_live_watchdog.lock.d"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    _old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+    if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog-live]  已有另一個 run_live.sh 在執行（PID=$_old_pid），本次拒絕啟動。"
+        echo "若確定要重開，先停掉它：kill $_old_pid"
+        exit 1
+    fi
+    echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog-live]  偵測到陳舊鎖（前持有者 PID=${_old_pid:-未知} 已不存在），接管。"
+fi
+echo $$ > "$LOCK_DIR/pid"
+
 PORT=8002
 # 正式盤 main.py 綁定 .env 的 BIND_HOST（多機部署用的 Tailscale IP），
 # 不是 localhost，所以健康檢查必須打同一個 host，否則會誤判「啟動失敗」而狂殺健康進程。
@@ -39,6 +56,7 @@ cleanup() {
     [ -n "$CHILD_PID" ] && kill "$CHILD_PID" 2>/dev/null
     sleep 2
     [ -n "$CHILD_PID" ] && kill -9 "$CHILD_PID" 2>/dev/null
+    rm -rf "$LOCK_DIR"   # 釋放單例鎖
     exit 0
 }
 trap cleanup INT TERM
