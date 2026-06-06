@@ -47,6 +47,12 @@ export default function OrderPanel() {
   const [exitBuffer, setExitBuffer] = useState("3");
   const [optLoading, setOptLoading] = useState(false);
   const [optErr, setOptErr] = useState("");
+  const [optQuote, setOptQuote] = useState<{
+    close: number;
+    bid: number;
+    ask: number;
+    vol: number;
+  } | null>(null);
 
   // 切到選擇權 → 載入到期月份；委託類型預設 ROD（選擇權多為掛單等成交）
   useEffect(() => {
@@ -79,6 +85,31 @@ export default function OrderPanel() {
       .catch((e) => setOptErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setOptLoading(false));
   }, [mode, deliveryMonth, right]);
+
+  // 選好合約 → 顯示參考現價，每 5 秒刷新（選擇權不需每秒，省行情查詢額度）
+  useEffect(() => {
+    if (mode !== "option" || !deliveryMonth || strike === "") {
+      setOptQuote(null);
+      return;
+    }
+    let alive = true;
+    const fetchQ = () => {
+      api.order
+        .optionQuote(deliveryMonth, Number(strike), right)
+        .then((q) => {
+          if (alive) setOptQuote({ close: q.close, bid: q.bid, ask: q.ask, vol: q.total_volume });
+        })
+        .catch(() => {
+          if (alive) setOptQuote(null);
+        });
+    };
+    fetchQ();
+    const t = setInterval(fetchQ, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [mode, deliveryMonth, strike, right]);
 
   const submitFuture = async () => {
     setBusy(true);
@@ -254,6 +285,35 @@ export default function OrderPanel() {
               </select>
             </div>
           </div>
+
+          {/* 參考現價（每 5 秒刷新） */}
+          {strike !== "" && (
+            <div className="flex items-center gap-3 text-xs bg-[#0d0d14] border border-[#1e1e3a] rounded px-3 py-2">
+              <span className="text-[#7070a0]">現價</span>
+              <span className="font-mono text-[#ffc107]">{optQuote?.close || "—"}</span>
+              <span className="text-[#7070a0]">
+                買<span className="font-mono text-[#00e676] ml-1">{optQuote?.bid || "—"}</span>
+              </span>
+              <span className="text-[#7070a0]">
+                賣<span className="font-mono text-[#ff1744] ml-1">{optQuote?.ask || "—"}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!optQuote) return;
+                  const v =
+                    action === "Buy"
+                      ? optQuote.ask || optQuote.close
+                      : optQuote.bid || optQuote.close;
+                  if (v) setLimitPrice(String(v));
+                }}
+                disabled={!optQuote}
+                className="ml-auto px-2 py-1 rounded border border-[#3b82f660] text-[#93c5fd] hover:bg-[#3b82f618] disabled:opacity-40"
+              >
+                帶入限價
+              </button>
+            </div>
+          )}
         </div>
       )}
 

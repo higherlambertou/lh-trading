@@ -170,6 +170,34 @@ def option_strikes(delivery_month: str, right: str, category: str = "TXO") -> li
         raise HTTPException(500, f"取得履約價失敗: {e}")
 
 
+@router.get("/option/quote")
+def option_quote(
+    delivery_month: str, strike: int, right: str, category: str = "TXO"
+) -> dict[str, Any]:
+    """單一選擇權的參考現價（snapshot）：成交價 + 買/賣價。
+    給下單面板顯示用，前端低頻刷新（避免吃行情查詢額度）。"""
+    try:
+        contract = broker.call(
+            lambda: broker.option_contract(delivery_month, strike, right, category)
+        )
+    except Exception as e:
+        raise HTTPException(400, f"找不到選擇權合約: {e}")
+    try:
+        snaps = broker.call(lambda: broker.api.snapshots([contract]))
+    except Exception as e:
+        raise HTTPException(500, f"查詢報價失敗: {e}")
+    if not snaps:
+        raise HTTPException(404, "查無報價")
+    s = snaps[0]
+    return {
+        "code": str(getattr(contract, "code", "")),
+        "close": float(getattr(s, "close", 0) or 0),
+        "bid": float(getattr(s, "buy_price", 0) or 0),
+        "ask": float(getattr(s, "sell_price", 0) or 0),
+        "total_volume": int(getattr(s, "total_volume", 0) or 0),
+    }
+
+
 class OptionOrderRequest(BaseModel):
     delivery_month: str           # 到期月份，如 "202606"
     strike: int                   # 履約價

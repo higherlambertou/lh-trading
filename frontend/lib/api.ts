@@ -168,6 +168,11 @@ export const api = {
         `/order/option/strikes?delivery_month=${encodeURIComponent(deliveryMonth)}` +
           `&right=${right}&category=${encodeURIComponent(category)}`,
       ),
+    optionQuote: (deliveryMonth: string, strike: number, right: "C" | "P", category = "TXO") =>
+      req<{ code: string; close: number; bid: number; ask: number; total_volume: number }>(
+        `/order/option/quote?delivery_month=${encodeURIComponent(deliveryMonth)}` +
+          `&strike=${strike}&right=${right}&category=${encodeURIComponent(category)}`,
+      ),
     placeOption: (data: OptionOrderRequest) =>
       req<{
         trade_id: string;
