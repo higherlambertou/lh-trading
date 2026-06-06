@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from core.broker import broker
-from core.manual_monitor import manual_monitor
+from core.manual_monitor import manual_monitor, _txo_round_tick
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -148,6 +148,135 @@ def cancel_watch(watch_id: str) -> dict[str, str]:
         raise HTTPException(404, f"找不到 watch_id={watch_id}")
     manual_monitor.remove(watch_id)
     return {"status": "removed", "watch_id": watch_id}
+
+
+# ── 選擇權 ─────────────────────────────────────────────────────────
+
+@router.get("/option/expiries")
+def option_expiries(category: str = "TXO") -> list[str]:
+    try:
+        return broker.call(lambda: broker.option_expiries(category))
+    except Exception as e:
+        raise HTTPException(500, f"取得選擇權月份失敗: {e}")
+
+
+@router.get("/option/strikes")
+def option_strikes(delivery_month: str, right: str, category: str = "TXO") -> list[int]:
+    try:
+        return broker.call(
+            lambda: broker.option_strikes(delivery_month, right, category)
+        )
+    except Exception as e:
+        raise HTTPException(500, f"取得履約價失敗: {e}")
+
+
+class OptionOrderRequest(BaseModel):
+    delivery_month: str           # 到期月份，如 "202606"
+    strike: int                   # 履約價
+    option_right: str             # "C"(買權) 或 "P"(賣權)
+    category: str = "TXO"         # TXO=月選；TX1~TX5=週選
+    action: str                   # "Buy"(買進) 或 "Sell"(賣出/賣方)
+    quantity: int = 1
+    price: float                  # 權利金限價（選擇權一律限價，必填）
+    order_type: str = "ROD"       # "ROD" / "IOC" / "FOK"
+    stop_loss_pts: int = 0        # 權利金停損點數（0=停用）
+    take_profit_pts: int = 0      # 權利金停利點數（0=停用）
+    exit_buffer_pts: int = 3      # 觸發停損停利平倉時的讓價點數，提高成交率
+
+    @field_validator("action")
+    @classmethod
+    def _v_action(cls, v: str) -> str:
+        if v not in ("Buy", "Sell"):
+            raise ValueError("action 必須是 'Buy' 或 'Sell'")
+        return v
+
+    @field_validator("option_right")
+    @classmethod
+    def _v_right(cls, v: str) -> str:
+        if v.upper()[:1] not in ("C", "P"):
+            raise ValueError("option_right 必須是 'C' 或 'P'")
+        return v.upper()[:1]
+
+    @field_validator("quantity")
+    @classmethod
+    def _v_qty(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("quantity 必須大於 0")
+        return v
+
+    @field_validator("price")
+    @classmethod
+    def _v_price(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("price（權利金限價）必須大於 0")
+        return v
+
+
+@router.post("/place_option")
+def place_option(req: OptionOrderRequest) -> dict[str, Any]:
+    # 1) 解析合約
+    try:
+        contract = broker.call(
+            lambda: broker.option_contract(
+                req.delivery_month, req.strike, req.option_right, req.category
+            )
+        )
+    except Exception as e:
+        raise HTTPException(400, f"找不到選擇權合約: {e}")
+
+    try:
+        action = getattr(sj.constant.Action, req.action)
+        order_type = getattr(sj.constant.OrderType, req.order_type)
+    except AttributeError as e:
+        raise HTTPException(400, f"無效的參數值: {e}")
+
+    limit_price = _txo_round_tick(req.price)  # 對齊合法跳動點，避免被退單
+
+    # 2) 下單（選擇權一律限價）
+    def _place():
+        order = sj.FuturesOrder(
+            action=action,
+            price=limit_price,
+            quantity=req.quantity,
+            price_type=sj.constant.FuturesPriceType.LMT,
+            order_type=order_type,
+            octype=sj.constant.FuturesOCType.Auto,
+            account=broker.api.futopt_account,
+        )
+        return broker.api.place_order(contract, order)
+
+    try:
+        trade = broker.call(_place)
+    except Exception as e:
+        logger.error("選擇權下單失敗: %s", e)
+        raise HTTPException(500, f"下單失敗: {e}")
+
+    # 3) 登記停損停利監控（買=+1 / 賣=-1，權利金點數）
+    watch_id = None
+    if req.stop_loss_pts > 0 or req.take_profit_pts > 0:
+        direction = 1 if req.action == "Buy" else -1
+        watch_id = manual_monitor.add(
+            contract=req.category,
+            direction=direction,
+            quantity=req.quantity,
+            entry_price=limit_price,
+            stop_loss_pts=req.stop_loss_pts,
+            take_profit_pts=req.take_profit_pts,
+            order_id=str(getattr(trade.status, "id", "") or ""),
+            is_option=True,
+            match_code=str(getattr(contract, "code", "")),
+            multiplier=float(getattr(contract, "multiplier", 0) or 0),
+            exit_buffer_pts=req.exit_buffer_pts,
+            contract_obj=contract,
+        )
+
+    return {
+        "trade_id": trade.status.id,
+        "status": trade.status.status.value,
+        "code": str(getattr(contract, "code", "")),
+        "limit_price": limit_price,
+        **({"watch_id": watch_id} if watch_id else {}),
+    }
 
 
 @router.get("/trades")

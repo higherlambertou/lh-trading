@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import shioaji as sj
 
 from core.broker import broker
+from core.quote_hub import quote_hub
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +17,25 @@ _CONTRACT_FN = {
 }
 
 
+def _txo_round_tick(p: float) -> float:
+    """把選擇權權利金 round 到合法跳動點，避免限價單因 tick 不合被退。
+    台指選擇權級距：<10→0.1, 10~50→0.5, 50~500→1, 500~1000→5, >=1000→10。"""
+    if p < 10:
+        return round(p * 10) / 10
+    if p < 50:
+        return round(p * 2) / 2
+    if p < 500:
+        return float(round(p))
+    if p < 1000:
+        return float(round(p / 5) * 5)
+    return float(round(p / 10) * 10)
+
+
 @dataclass
 class ManualWatch:
     id: str
-    contract: str       # "TMF", "MXF", "TXF"
-    direction: int      # 1=多, -1=空
+    contract: str       # 期貨="TMF"/"MXF"/"TXF"；選擇權=合約類別如 "TXO"
+    direction: int      # 1=多/買, -1=空/賣
     quantity: int
     entry_price: float  # 0 = 市價單尚未填入，等第一次查到部位後補
     stop_loss_pts: int
@@ -28,6 +43,12 @@ class ManualWatch:
     order_id: str = ""  # 對應的委託單 trade.status.id；用來判斷單子是否還掛著
     seen: bool = False  # 是否曾查到對應部位（＝已成交）
     waited: int = 0     # 「委託單已不在且無部位」後等待的輪數（每輪約 1s），兜底用
+    # ── 選擇權專用 ──────────────────────────────────────────────
+    is_option: bool = False
+    match_code: str = ""        # 比對部位用：期貨=前綴(TMF)；選擇權=完整 code
+    multiplier: float = 0.0     # 每點金額（顯示用，可選）
+    exit_buffer_pts: float = 0.0  # 選擇權平倉讓價點數，提高成交率（買賣價差大）
+    contract_obj: object = None   # 選擇權合約物件（平倉下單 / 重新訂閱報價用）
 
 
 class ManualOrderMonitor:
@@ -57,6 +78,11 @@ class ManualOrderMonitor:
         stop_loss_pts: int,
         take_profit_pts: int,
         order_id: str = "",
+        is_option: bool = False,
+        match_code: str = "",
+        multiplier: float = 0.0,
+        exit_buffer_pts: float = 0.0,
+        contract_obj: object = None,
     ) -> str:
         watch_id = str(uuid.uuid4())[:8]
         self._watches[watch_id] = ManualWatch(
@@ -68,11 +94,23 @@ class ManualOrderMonitor:
             stop_loss_pts=stop_loss_pts,
             take_profit_pts=take_profit_pts,
             order_id=order_id,
+            is_option=is_option,
+            match_code=match_code or contract,  # 期貨預設用前綴比對
+            multiplier=multiplier,
+            exit_buffer_pts=exit_buffer_pts,
+            contract_obj=contract_obj,
         )
+        # 選擇權：立刻訂閱該合約報價，停損停利才有即時權利金可比
+        if is_option and contract_obj is not None:
+            try:
+                quote_hub.ensure_contract_subscribed(contract_obj)
+            except Exception as e:
+                logger.warning("ManualWatch 訂閱選擇權報價失敗 [%s]: %s", watch_id, e)
         logger.info(
-            "ManualWatch 登記: id=%s %s %s SL=%d TP=%d",
-            watch_id, contract, "多" if direction == 1 else "空",
+            "ManualWatch 登記: id=%s %s %s SL=%d TP=%d%s",
+            watch_id, match_code or contract, "多/買" if direction == 1 else "空/賣",
             stop_loss_pts, take_profit_pts,
+            "（選擇權）" if is_option else "",
         )
         return watch_id
 
@@ -108,6 +146,8 @@ class ManualOrderMonitor:
                 "entry_price": w.entry_price,
                 "stop_loss_pts": w.stop_loss_pts,
                 "take_profit_pts": w.take_profit_pts,
+                "is_option": w.is_option,
+                "match_code": w.match_code,
             }
             for w in self._watches.values()
         ]
@@ -158,14 +198,22 @@ class ManualOrderMonitor:
     async def _check(
         self, watch: ManualWatch, positions: list, order_status: dict[str, str]
     ) -> None:
-        buy_val = "Buy"
-        sell_val = "Sell"
-        target_dir = buy_val if watch.direction == 1 else sell_val
+        # 選擇權：每輪確保報價仍訂閱著（重連後 _subscribed_contracts 會被清空）
+        if watch.is_option and watch.contract_obj is not None:
+            try:
+                quote_hub.ensure_contract_subscribed(watch.contract_obj)
+            except Exception:
+                pass
+
+        target_dir = "Buy" if watch.direction == 1 else "Sell"
+
+        def _code_match(code: str) -> bool:
+            return code == watch.match_code if watch.is_option else code.startswith(watch.match_code)
 
         pos = next(
             (
                 p for p in positions
-                if p.code.startswith(watch.contract)
+                if _code_match(p.code)
                 and getattr(p.direction, "value", str(p.direction)) == target_dir
             ),
             None,
@@ -207,7 +255,14 @@ class ManualOrderMonitor:
             watch.entry_price = float(pos.price)
             return
 
-        current_price = float(getattr(pos, "last_price", pos.price))
+        # 現價來源：選擇權用報價推播快取（權利金）；期貨用部位回報的 last_price
+        if watch.is_option:
+            cached = quote_hub.get_last_price(watch.match_code)
+            if cached is None:
+                return  # 還沒收到該選擇權的報價，這輪先略過，等下一筆 tick
+            current_price = float(cached)
+        else:
+            current_price = float(getattr(pos, "last_price", pos.price))
         pts = (current_price - watch.entry_price) * watch.direction
 
         triggered = False
@@ -228,20 +283,42 @@ class ManualOrderMonitor:
             sj.constant.Action.Sell if watch.direction == 1
             else sj.constant.Action.Buy
         )
-        contract_key = watch.contract
         quantity = watch.quantity
 
-        def _place():
-            order = sj.FuturesOrder(
-                action=close_action,
-                price=0,
-                quantity=quantity,
-                price_type=sj.constant.FuturesPriceType.MKT,
-                order_type=sj.constant.OrderType.IOC,
-                octype=sj.constant.FuturesOCType.Auto,
-                account=broker.api.futopt_account,
-            )
-            return broker.api.place_order(_CONTRACT_FN[contract_key](), order)
+        if watch.is_option:
+            # 選擇權平倉：用「讓價限價單」而非市價單（遠價外流動性差、市價會被坑）。
+            # 平多(賣出)→掛比現價低 buffer；平空(買回)→掛比現價高 buffer，提高成交率。
+            last = quote_hub.get_last_price(watch.match_code) or watch.entry_price
+            buf = watch.exit_buffer_pts or 0
+            raw = last - buf if watch.direction == 1 else last + buf
+            limit_price = _txo_round_tick(max(0.1, raw))
+            contract_obj = watch.contract_obj
+
+            def _place():
+                order = sj.FuturesOrder(
+                    action=close_action,
+                    price=limit_price,
+                    quantity=quantity,
+                    price_type=sj.constant.FuturesPriceType.LMT,
+                    order_type=sj.constant.OrderType.IOC,
+                    octype=sj.constant.FuturesOCType.Auto,
+                    account=broker.api.futopt_account,
+                )
+                return broker.api.place_order(contract_obj, order)
+        else:
+            contract_key = watch.contract
+
+            def _place():
+                order = sj.FuturesOrder(
+                    action=close_action,
+                    price=0,
+                    quantity=quantity,
+                    price_type=sj.constant.FuturesPriceType.MKT,
+                    order_type=sj.constant.OrderType.IOC,
+                    octype=sj.constant.FuturesOCType.Auto,
+                    account=broker.api.futopt_account,
+                )
+                return broker.api.place_order(_CONTRACT_FN[contract_key](), order)
 
         try:
             await broker.acall(_place)

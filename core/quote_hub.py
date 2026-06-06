@@ -33,6 +33,11 @@ class QuoteHub:
         self._subscribed_contracts: set[str] = set()   # actual month codes, e.g. TMFF6
         self._known_contract_types: set[str] = set()   # type prefixes, e.g. TMF, TXF
         self._ws_last_close: dict[str, float] = {}
+        self._last_price: dict[str, float] = {}        # code → 最新成交價（含選擇權權利金）
+
+    def get_last_price(self, code: str) -> float | None:
+        """任意已訂閱合約的最新成交價（推播快取）。手動選擇權停損停利用此取權利金。"""
+        return self._last_price.get(code)
 
     def setup(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -44,6 +49,7 @@ class QuoteHub:
         self._installed = False
         self._subscribed_contracts.clear()
         self._ws_last_close.clear()
+        self._last_price.clear()
 
         if not (self._strategies or self._ws_queues):
             return  # 沒人在聽，不需要安裝
@@ -126,6 +132,12 @@ class QuoteHub:
             asyncio.run_coroutine_threadsafe(self._dispatch(quote), self._loop)
 
     async def _dispatch(self, quote: sj.QuoteFOPv1) -> None:
+        # 更新最新價快取（含選擇權權利金），供手動監控讀取
+        try:
+            self._last_price[quote.code] = float(quote.close)
+        except (TypeError, ValueError):
+            pass
+
         for cb in list(self._strategies.values()):
             try:
                 await cb(quote)

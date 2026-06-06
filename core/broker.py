@@ -255,6 +255,70 @@ class BrokerClient:
     def tmf_contract(self) -> sj.contracts.Future:
         return self._api.Contracts.Futures.TMF.TMFR1
 
+    # ── 選擇權合約 ─────────────────────────────────────────────────
+    # 期權合約是「月份 × 履約價 × 買賣權」上千檔，沒有像期貨那樣寫死一檔，
+    # 故提供解析器（依條件挑出單一合約）與下拉清單 helper（給前端選）。
+
+    def _option_category(self, category: str = "TXO"):
+        """取得選擇權類別（TXO=月選；TX1~TX5=週選）。"""
+        opts = getattr(self._api.Contracts, "Options", None)
+        if opts is None:
+            raise RuntimeError("此帳號/連線取不到選擇權合約（Contracts.Options），請確認權限")
+        cat = getattr(opts, category, None)
+        if cat is None:
+            raise ValueError(f"找不到選擇權類別: {category}")
+        return cat
+
+    def list_option_contracts(self, category: str = "TXO") -> list:
+        return list(self._option_category(category))
+
+    @staticmethod
+    def _opt_right_str(c) -> str:
+        """回傳大寫的買賣權字串，可能是 'CALL'/'PUT' 或 'C'/'P'。"""
+        r = getattr(c, "option_right", "")
+        return str(getattr(r, "value", r)).upper()
+
+    def option_expiries(self, category: str = "TXO") -> list[str]:
+        """可選到期月份（delivery_month），由近到遠。"""
+        return sorted({str(c.delivery_month) for c in self.list_option_contracts(category)})
+
+    def option_strikes(
+        self, delivery_month: str, right: str, category: str = "TXO"
+    ) -> list[int]:
+        """某到期月份 + 買/賣權 的所有履約價。"""
+        r = right.upper()[:1]
+        out = set()
+        for c in self.list_option_contracts(category):
+            if str(c.delivery_month) != str(delivery_month):
+                continue
+            if not self._opt_right_str(c).startswith(r):
+                continue
+            try:
+                out.add(int(float(c.strike_price)))
+            except (TypeError, ValueError):
+                pass
+        return sorted(out)
+
+    def option_contract(
+        self, delivery_month: str, strike, right: str, category: str = "TXO"
+    ):
+        """依 月份 / 履約價 / 買賣權(C或P) 取得單一選擇權合約物件。"""
+        r = right.upper()[:1]
+        sk = int(float(strike))
+        for c in self.list_option_contracts(category):
+            if str(c.delivery_month) != str(delivery_month):
+                continue
+            try:
+                if int(float(c.strike_price)) != sk:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if self._opt_right_str(c).startswith(r):
+                return c
+        raise ValueError(
+            f"找不到選擇權合約: {category} {delivery_month} {strike} {right}"
+        )
+
     def logout(self) -> None:
         if self._api:
             try:
