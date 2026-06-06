@@ -92,6 +92,8 @@ export interface Watch {
   entry_price: number;
   stop_loss_pts: number;
   take_profit_pts: number;
+  is_option?: boolean;
+  match_code?: string;
 }
 
 export interface Trade {
@@ -118,6 +120,20 @@ export interface OrderRequest {
   take_profit_pts?: number;
 }
 
+export interface OptionOrderRequest {
+  delivery_month: string;
+  strike: number;
+  option_right: "C" | "P";
+  category?: string;            // 預設 TXO
+  action: "Buy" | "Sell";
+  quantity: number;
+  price: number;                // 權利金限價（必填）
+  order_type: "ROD" | "IOC" | "FOK";
+  stop_loss_pts?: number;
+  take_profit_pts?: number;
+  exit_buffer_pts?: number;
+}
+
 // ─── API client ───────────────────────────────────────────────────
 
 export const api = {
@@ -141,6 +157,25 @@ export const api = {
   order: {
     place: (data: OrderRequest) =>
       req<{ trade_id: string; status: string; watch_id?: string }>("/order/place", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      }),
+    optionExpiries: (category = "TXO") =>
+      req<string[]>(`/order/option/expiries?category=${encodeURIComponent(category)}`),
+    optionStrikes: (deliveryMonth: string, right: "C" | "P", category = "TXO") =>
+      req<number[]>(
+        `/order/option/strikes?delivery_month=${encodeURIComponent(deliveryMonth)}` +
+          `&right=${right}&category=${encodeURIComponent(category)}`,
+      ),
+    placeOption: (data: OptionOrderRequest) =>
+      req<{
+        trade_id: string;
+        status: string;
+        code: string;
+        limit_price: number;
+        watch_id?: string;
+      }>("/order/place_option", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
