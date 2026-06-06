@@ -52,6 +52,13 @@ async def lifespan(app: FastAPI):
     strategy_engine.loop = loop
     quote_hub.setup(loop)
     manual_monitor.setup(loop)
+    # 啟動就訂閱三檔期貨：讓 dashboard 閒置（沒跑策略）時也有台指報價可看。
+    # 走訂閱推播、不算行情查詢；只 3 檔、流量極小。
+    for _getter in ("tmf_contract", "mxf_contract", "txf_contract"):
+        try:
+            quote_hub.ensure_contract_subscribed(getattr(broker, _getter)())
+        except Exception as e:
+            logger.warning("啟動訂閱期貨 %s 失敗: %s", _getter, e)
     keepalive_task = loop.create_task(_keepalive_loop())
     logger.info("系統啟動完成")
     yield

@@ -148,6 +148,9 @@ export const api = {
     stop: (name: string) =>
       req(`/strategy/${name}/stop`, { method: "POST" }),
   },
+  quote: {
+    last: () => req<Record<string, number>>("/quote/last"),
+  },
   position: {
     list: () => req<Position[]>("/position/"),
     margin: () => req<Margin>("/position/margin"),

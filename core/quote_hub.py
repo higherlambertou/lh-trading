@@ -39,6 +39,11 @@ class QuoteHub:
         """任意已訂閱合約的最新成交價（推播快取）。手動選擇權停損停利用此取權利金。"""
         return self._last_price.get(code)
 
+    def all_last_prices(self) -> dict[str, float]:
+        """整份最新價快取（code→價）。前端面板讀此顯示台指現價，
+        純讀我方記憶體、不對永豐發查詢。"""
+        return dict(self._last_price)
+
     def setup(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 

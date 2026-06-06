@@ -37,6 +37,7 @@ export default function OrderPanel() {
   // 期貨專用
   const [contract, setContract] = useState<Contract>("TMF");
   const [priceType, setPriceType] = useState<PriceType>("MKT");
+  const [futPrice, setFutPrice] = useState<number | null>(null);
 
   // 選擇權專用
   const [right, setRight] = useState<Right>("C");
@@ -110,6 +111,33 @@ export default function OrderPanel() {
       clearInterval(t);
     };
   }, [mode, deliveryMonth, strike, right]);
+
+  // 期貨現價：讀後端推播快取（不對永豐發查詢），每 2 秒刷新
+  useEffect(() => {
+    if (mode !== "future") {
+      setFutPrice(null);
+      return;
+    }
+    let alive = true;
+    const fetchP = () => {
+      api.quote
+        .last()
+        .then((m) => {
+          if (!alive) return;
+          const hit = Object.entries(m).find(([code]) => code.startsWith(contract));
+          setFutPrice(hit ? hit[1] : null);
+        })
+        .catch(() => {
+          if (alive) setFutPrice(null);
+        });
+    };
+    fetchP();
+    const t = setInterval(fetchP, 2000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [mode, contract]);
 
   const submitFuture = async () => {
     setBusy(true);
@@ -225,6 +253,29 @@ export default function OrderPanel() {
               </button>
             );
           })}
+        </div>
+      )}
+
+      {/* 期貨現價（每 2 秒，讀快取不發查詢） */}
+      {!isOption && (
+        <div className="flex items-center gap-3 text-xs bg-[#0d0d14] border border-[#1e1e3a] rounded px-3 py-2 mb-4">
+          <span className="text-[#7070a0]">{contract} 現價</span>
+          <span className="font-mono text-[#ffc107]">
+            {futPrice != null ? futPrice.toLocaleString() : "—"}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              if (futPrice == null) return;
+              setPriceType("LMT");
+              setOrderType("ROD");
+              setLimitPrice(String(futPrice));
+            }}
+            disabled={futPrice == null}
+            className="ml-auto px-2 py-1 rounded border border-[#3b82f660] text-[#93c5fd] hover:bg-[#3b82f618] disabled:opacity-40"
+          >
+            帶入限價
+          </button>
         </div>
       )}
 

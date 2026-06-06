@@ -9,6 +9,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/last")
+def last_prices() -> dict[str, float]:
+    """最新價快取（code→價），由報價推播填入。純讀我方記憶體，不對永豐發查詢。
+    前端下單面板用來顯示台指現價。"""
+    return quote_hub.all_last_prices()
+
+
 @router.websocket("/ws")
 async def quote_ws(ws: WebSocket) -> None:
     await ws.accept()
