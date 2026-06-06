@@ -21,6 +21,13 @@ function fmtMonth(m: string): string {
   return /^\d{6}$/.test(m) ? `${m.slice(0, 4)}/${m.slice(4)}` : m;
 }
 
+// 依大盤現價判斷某履約價是價內/價平/價外。atm = 最接近現價的履約價。
+function moneyness(strike: number, right: Right, spot: number, atm: number): string {
+  if (strike === atm) return "價平";
+  if (right === "C") return strike < spot ? "價內" : "價外";
+  return strike > spot ? "價內" : "價外"; // Put
+}
+
 export default function OrderPanel() {
   const [mode, setMode] = useState<Mode>("future");
 
@@ -54,6 +61,7 @@ export default function OrderPanel() {
     ask: number;
     vol: number;
   } | null>(null);
+  const [underlying, setUnderlying] = useState<number | null>(null); // 大盤現價（判斷價內外用）
 
   // 切到選擇權 → 載入到期月份；委託類型預設 ROD（選擇權多為掛單等成交）
   useEffect(() => {
@@ -86,6 +94,36 @@ export default function OrderPanel() {
       .catch((e) => setOptErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setOptLoading(false));
   }, [mode, deliveryMonth, right]);
+
+  // 選擇權模式：抓大盤現價（讀期貨推播快取，免查詢）判斷價內/價平/價外
+  useEffect(() => {
+    if (mode !== "option") {
+      setUnderlying(null);
+      return;
+    }
+    let alive = true;
+    const fetchU = () => {
+      api.quote
+        .last()
+        .then((m) => {
+          if (!alive) return;
+          // 三檔期貨的價格都等於大盤點數，取任一檔即可
+          const hit = Object.entries(m).find(([code]) =>
+            ["TXF", "MXF", "TMF"].some((p) => code.startsWith(p)),
+          );
+          setUnderlying(hit ? hit[1] : null);
+        })
+        .catch(() => {
+          if (alive) setUnderlying(null);
+        });
+    };
+    fetchU();
+    const t = setInterval(fetchU, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [mode]);
 
   // 選好合約 → 顯示參考現價，每 5 秒刷新（選擇權不需每秒，省行情查詢額度）
   useEffect(() => {
@@ -194,6 +232,13 @@ export default function OrderPanel() {
 
   const isBuy = action === "Buy";
   const isOption = mode === "option";
+  // 最接近大盤現價的履約價 = 價平
+  const atmStrike =
+    underlying != null && strikes.length
+      ? strikes.reduce((a, b) =>
+          Math.abs(b - underlying) < Math.abs(a - underlying) ? b : a,
+        )
+      : null;
   const inputCls =
     "w-full bg-[#0d0d14] border border-[#1e1e3a] rounded px-3 py-2 text-sm text-[#e0e0f0] focus:outline-none focus:border-[#3b82f6]";
   const monoCls =
@@ -328,14 +373,35 @@ export default function OrderPanel() {
                 className={monoCls}
               >
                 {!strikes.length && <option value="">—</option>}
-                {strikes.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
+                {strikes.map((s) => {
+                  const tag =
+                    underlying != null && atmStrike != null
+                      ? moneyness(s, right, underlying, atmStrike)
+                      : "";
+                  return (
+                    <option key={s} value={s}>
+                      {s}
+                      {tag ? `　${tag}` : ""}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           </div>
+
+          {/* 大盤基準 + 所選履約價價內外 */}
+          {strike !== "" && (
+            <div className="flex items-center gap-3 text-xs text-[#7070a0]">
+              <span>
+                大盤<span className="font-mono text-[#e0e0f0] ml-1">{underlying ?? "—"}</span>
+              </span>
+              {underlying != null && atmStrike != null && (
+                <span className="text-[#a855f7]">
+                  此履約價：{moneyness(Number(strike), right, underlying, atmStrike)}
+                </span>
+              )}
+            </div>
+          )}
 
           {/* 參考現價（每 5 秒刷新） */}
           {strike !== "" && (
