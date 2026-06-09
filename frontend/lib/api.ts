@@ -148,6 +148,8 @@ export const api = {
     stop: (name: string) =>
       req(`/strategy/${name}/stop`, { method: "POST" }),
   },
+  health: () =>
+    req<{ status: string; broker_connected: string }>("/health"),
   quote: {
     last: () => req<Record<string, number>>("/quote/last"),
   },

@@ -5,6 +5,7 @@ import OrderPanel from "@/components/OrderPanel";
 import TradesPanel from "@/components/TradesPanel";
 import ModeToggle from "@/components/ModeToggle";
 import UsageIndicator from "@/components/UsageIndicator";
+import StatusDot from "@/components/StatusDot";
 
 export default function Page() {
   return (
@@ -16,6 +17,9 @@ export default function Page() {
         <span className="text-xs text-[#7070a0]">台指期貨</span>
         <ModeToggle />
         <UsageIndicator />
+        <div className="ml-auto">
+          <StatusDot />
+        </div>
       </header>
 
       {/* ── 2×2 Grid ───────────────────────────────────────────── */}
