@@ -1,11 +1,15 @@
-const PROD_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8002/api";
-const SIM_URL  = process.env.NEXT_PUBLIC_SIM_URL  ?? "http://localhost:8003/api";
+// 後端位址依「載入此頁面的 host」自動推導，而不是寫死／烤進 bundle：
+// 本機開 localhost:3002 → 打 localhost:8002；手機開 100.97.169.26:3002 → 打 100.97.169.26:8002。
+// 一份 bundle 兩邊都正確，也避開「本機自連自己 Tailscale IP timeout」的問題。
+// port 依模式：正式盤 8002、模擬盤 8003。
+function apiBase(sim: boolean): string {
+  const port = sim ? 8003 : 8002;
+  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+  return `http://${host}:${port}/api`;
+}
 
 export function getBase(): string {
-  if (typeof window !== "undefined" && localStorage.getItem("trading_mode") === "sim") {
-    return SIM_URL;
-  }
-  return PROD_URL;
+  return apiBase(isSimMode());
 }
 
 export function isSimMode(): boolean {

@@ -28,7 +28,11 @@ if (Test-Path ".env") {
     if ($m) { $BindHost = ($m -replace '^\s*BIND_HOST\s*=', '').Trim().Trim('"').Trim("'") }
     if (-not $BindHost) { $BindHost = "localhost" }
 }
-$HealthUrl = "http://${BindHost}:$Port/api/health"
+# 健檢一律走 loopback：BIND_HOST=0.0.0.0 時不能拿來當 client URL；
+# 綁特定 Tailscale IP 時，從本機自連自己的 100.x IP 會 timeout（Tailscale on Windows 已知問題），
+# 會害 watchdog 誤判凍結而狂殺健康後端。後端只要綁 0.0.0.0 就一定聽得到 127.0.0.1。
+$HealthHost = if ($BindHost -in @("0.0.0.0", "", "localhost")) { "127.0.0.1" } else { $BindHost }
+$HealthUrl = "http://${HealthHost}:$Port/api/health"
 
 function Write-Log { param([string]$Msg) Write-Host ("{0}  [watchdog-live]  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Msg) }
 

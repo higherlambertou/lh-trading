@@ -87,6 +87,21 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 3. 建 `frontend/.env.local`（參考 `frontend/.env.example`）：填該機的後端位址。
 4. `pip install -r requirements.txt`、`cd frontend && npm install`。
 
+### 跨裝置存取（手機／平板連 dashboard）
+
+要讓**其他裝置**（同一個 Tailscale tailnet）連得到，把 `localhost` 全換成本機 Tailscale IP（例 `100.97.169.26`），共 4 個變數：
+
+| 檔案 | 變數 | 設成 |
+|---|---|---|
+| `.env` | `BIND_HOST` | `100.97.169.26`（後端綁此 IP，本機自己也得用此 IP 存取，localhost 會不通）|
+| `.env` | `CORS_ORIGINS` | `http://localhost:3002,http://100.97.169.26:3002` |
+| `frontend/.env.local` | `NEXT_PUBLIC_API_URL` | `http://100.97.169.26:8002/api` |
+| `frontend/.env.local` | `NEXT_PUBLIC_SIM_URL` | `http://100.97.169.26:8003/api` |
+
+> ⚠️ **`NEXT_PUBLIC_*` 是啟動時烤進 JS bundle 的**，改完**一定要重啟 `npm run dev`**，否則別的裝置載到的還是舊位址。
+> 典型症狀：**手機看得到前端畫面、但後端沒資料** ＝ 前端沒重啟，JS 裡仍是 `localhost`，而 `localhost` 在手機上指手機自己。
+> 另：前端 dev server 要對外聽，用 `npm run dev -- -H 0.0.0.0`；後端改 `BIND_HOST` 後也要重啟。
+
 ---
 
 ## 架構重點
