@@ -44,8 +44,8 @@ HEALTH_HOST="${BIND_HOST:-localhost}"
 HEALTH_URL="http://${HEALTH_HOST}:${PORT}/api/health"
 APP_LOG="/tmp/lh_live.log"
 CHECK_INTERVAL=15      # 每幾秒檢查一次 health
-STARTUP_TIMEOUT=120    # 啟動最多等幾秒（登入不穩時會重試，故給寬一點）
-FAIL_THRESHOLD=2       # 連續幾次 health 失敗才判定凍結（避免誤判）
+GRACE_PERIOD=200       # (重)啟動後容許「還沒登入完成」的寬限秒數（永豐 Solace 登入可達 ~135s）
+FAIL_THRESHOLD=2       # 寬限期過後，連續幾次異常才重啟（避免單次抖動誤判）
 
 CHILD_PID=""
 
@@ -61,8 +61,21 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-health_code() {
-    curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$HEALTH_URL" 2>/dev/null
+# 回傳健康狀態：
+#   healthy  = HTTP 200 且 broker_connected:True（真正可用）
+#   nobroker = HTTP 200 但 broker 沒連上券商（登入中 or 斷線）
+#   down     = 沒回應/逾時/非 200（凍結：threadpool 被卡死的 Solace 呼叫佔光，
+#              連 /health 都拿不到執行緒 → 0 bytes 逾時）
+health_state() {
+    local resp code body
+    resp=$(curl -s -m 5 -w $'\n%{http_code}' "$HEALTH_URL" 2>/dev/null)
+    code=${resp##*$'\n'}
+    body=${resp%$'\n'*}
+    if [ "$code" != "200" ]; then echo "down"; return; fi
+    case "$body" in
+        *'"broker_connected":"True"'*) echo "healthy" ;;
+        *) echo "nobroker" ;;
+    esac
 }
 
 # 啟動前先清掉任何佔用 8002 的殘留進程，避免綁不上 port
@@ -77,56 +90,57 @@ free_port() {
     fi
 }
 
-log "健康檢查目標：${HEALTH_URL}"
+log "健康檢查目標：${HEALTH_URL}（每 ${CHECK_INTERVAL}s；啟動寬限 ${GRACE_PERIOD}s；凍結或 broker 斷線都會自動重啟）"
+# ── 統一監看迴圈（取代舊的「先等 startup 再監看」兩段式）──────────────
+# 用 wall-clock 計時，避免舊版 bug：health 逾時(5s)沒被計入 waited，凍結時
+# 實際耗時是計數的兩倍，240s 變實際 ~480s 才重啟。
+# 判定「可用」= healthy（HTTP200 + broker:True）。三種異常都會重啟：
+#   - down（凍結，連 /health 都逾時）
+#   - nobroker（HTTP200 但沒連上券商＝登入失敗或中途斷線）
+# 寬限期：(重)啟動後 GRACE_PERIOD 秒內、且還沒成功連上過，容許 down/nobroker
+#         （因為永豐登入本來就慢）。一旦成功連上過(ready=1)，寬限即失效，
+#         之後任何 down/nobroker 連續 FAIL_THRESHOLD 次就重啟 → 這就是「broker 斷線自動重連」。
 while true; do
     free_port
     log "啟動 main.py（正式盤）…"
     python main.py >> "$APP_LOG" 2>&1 &
     CHILD_PID=$!
-    log "已啟動 PID=${CHILD_PID}，等待 startup（最多 ${STARTUP_TIMEOUT}s）…"
-
-    # ── 等待 startup 完成 ──
-    up=0
-    waited=0
-    while [ "$waited" -lt "$STARTUP_TIMEOUT" ]; do
-        if ! kill -0 "$CHILD_PID" 2>/dev/null; then
-            log "進程在 startup 期間就結束了（登入連續失敗？）"
-            break
-        fi
-        if [ "$(health_code)" = "200" ]; then up=1; break; fi
-        sleep 5
-        waited=$((waited + 5))
-    done
-
-    if [ "$up" -ne 1 ]; then
-        log "startup 未就緒，kill 後重啟"
-        kill "$CHILD_PID" 2>/dev/null; sleep 2; kill -9 "$CHILD_PID" 2>/dev/null
-        sleep 5
-        continue
-    fi
-
-    log "startup 完成，開始健康監看（每 ${CHECK_INTERVAL}s，連續 ${FAIL_THRESHOLD} 次失敗即重啟）"
-
-    # ── 執行中健康監看 ──
+    started=$(date +%s)
+    ready=0
     fails=0
+    log "已啟動 PID=${CHILD_PID}，登入中（寬限 ${GRACE_PERIOD}s）…"
+
     while true; do
         sleep "$CHECK_INTERVAL"
         if ! kill -0 "$CHILD_PID" 2>/dev/null; then
-            log "進程已不存在（自行結束），重啟"
+            log "進程已不存在（登入失敗或自行結束），重啟"
             break
         fi
-        code=$(health_code)
-        if [ "$code" = "200" ]; then
-            fails=0
-        else
-            fails=$((fails + 1))
-            log "health=${code}（連續 ${fails}/${FAIL_THRESHOLD} 次失敗）"
-            if [ "$fails" -ge "$FAIL_THRESHOLD" ]; then
-                log "判定凍結 → kill -9 PID=${CHILD_PID} 並重啟"
-                kill -9 "$CHILD_PID" 2>/dev/null
-                sleep 3
-                break
+        state=$(health_state)
+        elapsed=$(( $(date +%s) - started ))
+
+        if [ "$state" = "healthy" ]; then
+            if [ "$ready" -eq 0 ]; then
+                log "broker 已連線（耗時 ${elapsed}s），進入正常監看"
+                ready=1
             fi
+            fails=0
+            continue
+        fi
+
+        # 異常（down=凍結 / nobroker=沒連上券商）
+        if [ "$ready" -eq 0 ] && [ "$elapsed" -lt "$GRACE_PERIOD" ]; then
+            log "登入中…(${elapsed}s, state=${state})"
+            continue
+        fi
+
+        fails=$((fails + 1))
+        log "異常 state=${state}（連續 ${fails}/${FAIL_THRESHOLD}，elapsed=${elapsed}s）"
+        if [ "$fails" -ge "$FAIL_THRESHOLD" ]; then
+            log "判定故障(${state}) → kill -9 PID=${CHILD_PID} 並重啟（自動重連）"
+            kill -9 "$CHILD_PID" 2>/dev/null
+            sleep 3
+            break
         fi
     done
 

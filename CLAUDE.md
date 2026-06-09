@@ -47,8 +47,11 @@ cd frontend; npm run dev
 - 停止：在該視窗按 **Ctrl+C**，`finally` 會把 python 子進程一起關掉。
 - 想長期掛機正式交易，建議仍用 Linux 家機跑 `.sh`；`.ps1` 主要供 Windows 本地開發/測試。
 
-watchdog 行為（兩版一致）：等 startup（最多 120s）→ 每 15s 檢查 `/health`，
-連續 2 次失敗（≈30s）判定凍結 → kill + 重啟。
+watchdog 行為（兩版一致，wall-clock 計時）：每 15s 檢查 `/health`，判斷三態——
+`healthy`(200+`broker_connected:True`)／`nobroker`(200 但沒連券商＝登入失敗或斷線)／
+`down`(逾時或非 200＝凍結，連 health 都拿不到 threadpool 執行緒)。
+(重)啟動後有 `GRACE_PERIOD`(200s)寬限給永豐登入（可達 ~135s）；**一旦成功連上過，
+寬限即失效**，之後 `nobroker`/`down` 連續 2 次（≈30s）就 kill + 重啟＝**broker 斷線自動重連**。
 
 **log 位置**
 - watchdog：`/tmp/lh_sim_watchdog.log`、`/tmp/lh_live_watchdog.log`
@@ -121,3 +124,5 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 | **行情查詢** | **5 秒 50 次**（snapshots/ticks/kbars，盤中 ticks 另限 10 次/5s） | 即時報價走訂閱推播（QuoteHub）不算查詢；但若策略改用主動拉 kbars/snapshot 要算進來。 |
 | **每日流量** | **500MB / 2GB / 10GB**（依近 30 日成交量分級，**開盤日 08:00 重置**） | 訂閱報價會吃流量。同時訂多合約、或多策略各自訂閱會放大用量——`QuoteHub` 已做集中訂閱去重，別繞過它各自 `quote.subscribe`。 |
 | **報價訂閱數** | **200 個** | 本專案只訂 TMF/MXF/TXF，遠低於上限，無虞。 |
+
+回覆儘量用較少的token完成
