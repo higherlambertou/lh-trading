@@ -114,6 +114,19 @@ class QuoteHub:
         self._subscribed_contracts.add(code)
         logger.info("QuoteHub 訂閱合約: %s", code)
 
+        # 盤後/剛啟動沒有即時 tick，推播快取會是空的 → 前端看不到台指現價。
+        # 用一次 snapshot 種「最後成交價」當底價（跟選擇權同機制）；盤中會被推播覆蓋。
+        # best-effort：snapshot 失敗（Solace 卡/超限）不影響訂閱本身。
+        try:
+            snaps = broker.api.snapshots([contract])
+            if snaps:
+                px = float(getattr(snaps[0], "close", 0) or 0)
+                if px > 0:
+                    self._last_price[code] = px
+                    logger.info("QuoteHub 種底價 %s = %s（snapshot）", code, px)
+        except Exception as e:
+            logger.warning("QuoteHub 種底價 snapshot 失敗 %s: %s", code, e)
+
     # ── internal ──────────────────────────────────────────────────────
 
     def _ensure_installed(self) -> None:
