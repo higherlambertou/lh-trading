@@ -160,6 +160,15 @@ def option_expiries(category: str = "TXO") -> list[str]:
         raise HTTPException(500, f"取得選擇權月份失敗: {e}")
 
 
+@router.get("/option/categories")
+def option_categories() -> dict[str, Any]:
+    """列出永豐實際提供的選擇權類別（月選/各週選）與各自月份，供探查用。"""
+    try:
+        return broker.call(lambda: broker.option_categories_debug())
+    except Exception as e:
+        raise HTTPException(500, f"取得選擇權類別失敗: {e}")
+
+
 @router.get("/option/strikes")
 def option_strikes(delivery_month: str, right: str, category: str = "TXO") -> list[int]:
     try:

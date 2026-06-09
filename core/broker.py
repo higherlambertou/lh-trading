@@ -319,6 +319,44 @@ class BrokerClient:
             f"找不到選擇權合約: {category} {delivery_month} {strike} {right}"
         )
 
+    def option_categories_debug(self) -> dict:
+        """結構傾印 Contracts.Options：看它怎麼存類別（月選/各週選），
+        以便寫出正確的列舉方式。一次性探查用。"""
+        opts = getattr(self._api.Contracts, "Options", None)
+        if opts is None:
+            return {"error": "此連線取不到 Contracts.Options"}
+        info: dict = {
+            "type": type(opts).__name__,
+            "dir": [n for n in dir(opts) if not n.startswith("_")],
+        }
+        # 直接 iterate opts 看 yield 出什麼（類別物件 or 個別合約?）
+        sample = []
+        try:
+            for i, c in enumerate(opts):
+                sample.append(
+                    {
+                        "py_type": type(c).__name__,
+                        "name": str(
+                            getattr(c, "code", None)
+                            or getattr(c, "symbol", None)
+                            or getattr(c, "name", None)
+                            or c
+                        )[:40],
+                        "has_strike": hasattr(c, "strike_price"),
+                        "iterable": hasattr(c, "__iter__"),
+                    }
+                )
+                if i >= 9:
+                    break
+        except Exception as e:
+            sample = [f"iter err: {e}"]
+        info["iter_sample"] = sample
+        try:
+            info["keys"] = list(opts.keys())[:40]
+        except Exception as e:
+            info["keys_err"] = str(e)[:120]
+        return info
+
     def logout(self) -> None:
         if self._api:
             try:
