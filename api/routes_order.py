@@ -154,46 +154,53 @@ def cancel_watch(watch_id: str) -> dict[str, str]:
 # ── 選擇權 ─────────────────────────────────────────────────────────
 
 @router.get("/option/expiries")
-def option_expiries(category: str = "TXO") -> list[str]:
+async def option_expiries(category: str = "TXO") -> list[str]:
     try:
-        return broker.call(lambda: broker.option_expiries(category))
+        return await broker.acall_to(lambda: broker.option_expiries(category))
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "取得選擇權月份逾時（券商連線忙碌）")
     except Exception as e:
         raise HTTPException(500, f"取得選擇權月份失敗: {e}")
 
 
 @router.get("/option/categories")
-def option_categories() -> dict[str, Any]:
+async def option_categories() -> dict[str, Any]:
     """列出永豐實際提供的選擇權類別（月選/各週選）與各自月份，供探查用。"""
     try:
-        return broker.call(lambda: broker.option_categories_debug())
+        return await broker.acall_to(lambda: broker.option_categories_debug())
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "取得選擇權類別逾時（券商連線忙碌）")
     except Exception as e:
         raise HTTPException(500, f"取得選擇權類別失敗: {e}")
 
 
 @router.get("/option/strikes")
-def option_strikes(delivery_month: str, right: str, category: str = "TXO") -> list[int]:
+async def option_strikes(delivery_month: str, right: str, category: str = "TXO") -> list[int]:
     try:
-        return broker.call(
+        return await broker.acall_to(
             lambda: broker.option_strikes(delivery_month, right, category)
         )
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "取得履約價逾時（券商連線忙碌）")
     except Exception as e:
         raise HTTPException(500, f"取得履約價失敗: {e}")
 
 
 @router.get("/option/quote")
-def option_quote(
+async def option_quote(
     delivery_month: str, strike: int, right: str, category: str = "TXO"
 ) -> dict[str, Any]:
     """單一選擇權的參考現價（snapshot）：成交價 + 買/賣價。
-    給下單面板顯示用，前端低頻刷新（避免吃行情查詢額度）。"""
+    給下單面板顯示用，前端每 5s 刷新——務必用 acall_to(硬逾時)，否則 Solace 卡死時
+    高頻輪詢會把同步執行緒池佔光、連 /health 都拿不到執行緒而假性凍結。"""
+    def _fetch():
+        contract = broker.option_contract(delivery_month, strike, right, category)
+        snaps = broker.api.snapshots([contract])
+        return contract, snaps
     try:
-        contract = broker.call(
-            lambda: broker.option_contract(delivery_month, strike, right, category)
-        )
-    except Exception as e:
-        raise HTTPException(400, f"找不到選擇權合約: {e}")
-    try:
-        snaps = broker.call(lambda: broker.api.snapshots([contract]))
+        contract, snaps = await broker.acall_to(_fetch)
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "查詢選擇權報價逾時（券商連線忙碌）")
     except Exception as e:
         raise HTTPException(500, f"查詢報價失敗: {e}")
     if not snaps:

@@ -68,6 +68,8 @@ class QuoteHub:
                 try:
                     contract = getattr(broker, getter)()
                     self.ensure_contract_subscribed(contract)
+                    # reconnect 跑在 executor（非 event loop）→ 同步種底價安全
+                    self.seed_price_sync(contract)
                 except Exception as e:
                     logger.warning("重連後重新訂閱 %s 失敗: %s", ctype, e)
 
@@ -113,10 +115,18 @@ class QuoteHub:
         )
         self._subscribed_contracts.add(code)
         logger.info("QuoteHub 訂閱合約: %s", code)
+        # ⚠️ 不要在這裡同步呼叫 snapshots() 種底價！
+        # 此函式在 startup(lifespan) 是跑在 event loop 上的，snapshots() 同步阻塞
+        # 一旦 Solace 變慢就會凍住整個 loop、startup 永遠跑不完。
+        # 種底價請走非阻塞路徑：啟動後由 main.py 用 quote_hub.seed_prices_async()
+        # 背景跑（acall_to 有逾時）；reconnect（在 executor、非 loop）則用 seed_price_sync()。
 
-        # 盤後/剛啟動沒有即時 tick，推播快取會是空的 → 前端看不到台指現價。
-        # 用一次 snapshot 種「最後成交價」當底價（跟選擇權同機制）；盤中會被推播覆蓋。
-        # best-effort：snapshot 失敗（Solace 卡/超限）不影響訂閱本身。
+    def seed_price_sync(self, contract) -> None:
+        """用 snapshot 種「最後成交價」當底價（盤後/剛連線沒 tick 時的現價來源）。
+        ⚠️ 同步阻塞——只能在『非 event loop 的執行緒』呼叫（如 reconnect 在 executor 跑）。
+        啟動路徑請改用 seed_prices_async()。"""
+        from core.broker import broker
+        code = getattr(contract, "code", str(contract))
         try:
             snaps = broker.api.snapshots([contract])
             if snaps:
@@ -126,6 +136,22 @@ class QuoteHub:
                     logger.info("QuoteHub 種底價 %s = %s（snapshot）", code, px)
         except Exception as e:
             logger.warning("QuoteHub 種底價 snapshot 失敗 %s: %s", code, e)
+
+    async def seed_prices_async(self, contracts: list) -> None:
+        """非阻塞種底價：每檔用 broker.acall_to（丟 executor + 8s 硬逾時），
+        不會卡住 event loop。給 startup 後的背景 task 用。"""
+        from core.broker import broker
+        for contract in contracts:
+            code = getattr(contract, "code", str(contract))
+            try:
+                snaps = await broker.acall_to(lambda c=contract: broker.api.snapshots([c]))
+                if snaps:
+                    px = float(getattr(snaps[0], "close", 0) or 0)
+                    if px > 0:
+                        self._last_price[code] = px
+                        logger.info("QuoteHub 種底價 %s = %s（snapshot）", code, px)
+            except Exception as e:
+                logger.warning("QuoteHub 種底價(async) 失敗 %s: %s", code, e)
 
     # ── internal ──────────────────────────────────────────────────────
 

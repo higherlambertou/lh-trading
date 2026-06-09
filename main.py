@@ -54,12 +54,18 @@ async def lifespan(app: FastAPI):
     manual_monitor.setup(loop)
     # 啟動就訂閱三檔期貨：讓 dashboard 閒置（沒跑策略）時也有台指報價可看。
     # 走訂閱推播、不算行情查詢；只 3 檔、流量極小。
+    _futs = []
     for _getter in ("tmf_contract", "mxf_contract", "txf_contract"):
         try:
-            quote_hub.ensure_contract_subscribed(getattr(broker, _getter)())
+            c = getattr(broker, _getter)()
+            quote_hub.ensure_contract_subscribed(c)
+            _futs.append(c)
         except Exception as e:
             logger.warning("啟動訂閱期貨 %s 失敗: %s", _getter, e)
     keepalive_task = loop.create_task(_keepalive_loop())
+    # 種底價（盤後/剛啟動沒 tick 時也有現價）走背景 task + acall_to，
+    # 絕不可在這裡同步呼叫 snapshots()，否則 Solace 慢時會凍住 startup。
+    seed_task = loop.create_task(quote_hub.seed_prices_async(_futs))
     logger.info("系統啟動完成")
     yield
     keepalive_task.cancel()
