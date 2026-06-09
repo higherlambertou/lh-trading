@@ -227,6 +227,17 @@ class BrokerClient:
                 return await loop.run_in_executor(None, thunk)
             raise
 
+    async def acall_to(self, thunk: Callable[[], T], timeout: float = 8.0) -> T:
+        """acall + 硬逾時。
+
+        給「會被前端高頻輪詢」的查詢端點用：Solace 卡死時，同步呼叫會無限懸著
+        並佔住執行緒池，前端每 2~3 秒一打就把池佔光，連 /health 都拿不到執行緒
+        → 整個服務假性凍結。加硬逾時後，卡住的呼叫到點即放棄（端點回 503），
+        端點本身永遠快速返回，threadpool 不會被佔光、health 不會被拖垮。
+        逾時會丟 asyncio.TimeoutError（在 3.11+ 即內建 TimeoutError）。
+        """
+        return await asyncio.wait_for(self.acall(thunk), timeout)
+
     # ── order callback ────────────────────────────────────────────────
 
     def set_order_callback(self, callback: Callable) -> None:

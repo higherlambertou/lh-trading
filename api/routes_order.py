@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -317,10 +318,14 @@ def place_option(req: OptionOrderRequest) -> dict[str, Any]:
 
 
 @router.get("/trades")
-def list_trades() -> list[dict[str, Any]]:
+async def list_trades() -> list[dict[str, Any]]:
+    def _fetch():
+        broker.api.update_status(broker.api.futopt_account)
+        return broker.api.list_trades()
     try:
-        broker.call(lambda: broker.api.update_status(broker.api.futopt_account))
-        trades = broker.api.list_trades()
+        trades = await broker.acall_to(_fetch)
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "查詢委託逾時（券商連線忙碌，稍後自動重試）")
     except Exception as e:
         raise HTTPException(500, f"查詢委託失敗: {e}")
 
