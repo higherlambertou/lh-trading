@@ -3,6 +3,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+# ── 除錯：凍結時用 `kill -USR1 <pid>` 把所有 thread 的 Python 堆疊印到 log ──
+import faulthandler
+import signal
+
+faulthandler.enable()
+if hasattr(signal, "SIGUSR1"):
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

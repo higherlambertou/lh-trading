@@ -165,6 +165,17 @@ class QuoteHub:
         logger.info("QuoteHub 已安裝 on_quote_fop_v1 callback")
 
     def _on_quote_sync(self, exchange: sj.Exchange, quote: sj.QuoteFOPv1) -> None:
+        # ⚠️ 此函式由 shioaji 的 C 報價執行緒呼叫，每個 tick 都會進來。
+        # 過去這裡每 tick 都 run_coroutine_threadsafe()，而它每次都建立一個
+        # concurrent.futures.Future（含 threading.Condition + weakref 註冊）。
+        # 高頻 tick 下，這些 weakref 操作會跟主執行緒的 GC 互卡 → event loop
+        # 凍死、/health 變 000（實測堆疊：主執行緒 Garbage-collecting、報價執行緒
+        # 卡在 run_coroutine_threadsafe→Future.__init__→_weakrefset）。
+        #
+        # 改法：
+        #  1) 最新價快取直接在這裡更新（dict 指派受 GIL 保護，跨執行緒安全）；
+        #  2) 真的需要派發時，用 call_soon_threadsafe 排「同步」處理器（loop 原生、
+        #     不建 Future），把 churn 降到最低；沒策略也沒 ws 時完全不排程。
         if not getattr(self, "_quote_seen", False):
             self._quote_seen = True
             logger.info(
@@ -172,26 +183,31 @@ class QuoteHub:
                 getattr(quote, "code", "?"), getattr(quote, "close", "?"),
                 len(self._strategies),
             )
-        if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._dispatch(quote), self._loop)
-
-    async def _dispatch(self, quote: sj.QuoteFOPv1) -> None:
-        # 更新最新價快取（含選擇權權利金），供手動監控讀取
         try:
             self._last_price[quote.code] = float(quote.close)
         except (TypeError, ValueError):
             pass
 
-        for cb in list(self._strategies.values()):
-            try:
-                await cb(quote)
-            except Exception as e:
-                logger.error("QuoteHub strategy dispatch error: %s", e)
+        if not (self._strategies or self._ws_queues):
+            return
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._dispatch_on_loop, quote)
 
+    def _dispatch_on_loop(self, quote: sj.QuoteFOPv1) -> None:
+        """在 event loop 執行緒上同步執行：ws 廣播 + 排策略 task。
+        不是 coroutine，由 call_soon_threadsafe 觸發，避免每 tick 建 Future。"""
+        # 策略（async）：只有真的有策略時才建 task
+        if self._strategies:
+            for cb in list(self._strategies.values()):
+                self._loop.create_task(self._run_cb(cb, quote))
+
+        # websocket 廣播（asyncio.Queue 只能在 loop 執行緒操作，所以放這裡）
         if not self._ws_queues:
             return
-
-        close = float(quote.close)
+        try:
+            close = float(quote.close)
+        except (TypeError, ValueError):
+            return
         if self._ws_last_close.get(quote.code) == close:
             return
         self._ws_last_close[quote.code] = close
@@ -213,6 +229,12 @@ class QuoteHub:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
                 pass
+
+    async def _run_cb(self, cb: QuoteCallback, quote: sj.QuoteFOPv1) -> None:
+        try:
+            await cb(quote)
+        except Exception as e:
+            logger.error("QuoteHub strategy dispatch error: %s", e)
 
 
 quote_hub = QuoteHub()
