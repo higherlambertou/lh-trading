@@ -60,23 +60,32 @@ async def lifespan(app: FastAPI):
     strategy_engine.loop = loop
     quote_hub.setup(loop)
     manual_monitor.setup(loop)
+
     # 啟動就訂閱三檔期貨：讓 dashboard 閒置（沒跑策略）時也有台指報價可看。
-    # 走訂閱推播、不算行情查詢；只 3 檔、流量極小。
-    _futs = []
-    for _getter in ("tmf_contract", "mxf_contract", "txf_contract"):
-        try:
-            c = getattr(broker, _getter)()
-            quote_hub.ensure_contract_subscribed(c)
-            _futs.append(c)
-        except Exception as e:
-            logger.warning("啟動訂閱期貨 %s 失敗: %s", _getter, e)
+    # 關鍵：subscribe / snapshots 都是同步 shioaji 呼叫，開盤時 Solace 慢就會卡住。
+    # 若直接在 startup event loop 執行，uvicorn 永遠綁不上 port → watchdog 誤殺。
+    # 全部丟到背景 task + broker.acall（executor）：startup 立刻完成、port 立刻開，
+    # 訂閱與底價種入在背景非同步補上。
+    async def _startup_bg() -> None:
+        futs = []
+        for getter in ("tmf_contract", "mxf_contract", "txf_contract"):
+            try:
+                c = await broker.acall(lambda g=getter: getattr(broker, g)())
+                await broker.acall(
+                    lambda contract=c: quote_hub.ensure_contract_subscribed(contract)
+                )
+                futs.append(c)
+            except Exception as e:
+                logger.warning("啟動訂閱期貨 %s 失敗: %s", getter, e)
+        # 訂閱完才種底價（盤後/剛啟動沒 tick 時也有現價）
+        await quote_hub.seed_prices_async(futs)
+
     keepalive_task = loop.create_task(_keepalive_loop())
-    # 種底價（盤後/剛啟動沒 tick 時也有現價）走背景 task + acall_to，
-    # 絕不可在這裡同步呼叫 snapshots()，否則 Solace 慢時會凍住 startup。
-    seed_task = loop.create_task(quote_hub.seed_prices_async(_futs))
+    startup_task = loop.create_task(_startup_bg())
     logger.info("系統啟動完成")
     yield
     keepalive_task.cancel()
+    startup_task.cancel()
     await strategy_engine.stop_all()
     await manual_monitor.shutdown()
     broker.logout()
