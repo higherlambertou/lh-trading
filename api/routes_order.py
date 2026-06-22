@@ -108,8 +108,10 @@ def place_order(req: ManualOrderRequest) -> dict[str, str]:
 @router.post("/cancel/{trade_id}")
 def cancel_order(trade_id: str) -> dict[str, str]:
     try:
-        broker.call(lambda: broker.api.update_status(broker.api.futopt_account))
-        trades = broker.api.list_trades()
+        def _fetch():
+            broker.api.update_status(broker.api.futopt_account)
+            return broker.api.list_trades()
+        trades = broker.call(_fetch)
     except Exception as e:
         raise HTTPException(500, f"更新委託狀態失敗: {e}")
 
@@ -326,11 +328,8 @@ def place_option(req: OptionOrderRequest) -> dict[str, Any]:
 
 @router.get("/trades")
 async def list_trades() -> list[dict[str, Any]]:
-    def _fetch():
-        broker.api.update_status(broker.api.futopt_account)
-        return broker.api.list_trades()
     try:
-        trades = await broker.acall_to(_fetch)
+        trades = await broker.acall_to(lambda: broker.api.list_trades())
     except asyncio.TimeoutError:
         raise HTTPException(503, "查詢委託逾時（券商連線忙碌，稍後自動重試）")
     except Exception as e:

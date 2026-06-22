@@ -46,3 +46,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# tick 歷史資料（回測用，可重建）
+data/

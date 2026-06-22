@@ -87,7 +87,6 @@ class BrokerClient:
 
     _instance: Optional["BrokerClient"] = None
     _api: Optional[sj.Shioaji] = None
-
     def __new__(cls) -> "BrokerClient":
         if cls._instance is None:
             cls._instance = super().__new__(cls)

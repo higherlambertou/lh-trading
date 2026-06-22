@@ -34,6 +34,11 @@ CHECK_INTERVAL=15      # 每幾秒檢查一次 health
 GRACE_PERIOD=200       # (重)啟動後容許「還沒登入完成」的寬限秒數（永豐 Solace 登入可達 ~135s）
 FAIL_THRESHOLD=2       # 寬限期過後，連續幾次異常才重啟（避免單次抖動誤判）
 
+# 重啟退避（保護永豐登入 1000 次/日 額度），詳見 run_live.sh 同段註解
+BACKOFF_STEPS=(0 30 120 600)
+STABLE_SECS=600
+consec_short=0
+
 CHILD_PID=""
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  $*"; }
@@ -76,9 +81,20 @@ free_port() {
 log "健康檢查目標：${HEALTH_URL}（每 ${CHECK_INTERVAL}s；啟動寬限 ${GRACE_PERIOD}s；凍結或 broker 斷線都會自動重啟）"
 # 統一監看迴圈：wall-clock 計時、broker-aware。詳見 run_live.sh 同段註解。
 while true; do
+    if [ "$consec_short" -gt 0 ]; then
+        idx=$consec_short
+        max_idx=$(( ${#BACKOFF_STEPS[@]} - 1 ))
+        [ "$idx" -gt "$max_idx" ] && idx=$max_idx
+        wait_s=${BACKOFF_STEPS[$idx]}
+        if [ "$wait_s" -gt 0 ]; then
+            log "連續第 ${consec_short} 次短命重啟，退避等待 ${wait_s}s（保護登入額度）…"
+            sleep "$wait_s"
+        fi
+    fi
+
     free_port
     log "啟動 main_sim.py…"
-    python main_sim.py >> "$APP_LOG" 2>&1 &
+    /Users/lambert/anaconda3/bin/python3.11 main_sim.py >> "$APP_LOG" 2>&1 &
     CHILD_PID=$!
     started=$(date +%s)
     ready=0
@@ -117,6 +133,13 @@ while true; do
             break
         fi
     done
+
+    lifetime=$(( $(date +%s) - started ))
+    if [ "$lifetime" -lt "$STABLE_SECS" ]; then
+        consec_short=$((consec_short + 1))
+    else
+        consec_short=0
+    fi
 
     sleep 3
 done

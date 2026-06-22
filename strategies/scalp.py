@@ -251,6 +251,10 @@ class ScalpStrategy(BaseStrategy):
         # 下一筆報價可能再次觸發 _do_enter → 送出第二筆入場單。
         if self._phase != "idle":
             return
+        # 風控護欄（時段/當日虧損/次數）：不過就安靜跳過，等下一筆訊號
+        ok, _reason = self._risk_ok()
+        if not ok:
+            return
         self._phase = "pending"   # 立刻佔位，阻止重入
 
         entry_price = price - self.entry_offset * direction
@@ -269,6 +273,7 @@ class ScalpStrategy(BaseStrategy):
             self._phase = "idle"   # 下單失敗，還原回待機
             return
 
+        self._trades_today += 1
         self._entry_trade        = trade
         self._entry_qty          = self.max_qty
         self._direction          = direction

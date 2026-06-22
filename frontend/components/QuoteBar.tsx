@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Wifi, WifiOff } from "lucide-react";
+import { getBase } from "@/lib/api";
 
 interface QuoteMsg {
   code: string;
@@ -17,10 +18,11 @@ interface QuoteMsg {
 
 type QuoteMap = Record<string, QuoteMsg>;
 
-const WS_URL =
-  (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8002/api")
-    .replace(/^http/, "ws")
-    .replace(/\/api$/, "") + "/api/quote/ws";
+// 與 lib/api.ts 同一套推導：依載入頁面的 host + 當前模式（sim/live）決定後端，
+// 本機/手機/平板都自動連對，不依賴烤進 bundle 的環境變數。
+function wsUrl(): string {
+  return getBase().replace(/^http/, "ws") + "/quote/ws";
+}
 
 function codeLabel(code: string): string | null {
   if (code.startsWith("TMF")) return "微台";
@@ -60,7 +62,7 @@ export default function QuoteBar() {
     }, THROTTLE_MS);
 
     function connect() {
-      const ws = new WebSocket(WS_URL);
+      const ws = new WebSocket(wsUrl());
       wsRef.current = ws;
 
       ws.onopen = () => setConnected(true);

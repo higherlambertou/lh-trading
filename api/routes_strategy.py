@@ -12,6 +12,8 @@ from strategies.rsi import RSIStrategy
 from strategies.bollinger import BollingerStrategy
 from strategies.momentum import MomentumStrategy
 from strategies.scalp import ScalpStrategy
+from strategies.orb import ORBStrategy
+from strategies.vwap_revert import VWAPRevertStrategy
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,6 +32,8 @@ class StrategyEngine:
             "bollinger": BollingerStrategy(),
             "momentum": MomentumStrategy(),
             "scalp": ScalpStrategy(),
+            "orb": ORBStrategy(),
+            "vwap_revert": VWAPRevertStrategy(),
         }
         self.loop: asyncio.AbstractEventLoop | None = None
 
@@ -75,7 +79,7 @@ def get_strategy(name: str) -> dict[str, Any]:
 
 
 @router.post("/{name}/start")
-def start_strategy(name: str, req: StartRequest) -> dict[str, str]:
+async def start_strategy(name: str, req: StartRequest) -> dict[str, str]:
     s = strategy_engine.strategies.get(name)
     if not s:
         raise HTTPException(404, f"Strategy '{name}' not found")
@@ -90,7 +94,7 @@ def start_strategy(name: str, req: StartRequest) -> dict[str, str]:
         )
     if strategy_engine.loop is None:
         raise HTTPException(503, "Event loop not ready")
-    s.start(strategy_engine.loop, params=req.params or None)
+    await s.start(strategy_engine.loop, params=req.params or None)
     return {"status": "started", "name": name}
 
 

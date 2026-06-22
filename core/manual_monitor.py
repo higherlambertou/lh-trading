@@ -157,11 +157,13 @@ class ManualOrderMonitor:
             await asyncio.sleep(1)
             if not self._watches:
                 continue
-            loop = asyncio.get_running_loop()
             try:
-                positions = await loop.run_in_executor(
-                    None, broker.api.list_positions, broker.api.futopt_account
+                positions = await broker.acall_to(
+                    lambda: broker.api.list_positions(broker.api.futopt_account)
                 )
+            except asyncio.TimeoutError:
+                logger.warning("ManualMonitor 查詢部位逾時")
+                continue
             except Exception as e:
                 logger.warning("ManualMonitor 查詢部位失敗: %s", e)
                 continue
@@ -170,16 +172,18 @@ class ManualOrderMonitor:
             order_status: dict[str, str] = {}
             if any(not w.seen for w in self._watches.values()):
                 try:
-                    await loop.run_in_executor(
-                        None, broker.api.update_status, broker.api.futopt_account
-                    )
-                    trades = await loop.run_in_executor(None, broker.api.list_trades)
+                    def _fetch_orders():
+                        broker.api.update_status(broker.api.futopt_account)
+                        return broker.api.list_trades()
+                    trades = await broker.acall_to(_fetch_orders)
                     for t in trades:
                         tid = str(getattr(t.status, "id", "") or "")
                         if tid:
                             order_status[tid] = str(
                                 getattr(t.status.status, "value", t.status.status)
                             )
+                except asyncio.TimeoutError:
+                    logger.warning("ManualMonitor 查詢委託狀態逾時")
                 except Exception as e:
                     logger.warning("ManualMonitor 查詢委託狀態失敗: %s", e)
 

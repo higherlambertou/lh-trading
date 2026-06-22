@@ -6,6 +6,7 @@ import TradesPanel from "@/components/TradesPanel";
 import ModeToggle from "@/components/ModeToggle";
 import UsageIndicator from "@/components/UsageIndicator";
 import StatusDot from "@/components/StatusDot";
+import QuoteBar from "@/components/QuoteBar";
 
 export default function Page() {
   return (
@@ -15,6 +16,7 @@ export default function Page() {
         <Activity size={18} className="text-[#3b82f6]" />
         <span className="font-semibold tracking-wide">LH Trading</span>
         <span className="text-xs text-[#7070a0]">台指期貨</span>
+        <QuoteBar />
         <ModeToggle />
         <UsageIndicator />
         <div className="ml-auto">

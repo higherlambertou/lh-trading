@@ -20,6 +20,20 @@ export function setSimMode(sim: boolean): void {
   localStorage.setItem("trading_mode", sim ? "sim" : "prod");
 }
 
+// 下單成功後廣播此事件，讓委託/部位面板立即刷新（不必等下一輪輪詢）
+export const ORDER_PLACED_EVENT = "lh:order-placed";
+export function notifyOrderPlaced(): void {
+  window.dispatchEvent(new Event(ORDER_PLACED_EVENT));
+}
+
+// 各合約每點價值（計算即時損益用）
+export function pointValue(code: string): number {
+  if (code.startsWith("TXF")) return 200;
+  if (code.startsWith("MXF")) return 50;
+  if (code.startsWith("TMF")) return 10;
+  return 50; // TXO/週選等選擇權每點 50 元
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${getBase()}${path}`, init);
   if (!res.ok) {
@@ -162,6 +176,7 @@ export const api = {
     margin: () => req<Margin>("/position/margin"),
     pnl: () => req<ProfitLoss[]>("/position/pnl"),
     usage: () => req<Usage>("/position/usage"),
+    meta: () => req<{ updated_at: number; age_sec: number }>("/position/meta"),
   },
   order: {
     place: (data: OrderRequest) =>

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUp, ArrowDown } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, isSimMode, notifyOrderPlaced } from "@/lib/api";
 
 type Action = "Buy" | "Sell";
 type PriceType = "MKT" | "LMT";
@@ -40,6 +40,9 @@ export default function OrderPanel() {
   const [takeProfit, setTakeProfit] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  // 正式盤兩段式確認：第一次點擊只「武裝」按鈕，3 秒內再點一次才真的送單
+  const [armed, setArmed] = useState(false);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 期貨專用
   const [contract, setContract] = useState<Contract>("TMF");
@@ -177,7 +180,20 @@ export default function OrderPanel() {
     };
   }, [mode, contract]);
 
+  // 正式盤需要二次確認；模擬盤直接放行。回傳 true = 已武裝待確認（不送單）。
+  const needsArm = (): boolean => {
+    if (isSimMode() || armed) {
+      setArmed(false);
+      if (armTimer.current) clearTimeout(armTimer.current);
+      return false;
+    }
+    setArmed(true);
+    armTimer.current = setTimeout(() => setArmed(false), 3000);
+    return true;
+  };
+
   const submitFuture = async () => {
+    if (needsArm()) return;
     setBusy(true);
     try {
       const res = await api.order.place({
@@ -193,6 +209,7 @@ export default function OrderPanel() {
       });
       const sltp = res.watch_id ? `，停損停利監控已啟動 (${res.watch_id})` : "";
       setResult({ ok: true, text: `委託成功 — ${res.trade_id}${sltp}` });
+      notifyOrderPlaced();
     } catch (e: unknown) {
       setResult({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -203,6 +220,7 @@ export default function OrderPanel() {
 
   const submitOption = async () => {
     if (!deliveryMonth || strike === "" || !limitPrice) return;
+    if (needsArm()) return;
     setBusy(true);
     try {
       const res = await api.order.placeOption({
@@ -222,6 +240,7 @@ export default function OrderPanel() {
         ok: true,
         text: `委託成功 — ${res.code} @ ${res.limit_price}${sltp}`,
       });
+      notifyOrderPlaced();
     } catch (e: unknown) {
       setResult({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -601,12 +620,14 @@ export default function OrderPanel() {
         }
         className="w-full py-3 rounded-lg font-semibold text-sm transition-colors disabled:opacity-40"
         style={{
-          backgroundColor: isBuy ? "#00e676" : "#ff1744",
-          color: isBuy ? "#0d0d14" : "#fff",
+          backgroundColor: armed ? "#ff9800" : isBuy ? "#00e676" : "#ff1744",
+          color: armed || !isBuy ? "#fff" : "#0d0d14",
         }}
       >
         {busy
           ? "送出中..."
+          : armed
+          ? "⚠ 真錢下單 — 3 秒內再點一次確認"
           : isOption
           ? `確認${isBuy ? "買進" : "賣出"} ${fmtMonth(deliveryMonth)} ${strike}${
               right === "C" ? "C" : "P"

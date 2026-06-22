@@ -44,8 +44,16 @@ HEALTH_HOST="${BIND_HOST:-localhost}"
 HEALTH_URL="http://${HEALTH_HOST}:${PORT}/api/health"
 APP_LOG="/tmp/lh_live.log"
 CHECK_INTERVAL=15      # 每幾秒檢查一次 health
-GRACE_PERIOD=200       # (重)啟動後容許「還沒登入完成」的寬限秒數（永豐 Solace 登入可達 ~135s）
+GRACE_PERIOD=60        # (重)啟動後容許「還沒登入完成」的寬限秒數（永豐 Solace 登入可達 ~135s，實測通常 <1s）
 FAIL_THRESHOLD=2       # 寬限期過後，連續幾次異常才重啟（避免單次抖動誤判）
+
+# ── 重啟退避：保護永豐「登入 1000 次/日」額度 ─────────────────────────
+# 永豐/網路爛掉時進程會「啟動→秒凍→重啟」無限循環，每輪燒一次登入。
+# 連續短命重啟時把間隔逐次拉長（30s→120s→600s 封頂）；
+# 存活超過 STABLE_SECS 視為健康，退避歸零。
+BACKOFF_STEPS=(0 30 120 600)   # 第 N 次連續短命重啟前等待秒數（最後一檔封頂）
+STABLE_SECS=600                # 子進程存活超過此秒數＝穩定，重置退避
+consec_short=0                 # 連續「短命」重啟計數
 
 CHILD_PID=""
 
@@ -101,9 +109,21 @@ log "健康檢查目標：${HEALTH_URL}（每 ${CHECK_INTERVAL}s；啟動寬限 
 #         （因為永豐登入本來就慢）。一旦成功連上過(ready=1)，寬限即失效，
 #         之後任何 down/nobroker 連續 FAIL_THRESHOLD 次就重啟 → 這就是「broker 斷線自動重連」。
 while true; do
+    # ── 退避等待（連續短命重啟時逐次拉長間隔，省登入額度）──
+    if [ "$consec_short" -gt 0 ]; then
+        idx=$consec_short
+        max_idx=$(( ${#BACKOFF_STEPS[@]} - 1 ))
+        [ "$idx" -gt "$max_idx" ] && idx=$max_idx
+        wait_s=${BACKOFF_STEPS[$idx]}
+        if [ "$wait_s" -gt 0 ]; then
+            log "連續第 ${consec_short} 次短命重啟，退避等待 ${wait_s}s（保護登入額度）…"
+            sleep "$wait_s"
+        fi
+    fi
+
     free_port
     log "啟動 main.py（正式盤）…"
-    python main.py >> "$APP_LOG" 2>&1 &
+    /Users/lambert/anaconda3/bin/python3.11 main.py >> "$APP_LOG" 2>&1 &
     CHILD_PID=$!
     started=$(date +%s)
     ready=0
@@ -143,6 +163,14 @@ while true; do
             break
         fi
     done
+
+    # ── 更新退避計數：短命（活不到 STABLE_SECS）就累加，否則歸零 ──
+    lifetime=$(( $(date +%s) - started ))
+    if [ "$lifetime" -lt "$STABLE_SECS" ]; then
+        consec_short=$((consec_short + 1))
+    else
+        consec_short=0
+    fi
 
     sleep 3
 done

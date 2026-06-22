@@ -2,7 +2,10 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { TrendingUp, TrendingDown } from "lucide-react";
-import { api, Position, Margin, ProfitLoss } from "@/lib/api";
+import {
+  api, Position, Margin, ProfitLoss,
+  pointValue, ORDER_PLACED_EVENT,
+} from "@/lib/api";
 
 function Num({ value }: { value: number }) {
   const pos = value >= 0;
@@ -19,36 +22,73 @@ export default function PositionPanel() {
   const [margin, setMargin] = useState<Margin | null>(null);
   const [pnlList, setPnlList] = useState<ProfitLoss[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [quotes, setQuotes] = useState<Record<string, number>>({});
+  const [dataAge, setDataAge] = useState<number>(-1);
 
   const loadData = useCallback(async () => {
-    try {
-      const [pos, mar, pnl] = await Promise.all([
-        api.position.list(),
-        api.position.margin(),
-        api.position.pnl(),
-      ]);
-      setPositions(pos);
-      setMargin(mar);
-      setPnlList(pnl);
+    const [posResult, marResult, pnlResult, metaResult] = await Promise.allSettled([
+      api.position.list(),
+      api.position.margin(),
+      api.position.pnl(),
+      api.position.meta(),
+    ]);
+
+    if (posResult.status === "fulfilled") {
+      setPositions(posResult.value);
       setError(null);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "無法取得部位資料");
+    } else {
+      setError(posResult.reason instanceof Error ? posResult.reason.message : "無法取得部位資料");
     }
+    if (marResult.status === "fulfilled") setMargin(marResult.value);
+    if (pnlResult.status === "fulfilled") setPnlList(pnlResult.value);
+    setDataAge(metaResult.status === "fulfilled" ? metaResult.value.age_sec : -1);
   }, []);
 
+  // 部位/保證金：10s 輪詢（後端快取 TTL 10s）＋下單事件立即刷新
   useEffect(() => {
     loadData();
-    const id = setInterval(loadData, 2000);
-    return () => clearInterval(id);
+    const id = setInterval(loadData, 10000);
+    const onOrder = () => { setTimeout(loadData, 1500); }; // 等成交回報落地再刷
+    window.addEventListener(ORDER_PLACED_EVENT, onOrder);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener(ORDER_PLACED_EVENT, onOrder);
+    };
   }, [loadData]);
 
-  const totalPnl = positions.reduce((sum, p) => sum + p.pnl, 0);
+  // 即時報價：2s 輪詢純記憶體端點（零 API 額度），用來重算未實現損益
+  useEffect(() => {
+    let alive = true;
+    const fetchQ = () =>
+      api.quote.last().then((m) => { if (alive) setQuotes(m); }).catch(() => {});
+    fetchQ();
+    const id = setInterval(fetchQ, 2000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  // 即時未實現損益：報價快取有該合約就用現價重算，沒有就退回後端值
+  const livePnl = useCallback(
+    (p: Position): { pnl: number; last: number } => {
+      const last = quotes[p.code];
+      if (last == null || !p.price) return { pnl: p.pnl, last: p.last_price };
+      const dir = p.direction === "Buy" ? 1 : -1;
+      return { pnl: (last - p.price) * dir * p.quantity * pointValue(p.code), last };
+    },
+    [quotes],
+  );
+
+  const totalPnl = positions.reduce((sum, p) => sum + livePnl(p).pnl, 0);
   const totalRealizedPnl = pnlList.reduce((sum, p) => sum + p.pnl, 0);
 
   return (
     <div className="bg-[#141420] rounded-xl border border-[#1e1e3a] p-5">
-      <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest mb-4">
+      <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest mb-4 flex items-center">
         部位 / 損益
+        {dataAge > 30 && (
+          <span className="ml-auto normal-case tracking-normal text-[10px] text-[#ffc107] bg-[#ffc107]/10 border border-[#ffc107]/20 rounded px-2 py-0.5">
+            ⚠ 資料 {Math.round(dataAge)}s 前（後端可能重啟中）
+          </span>
+        )}
       </h2>
 
       {error ? (
@@ -62,7 +102,7 @@ export default function PositionPanel() {
             <div className="grid grid-cols-2 gap-2 mb-4">
               {[
                 { label: "權益數", value: margin.equity.toLocaleString(), plain: true },
-                { label: "未實現損益", value: totalPnl, plain: false },
+                { label: "未實現損益", value: Math.round(totalPnl), plain: false },
                 { label: "已實現損益", value: totalRealizedPnl, plain: false },
                 { label: "原始保證金", value: margin.initial_margin.toLocaleString(), plain: true },
                 { label: "維持保證金", value: margin.maintenance_margin.toLocaleString(), plain: true },
@@ -115,39 +155,42 @@ export default function PositionPanel() {
             <p className="text-sm text-[#404060] text-center py-6">目前無持倉</p>
           ) : (
             <div className="space-y-2">
-              {positions.map((p, i) => (
-                <div
-                  key={i}
-                  className="bg-[#0d0d14] rounded-lg px-4 py-3 flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={`flex items-center gap-1 text-sm font-semibold ${
-                        p.direction === "Buy" ? "text-[#00e676]" : "text-[#ff1744]"
-                      }`}
-                    >
-                      {p.direction === "Buy" ? (
-                        <TrendingUp size={14} />
-                      ) : (
-                        <TrendingDown size={14} />
-                      )}
-                      {p.direction === "Buy" ? "多" : "空"}
-                    </span>
-                    <div>
-                      <div className="font-mono text-sm text-[#e0e0f0]">{p.code}</div>
-                      <div className="text-[11px] text-[#7070a0]">
-                        {p.quantity} 口 @ {p.price.toLocaleString()}
+              {positions.map((p, i) => {
+                const { pnl, last } = livePnl(p);
+                return (
+                  <div
+                    key={i}
+                    className="bg-[#0d0d14] rounded-lg px-4 py-3 flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={`flex items-center gap-1 text-sm font-semibold ${
+                          p.direction === "Buy" ? "text-[#00e676]" : "text-[#ff1744]"
+                        }`}
+                      >
+                        {p.direction === "Buy" ? (
+                          <TrendingUp size={14} />
+                        ) : (
+                          <TrendingDown size={14} />
+                        )}
+                        {p.direction === "Buy" ? "多" : "空"}
+                      </span>
+                      <div>
+                        <div className="font-mono text-sm text-[#e0e0f0]">{p.code}</div>
+                        <div className="text-[11px] text-[#7070a0]">
+                          {p.quantity} 口 @ {p.price.toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <Num value={Math.round(pnl)} />
+                      <div className="text-[11px] text-[#7070a0] mt-0.5">
+                        現價 {last.toLocaleString()}
                       </div>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <Num value={p.pnl} />
-                    <div className="text-[11px] text-[#7070a0] mt-0.5">
-                      現價 {p.last_price.toLocaleString()}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </>

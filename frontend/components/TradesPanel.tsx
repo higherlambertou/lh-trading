@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { X, Check } from "lucide-react";
-import { api, Trade, Watch } from "@/lib/api";
+import { api, Trade, Watch, ORDER_PLACED_EVENT } from "@/lib/api";
 
 const STATUS: Record<string, { label: string; color: string }> = {
   Filled:        { label: "成交",   color: "text-[#00e676]" },
@@ -116,9 +116,16 @@ export default function TradesPanel() {
   useEffect(() => {
     loadTrades();
     loadWatches();
-    const t = setInterval(loadTrades, 3000);
-    const w = setInterval(loadWatches, 2000);
-    return () => { clearInterval(t); clearInterval(w); };
+    const t = setInterval(loadTrades, 15000);
+    const w = setInterval(loadWatches, 5000);
+    // 下單成功 → 立即刷新（稍等讓委託落到券商端）
+    const onOrder = () => { setTimeout(() => { loadTrades(); loadWatches(); }, 1000); };
+    window.addEventListener(ORDER_PLACED_EVENT, onOrder);
+    return () => {
+      clearInterval(t);
+      clearInterval(w);
+      window.removeEventListener(ORDER_PLACED_EVENT, onOrder);
+    };
   }, [loadTrades, loadWatches]);
 
   const cancel = async (id: string) => {

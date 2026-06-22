@@ -1,13 +1,18 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Awaitable, Callable
 
 import shioaji as sj
 
+from core.bar_builder import Bar, BarBuilder
+from core.tick_store import tick_recorder
+
 logger = logging.getLogger(__name__)
 
 QuoteCallback = Callable[[sj.QuoteFOPv1], Awaitable[None]]
+BarCallback = Callable[[Bar], Awaitable[None]]
 
 # contract code prefix → broker getter name
 _PREFIX_TO_GETTER = {
@@ -26,6 +31,7 @@ class QuoteHub:
 
     def __init__(self) -> None:
         self._strategies: dict[str, QuoteCallback] = {}
+        self._bar_subs: dict[str, BarCallback] = {}    # 策略名 → 1分K callback
         self._ws_queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._installed = False
@@ -34,6 +40,7 @@ class QuoteHub:
         self._known_contract_types: set[str] = set()   # type prefixes, e.g. TMF, TXF
         self._ws_last_close: dict[str, float] = {}
         self._last_price: dict[str, float] = {}        # code → 最新成交價（含選擇權權利金）
+        self.bars = BarBuilder(interval_sec=60)        # tick → 1 分 K 聚合
 
     def get_last_price(self, code: str) -> float | None:
         """任意已訂閱合約的最新成交價（推播快取）。手動選擇權停損停利用此取權利金。"""
@@ -84,6 +91,14 @@ class QuoteHub:
     def unsubscribe_strategy(self, name: str) -> None:
         self._strategies.pop(name, None)
 
+    def subscribe_strategy_bars(self, name: str, callback: BarCallback) -> None:
+        """訂閱 1 分 K 完成事件（bar 收完才派發，不是每 tick）。"""
+        self._bar_subs[name] = callback
+        self._ensure_installed()
+
+    def unsubscribe_strategy_bars(self, name: str) -> None:
+        self._bar_subs.pop(name, None)
+
     # ── websocket client management ───────────────────────────────────
 
     def add_ws_client(self, q: asyncio.Queue) -> None:
@@ -115,11 +130,11 @@ class QuoteHub:
         )
         self._subscribed_contracts.add(code)
         logger.info("QuoteHub 訂閱合約: %s", code)
-        # ⚠️ 不要在這裡同步呼叫 snapshots() 種底價！
-        # 此函式在 startup(lifespan) 是跑在 event loop 上的，snapshots() 同步阻塞
-        # 一旦 Solace 變慢就會凍住整個 loop、startup 永遠跑不完。
-        # 種底價請走非阻塞路徑：啟動後由 main.py 用 quote_hub.seed_prices_async()
-        # 背景跑（acall_to 有逾時）；reconnect（在 executor、非 loop）則用 seed_price_sync()。
+        # ⚠️ 不要在這裡呼叫 snapshots() 種底價！
+        # snapshots() 是 Solace C 層呼叫：不穩定時持 GIL 不放，asyncio.wait_for 的
+        # timeout 需要 event loop 執行才能觸發，但 GIL 被佔後 loop 也跑不了 → 假超時。
+        # 底價直接從報價訂閱推播的第一個 tick 取得（幾乎立即）；
+        # reconnect 路徑（在 executor、非 loop）可用 seed_price_sync()。
 
     def seed_price_sync(self, contract) -> None:
         """用 snapshot 種「最後成交價」當底價（盤後/剛連線沒 tick 時的現價來源）。
@@ -184,9 +199,21 @@ class QuoteHub:
                 len(self._strategies),
             )
         try:
-            self._last_price[quote.code] = float(quote.close)
+            price = float(quote.close)
+            self._last_price[quote.code] = price
         except (TypeError, ValueError):
-            pass
+            return
+
+        # ── tick 落地 + 1分K 聚合（純記憶體/put_nowait，C 報價執行緒安全）──
+        ts_ns = getattr(quote, "ts", None)
+        ts = ts_ns / 1e9 if ts_ns else time.time()
+        vol = int(getattr(quote, "volume", 0) or 0)
+        tick_recorder.record(
+            quote.code, ts, price, vol, int(getattr(quote, "tick_type", 0) or 0)
+        )
+        done_bar = self.bars.feed(quote.code, price, vol, ts)
+        if done_bar and self._bar_subs and self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._dispatch_bar_on_loop, done_bar)
 
         if not (self._strategies or self._ws_queues):
             return
@@ -235,6 +262,17 @@ class QuoteHub:
             await cb(quote)
         except Exception as e:
             logger.error("QuoteHub strategy dispatch error: %s", e)
+
+    def _dispatch_bar_on_loop(self, bar: Bar) -> None:
+        """1分K 完成 → 派發給 bar 訂閱者（在 event loop 執行緒上）。"""
+        for cb in list(self._bar_subs.values()):
+            self._loop.create_task(self._run_bar_cb(cb, bar))
+
+    async def _run_bar_cb(self, cb: BarCallback, bar: Bar) -> None:
+        try:
+            await cb(bar)
+        except Exception as e:
+            logger.error("QuoteHub bar dispatch error: %s", e)
 
 
 quote_hub = QuoteHub()
