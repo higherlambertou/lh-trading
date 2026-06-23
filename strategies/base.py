@@ -272,8 +272,8 @@ class BaseStrategy(ABC):
         """
         pass
 
-    async def _on_quote_async(self, quote: sj.QuoteFOPv1) -> None:
-        price = float(quote.close)
+    async def _on_quote_async(self, quote: dict) -> None:
+        price = float(quote["close"])
         self.state.last_price = price
 
         if self.state.position != 0:
@@ -293,8 +293,8 @@ class BaseStrategy(ABC):
             self.state.errors.append(str(e))
 
     @abstractmethod
-    async def on_quote(self, quote: sj.QuoteFOPv1) -> None:
-        """子類別實作策略邏輯"""
+    async def on_quote(self, quote: dict) -> None:
+        """子類別實作策略邏輯，quote 為純 Python dict（含 close/code/tick_type 等）"""
         ...
 
     def _order_callback(self, stat: Any, msg: Any) -> None:

@@ -76,8 +76,8 @@ class RSIStrategy(BaseStrategy):
         rs = avg_gain / avg_loss
         return 100.0 - 100.0 / (1.0 + rs)
 
-    async def on_quote(self, quote: sj.QuoteFOPv1) -> None:
-        price = float(quote.close)
+    async def on_quote(self, quote: dict) -> None:
+        price = float(quote["close"])
         self.prices.append(price)
 
         rsi = self._rsi()

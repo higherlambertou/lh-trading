@@ -138,7 +138,7 @@ class ScalpStrategy(BaseStrategy):
 
     # ── 訊號 ───────────────────────────────────────────────────────
 
-    def _get_signal(self, quote: sj.QuoteFOPv1) -> int:
+    def _get_signal(self, quote: dict) -> int:
         """
         回傳方向：1=做多  -1=做空  0=無訊號
 
@@ -154,7 +154,7 @@ class ScalpStrategy(BaseStrategy):
         if self.signal_mode == "random":
             return random.choice([1, -1])
 
-        tt = int(quote.tick_type)
+        tt = int(quote.get("tick_type", 0))
         if tt in (1, 2):
             self._tick_buf.append(tt)
 
@@ -175,8 +175,8 @@ class ScalpStrategy(BaseStrategy):
 
     # ── 主要 tick 邏輯 ──────────────────────────────────────────
 
-    async def on_quote(self, quote: sj.QuoteFOPv1) -> None:
-        price = float(quote.close)
+    async def on_quote(self, quote: dict) -> None:
+        price = float(quote["close"])
 
         if self._phase == "idle":
             # 守衛：有未追蹤持倉時禁止新入場

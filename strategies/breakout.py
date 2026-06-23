@@ -43,8 +43,8 @@ class BreakoutStrategy(BaseStrategy):
 
     # ─── 策略邏輯 ────────────────────────────────────────────────────
 
-    async def on_quote(self, quote: sj.QuoteFOPv1) -> None:
-        price = float(quote.close)
+    async def on_quote(self, quote: dict) -> None:
+        price = float(quote["close"])
 
         # buffer 未滿前只累積，並以「之前」的區間判斷突破，故先比較後 append
         if len(self.prices) < self.lookback:

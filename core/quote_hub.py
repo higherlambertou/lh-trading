@@ -11,7 +11,7 @@ from core.tick_store import tick_recorder
 
 logger = logging.getLogger(__name__)
 
-QuoteCallback = Callable[[sj.QuoteFOPv1], Awaitable[None]]
+QuoteCallback = Callable[[dict], Awaitable[None]]
 BarCallback = Callable[[Bar], Awaitable[None]]
 
 # contract code prefix → broker getter name
@@ -181,16 +181,10 @@ class QuoteHub:
 
     def _on_quote_sync(self, exchange: sj.Exchange, quote: sj.QuoteFOPv1) -> None:
         # ⚠️ 此函式由 shioaji 的 C 報價執行緒呼叫，每個 tick 都會進來。
-        # 過去這裡每 tick 都 run_coroutine_threadsafe()，而它每次都建立一個
-        # concurrent.futures.Future（含 threading.Condition + weakref 註冊）。
-        # 高頻 tick 下，這些 weakref 操作會跟主執行緒的 GC 互卡 → event loop
-        # 凍死、/health 變 000（實測堆疊：主執行緒 Garbage-collecting、報價執行緒
-        # 卡在 run_coroutine_threadsafe→Future.__init__→_weakrefset）。
-        #
-        # 改法：
-        #  1) 最新價快取直接在這裡更新（dict 指派受 GIL 保護，跨執行緒安全）；
-        #  2) 真的需要派發時，用 call_soon_threadsafe 排「同步」處理器（loop 原生、
-        #     不建 Future），把 churn 降到最低；沒策略也沒 ws 時完全不排程。
+        # 重要：shioaji 的 quote 物件是 Rust/PyO3 包裝，C callback 執行緒可能在下一個
+        # tick 到來時覆寫同一個物件。若把 quote 物件跨執行緒傳給 event loop（call_soon_threadsafe），
+        # event loop 再存取 quote.open/high/low 時可能觸發 PyBorrowMutError / 內部鎖死。
+        # 解法：在 C callback 執行緒就把所有欄位萃取成純 Python dict，只傳 dict。
         if not getattr(self, "_quote_seen", False):
             self._quote_seen = True
             logger.info(
@@ -200,7 +194,8 @@ class QuoteHub:
             )
         try:
             price = float(quote.close)
-            self._last_price[quote.code] = price
+            code  = str(quote.code)
+            self._last_price[code] = price
         except (TypeError, ValueError):
             return
 
@@ -209,57 +204,56 @@ class QuoteHub:
         ts = ts_ns / 1e9 if ts_ns else time.time()
         vol = int(getattr(quote, "volume", 0) or 0)
         tick_recorder.record(
-            quote.code, ts, price, vol, int(getattr(quote, "tick_type", 0) or 0)
+            code, ts, price, vol, int(getattr(quote, "tick_type", 0) or 0)
         )
-        done_bar = self.bars.feed(quote.code, price, vol, ts)
+        done_bar = self.bars.feed(code, price, vol, ts)
         if done_bar and self._bar_subs and self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._dispatch_bar_on_loop, done_bar)
 
         if not (self._strategies or self._ws_queues):
             return
         if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._dispatch_on_loop, quote)
+            # 在 C callback 執行緒萃取所有欄位 → 純 Python dict，不跨執行緒傳 Rust 物件
+            snapshot = {
+                "code": code,
+                "close": price,
+                "open": float(getattr(quote, "open", 0) or 0),
+                "high": float(getattr(quote, "high", 0) or 0),
+                "low": float(getattr(quote, "low", 0) or 0),
+                "volume": vol,
+                "total_volume": int(getattr(quote, "total_volume", 0) or 0),
+                "change_price": float(getattr(quote, "change_price", 0) or 0),
+                "tick_type": int(getattr(quote, "tick_type", 0) or 0),
+                "ts": ts_ns / 1e9 if ts_ns else ts,
+            }
+            self._loop.call_soon_threadsafe(self._dispatch_on_loop, snapshot)
 
-    def _dispatch_on_loop(self, quote: sj.QuoteFOPv1) -> None:
+    def _dispatch_on_loop(self, snapshot: dict) -> None:
         """在 event loop 執行緒上同步執行：ws 廣播 + 排策略 task。
-        不是 coroutine，由 call_soon_threadsafe 觸發，避免每 tick 建 Future。"""
-        # 策略（async）：只有真的有策略時才建 task
+        接收純 Python dict（由 C callback 執行緒萃取），不含任何 Rust 物件。"""
+        # 策略（async）：傳 snapshot dict，策略用 snap["close"] / snap["code"]
         if self._strategies:
             for cb in list(self._strategies.values()):
-                self._loop.create_task(self._run_cb(cb, quote))
+                self._loop.create_task(self._run_cb(cb, snapshot))
 
-        # websocket 廣播（asyncio.Queue 只能在 loop 執行緒操作，所以放這裡）
+        # websocket 廣播
         if not self._ws_queues:
             return
-        try:
-            close = float(quote.close)
-        except (TypeError, ValueError):
+        close = snapshot["close"]
+        code  = snapshot["code"]
+        if self._ws_last_close.get(code) == close:
             return
-        if self._ws_last_close.get(quote.code) == close:
-            return
-        self._ws_last_close[quote.code] = close
-
-        ts_ns = getattr(quote, "ts", None)
-        msg = json.dumps({
-            "code": quote.code,
-            "close": close,
-            "open": float(quote.open),
-            "high": float(quote.high),
-            "low": float(quote.low),
-            "volume": int(quote.volume),
-            "total_volume": int(quote.total_volume),
-            "change_price": float(getattr(quote, "change_price", 0) or 0),
-            "ts": ts_ns / 1e9 if ts_ns else 0.0,
-        })
+        self._ws_last_close[code] = close
+        msg = json.dumps(snapshot)
         for q in list(self._ws_queues):
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
                 pass
 
-    async def _run_cb(self, cb: QuoteCallback, quote: sj.QuoteFOPv1) -> None:
+    async def _run_cb(self, cb: QuoteCallback, snapshot: dict) -> None:
         try:
-            await cb(quote)
+            await cb(snapshot)
         except Exception as e:
             logger.error("QuoteHub strategy dispatch error: %s", e)
 

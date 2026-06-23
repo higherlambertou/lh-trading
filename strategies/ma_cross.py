@@ -56,8 +56,8 @@ class MACrossStrategy(BaseStrategy):
             return None
         return sum(list(self.prices)[-period:]) / period
 
-    async def on_quote(self, quote: sj.QuoteFOPv1) -> None:
-        price = float(quote.close)
+    async def on_quote(self, quote: dict) -> None:
+        price = float(quote["close"])
         self.prices.append(price)
 
         short_ma = self._ma(self.short_period)

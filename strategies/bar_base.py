@@ -158,6 +158,6 @@ class BarStrategy(BaseStrategy):
         """每根 1 分 K 收完呼叫（已過濾為 TMF）。"""
         ...
 
-    async def on_quote(self, quote: sj.QuoteFOPv1) -> None:
+    async def on_quote(self, quote: dict) -> None:
         """預設 tick 路徑無事可做（SL/TP 在 base._on_quote_async 已檢查）。"""
         return

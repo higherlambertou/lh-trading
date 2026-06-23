@@ -57,8 +57,8 @@ class BollingerStrategy(BaseStrategy):
         lower = mean - self.num_std * std
         return mean, upper, lower
 
-    async def on_quote(self, quote: sj.QuoteFOPv1) -> None:
-        price = float(quote.close)
+    async def on_quote(self, quote: dict) -> None:
+        price = float(quote["close"])
         self.prices.append(price)
 
         bands = self._bands()
