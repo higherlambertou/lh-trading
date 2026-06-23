@@ -5,6 +5,9 @@ from contextlib import asynccontextmanager
 
 import faulthandler
 import signal
+from dotenv import load_dotenv
+
+load_dotenv()  # .env → os.environ，讓 CORS_ORIGINS/BIND_HOST/PORT 等設定生效
 
 faulthandler.enable()
 if hasattr(signal, "SIGUSR1"):
@@ -15,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.broker import broker
 from core.quote_hub import quote_hub
-from api.routes_order import router as order_router
+from api.routes_order import router as order_router, trades_refresh_loop
 from api.routes_position import router as position_router, cache_refresh_loop
 from api.routes_strategy import router as strategy_router, strategy_engine
 from api.routes_quote import router as quote_router
@@ -60,10 +63,12 @@ async def lifespan(app: FastAPI):
     tick_recorder.start()
     startup_task   = loop.create_task(_startup_bg())
     cache_task     = loop.create_task(cache_refresh_loop())
+    trades_task    = loop.create_task(trades_refresh_loop())
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
     startup_task.cancel()
     cache_task.cancel()
+    trades_task.cancel()
     tick_recorder.stop()
     await strategy_engine.stop_all()
     await manual_monitor.shutdown()

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -10,6 +11,27 @@ from core.manual_monitor import manual_monitor, _txo_round_tick
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ── Trades 背景快取（避免多 tab 同時打 worker 積爆佇列）──────────────────
+_trades_cache: list = []
+_trades_updated_at: float = 0.0
+
+
+async def trades_refresh_loop() -> None:
+    """每 8s 向 worker 查一次委託清單，快取起來供 HTTP 端點回傳。
+    用較長 timeout（12s），確保即使 api.list_trades() 偶爾緩慢也能成功。"""
+    await asyncio.sleep(3)
+    while True:
+        await asyncio.sleep(8)
+        if not broker.is_connected:
+            continue
+        try:
+            raw = await asyncio.wait_for(broker.list_trades(), timeout=12)
+            global _trades_updated_at
+            _trades_cache[:] = raw
+            _trades_updated_at = time.time()
+        except Exception as e:
+            logger.debug("trades cache 刷新失敗（保留舊值）: %s", e)
 
 
 class ManualOrderRequest(BaseModel):
@@ -245,37 +267,29 @@ async def place_option(req: OptionOrderRequest) -> dict[str, Any]:
     }
 
 
-@router.get("/trades")
-async def list_trades() -> list[dict[str, Any]]:
-    try:
-        trades = await broker.list_trades()
-    except asyncio.TimeoutError:
-        raise HTTPException(503, "查詢委託逾時（券商連線忙碌，稍後自動重試）")
-    except Exception as e:
-        raise HTTPException(500, f"查詢委託失敗: {e}")
-
+def _fmt_time(val) -> str:
     from datetime import datetime, timezone
-
-    def _fmt_time(val) -> str:
-        if not val:
-            return ""
-        if isinstance(val, (int, float)):
-            dt = datetime.fromtimestamp(val / 1e9 if val > 1e12 else val, tz=timezone.utc).astimezone()
-            return dt.strftime("%H:%M:%S") if dt.year >= 2020 else ""
-        if isinstance(val, str):
-            try:
-                return datetime.fromisoformat(val).strftime("%H:%M:%S")
-            except ValueError:
-                pass
-            if len(val) >= 8 and val[2] == ":" and val[5] == ":":
-                return val[:8]
-            return ""
-        if hasattr(val, "strftime"):
-            return val.strftime("%H:%M:%S")
+    if not val:
         return ""
+    if isinstance(val, (int, float)):
+        dt = datetime.fromtimestamp(val / 1e9 if val > 1e12 else val, tz=timezone.utc).astimezone()
+        return dt.strftime("%H:%M:%S") if dt.year >= 2020 else ""
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val).strftime("%H:%M:%S")
+        except ValueError:
+            pass
+        if len(val) >= 8 and val[2] == ":" and val[5] == ":":
+            return val[:8]
+        return ""
+    if hasattr(val, "strftime"):
+        return val.strftime("%H:%M:%S")
+    return ""
 
+
+def _format_trades(raw: list) -> list[dict[str, Any]]:
     result = []
-    for t in trades:
+    for t in raw:
         order_time = _fmt_time(t.get("order_datetime"))
         deal_time  = _fmt_time(t.get("deal_ts"))
         result.append({
@@ -289,7 +303,11 @@ async def list_trades() -> list[dict[str, Any]]:
             "order_time": order_time,
             "deal_time": deal_time,
         })
-
-    # 已成交的排前面（有 deal_ts），無時間資料排最後
     result.sort(key=lambda x: x.get("deal_time", "") or x.get("order_time", ""), reverse=True)
     return result
+
+
+@router.get("/trades")
+def list_trades() -> list[dict[str, Any]]:
+    """從背景快取返回委託清單（不直接打 worker，避免多 tab 積爆佇列）。"""
+    return _format_trades(_trades_cache)

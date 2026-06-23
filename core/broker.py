@@ -71,52 +71,57 @@ class BrokerClient:
                         logger.error("Shioaji worker 意外退出，等待 watchdog 重啟")
                 continue
 
-            mtype = msg.get("type")
+            try:
+                self._dispatch(msg)
+            except Exception:
+                logger.exception("_event_reader 處理事件時例外，繼續執行")
 
-            if mtype == "connected":
-                self._is_connected = True
-                logger.info("Worker 已連線，重新訂閱 %d 個期貨 / %d 個選擇權",
-                            len(self._known_subs), len(self._known_opt_subs))
-                for code in self._known_subs:
-                    try:
-                        self._cmd_q.put_nowait({"method": "subscribe", "contract_code": code})
-                    except Exception:
-                        pass
-                for opt in self._known_opt_subs:
-                    try:
-                        self._cmd_q.put_nowait({"method": "subscribe_option", **opt})
-                    except Exception:
-                        pass
+    def _dispatch(self, msg: dict) -> None:
+        mtype = msg.get("type")
 
-            elif mtype == "error":
-                logger.error("Worker 錯誤: %s", msg.get("msg"))
+        if mtype == "connected":
+            self._is_connected = True
+            logger.info("Worker 已連線，重新訂閱 %d 個期貨 / %d 個選擇權",
+                        len(self._known_subs), len(self._known_opt_subs))
+            for code in self._known_subs:
+                try:
+                    self._cmd_q.put_nowait({"method": "subscribe", "contract_code": code})
+                except Exception:
+                    pass
+            for opt in self._known_opt_subs:
+                try:
+                    self._cmd_q.put_nowait({"method": "subscribe_option", **opt})
+                except Exception:
+                    pass
 
-            elif mtype == "quote":
-                if self._loop and self._loop.is_running():
-                    from core.quote_hub import quote_hub
+        elif mtype == "error":
+            logger.error("Worker 錯誤: %s", msg.get("msg"))
+
+        elif mtype == "quote":
+            if self._loop and self._loop.is_running():
+                from core.quote_hub import quote_hub
+                self._loop.call_soon_threadsafe(
+                    quote_hub._inject_quote, msg["data"]
+                )
+
+        elif mtype == "order_event":
+            if self._order_callback and self._loop and self._loop.is_running():
+                self._loop.call_soon_threadsafe(
+                    self._order_callback, msg
+                )
+
+        elif mtype == "response":
+            req_id = msg.get("req_id")
+            fut = self._pending.pop(req_id, None)
+            if fut and not fut.done() and self._loop:
+                if "error" in msg:
                     self._loop.call_soon_threadsafe(
-                        quote_hub._inject_quote, msg["data"]
+                        fut.set_exception, RuntimeError(msg["error"])
                     )
-
-            elif mtype == "order_event":
-                if self._order_callback and self._loop and self._loop.is_running():
-                    # msg 是 worker 萃取的純 Python dict，直接傳給 callback
+                else:
                     self._loop.call_soon_threadsafe(
-                        self._order_callback, msg
+                        fut.set_result, msg.get("result")
                     )
-
-            elif mtype == "response":
-                req_id = msg.get("req_id")
-                fut = self._pending.pop(req_id, None)
-                if fut and not fut.done() and self._loop:
-                    if "error" in msg:
-                        self._loop.call_soon_threadsafe(
-                            fut.set_exception, RuntimeError(msg["error"])
-                        )
-                    else:
-                        self._loop.call_soon_threadsafe(
-                            fut.set_result, msg.get("result")
-                        )
 
     # ── 內部 async 呼叫 ───────────────────────────────────────────────
 

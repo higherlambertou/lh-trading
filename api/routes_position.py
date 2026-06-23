@@ -22,27 +22,30 @@ _cache: dict[str, Any] = {
 
 
 async def cache_refresh_loop() -> None:
-    """背景快取刷新：每 60s 查保證金，每 120s 查流量。
-    直接呼叫 broker.margin() / broker.usage()（async，透過 worker IPC，不阻塞 loop）。"""
+    """背景快取刷新：連線後立刻刷一次，之後每 60s 刷保證金、每 120s 刷流量。"""
     tick = 0
-    await asyncio.sleep(30)
+    # 等 broker 連線（最多等 180s），連上後立刻做第一次刷新
+    for _ in range(180):
+        if broker.is_connected:
+            break
+        await asyncio.sleep(1)
+
     while True:
-        await asyncio.sleep(60)
-        tick += 1
-        if not broker.is_connected:
-            continue
-
-        try:
-            _cache["margin"] = await asyncio.wait_for(broker.margin(), timeout=5)
-            _cache["updated_at"] = time.time()
-        except Exception as e:
-            logger.debug("margin cache 刷新失敗（保留舊值）: %s", e)
-
-        if tick % 2 == 0:
+        if broker.is_connected:
+            tick += 1
             try:
-                _cache["usage"] = await asyncio.wait_for(broker.usage(), timeout=5)
+                _cache["margin"] = await asyncio.wait_for(broker.margin(), timeout=5)
+                _cache["updated_at"] = time.time()
             except Exception as e:
-                logger.debug("usage cache 刷新失敗（保留舊值）: %s", e)
+                logger.debug("margin cache 刷新失敗（保留舊值）: %s", e)
+
+            if tick % 2 == 0:
+                try:
+                    _cache["usage"] = await asyncio.wait_for(broker.usage(), timeout=5)
+                except Exception as e:
+                    logger.debug("usage cache 刷新失敗（保留舊值）: %s", e)
+
+        await asyncio.sleep(60)
 
 
 @router.get("/")
