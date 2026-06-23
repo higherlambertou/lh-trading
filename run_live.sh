@@ -44,7 +44,7 @@ HEALTH_HOST="${BIND_HOST:-localhost}"
 HEALTH_URL="http://${HEALTH_HOST}:${PORT}/api/health"
 APP_LOG="/tmp/lh_live.log"
 CHECK_INTERVAL=15      # 每幾秒檢查一次 health
-GRACE_PERIOD=60        # (重)啟動後容許「還沒登入完成」的寬限秒數（永豐 Solace 登入可達 ~135s，實測通常 <1s）
+GRACE_PERIOD=200       # (重)啟動後容許「還沒登入完成」的寬限秒數（永豐 Solace 登入可達 ~135s）
 FAIL_THRESHOLD=2       # 寬限期過後，連續幾次異常才重啟（避免單次抖動誤判）
 
 # ── 重啟退避：保護永豐「登入 1000 次/日」額度 ─────────────────────────
