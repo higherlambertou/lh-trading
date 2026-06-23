@@ -39,7 +39,7 @@ async def cache_refresh_loop() -> None:
             except Exception as e:
                 logger.debug("margin cache 刷新失敗（保留舊值）: %s", e)
 
-            if tick % 2 == 0:
+            if tick == 1 or tick % 2 == 0:
                 try:
                     _cache["usage"] = await asyncio.wait_for(broker.usage(), timeout=5)
                 except Exception as e:
