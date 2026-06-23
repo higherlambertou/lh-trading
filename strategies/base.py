@@ -137,6 +137,7 @@ class BaseStrategy(ABC):
     async def stop(self) -> None:
         self.state.is_running = False
         quote_hub.unsubscribe_strategy(self.name)
+        await self._cancel_all_pending()
         logger.info("策略 [%s] 已停止", self.name)
 
     async def _check_sl_tp(self, price: float) -> bool:
