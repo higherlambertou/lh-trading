@@ -22,8 +22,6 @@ from typing import Any
 
 import asyncio
 
-import shioaji as sj
-
 from core.bar_builder import Bar
 from core.quote_hub import quote_hub
 from strategies.base import BaseStrategy
@@ -130,7 +128,7 @@ class BarStrategy(BaseStrategy):
         prev_pos = self.state.position
         prev_entry = self.state.entry_price
         qty = abs(prev_pos)
-        action = sj.constant.Action.Sell if prev_pos > 0 else sj.constant.Action.Buy
+        action = "Sell" if prev_pos > 0 else "Buy"
         # 先歸零再 await，擋報價/下一根 bar 重入（與 base._check_sl_tp 同模式）
         self.state.position = 0
         self.state.entry_price = 0.0

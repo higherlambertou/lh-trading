@@ -3,7 +3,7 @@ from typing import Any
 import logging
 import statistics
 
-import shioaji as sj
+
 
 from strategies.base import BaseStrategy
 

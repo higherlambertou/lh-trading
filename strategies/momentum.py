@@ -2,7 +2,7 @@ from collections import deque
 from typing import Any
 import logging
 
-import shioaji as sj
+
 
 from strategies.base import BaseStrategy
 

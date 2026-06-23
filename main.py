@@ -3,7 +3,6 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-# ── 除錯：凍結時用 `kill -USR1 <pid>` 把所有 thread 的 Python 堆疊印到 log ──
 import faulthandler
 import signal
 
@@ -30,44 +29,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def _keepalive_loop() -> None:
-    """shioaji 的 Solace session 本身有心跳保活機制，不需要額外 ping。
-    list_positions keepalive 已移除：在 Solace 不穩時此呼叫持 GIL 凍住整個進程。
-    此 task 保留但為空迴圈，避免改動 lifespan 的 task 管理結構。"""
-    while True:
-        await asyncio.sleep(3600)
+async def _startup_bg() -> None:
+    """等 worker 連線後訂閱三檔期貨，讓 dashboard 閒置時也有報價。"""
+    for _ in range(180):          # 最多等 3 分鐘
+        if broker.is_connected:
+            break
+        await asyncio.sleep(1)
+
+    if not broker.is_connected:
+        logger.warning("Worker 未在 180s 內連線，略過啟動訂閱")
+        return
+
+    for code in ("TMF", "MXF", "TXF"):
+        try:
+            await broker.subscribe(code)
+            logger.info("啟動訂閱期貨 %s 完成", code)
+        except Exception as e:
+            logger.warning("啟動訂閱期貨 %s 失敗: %s", code, e)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    broker.login()
     loop = asyncio.get_event_loop()
+    broker.setup(loop)
+    broker.login()           # 啟動 shioaji_worker 子進程（非阻塞）
     strategy_engine.loop = loop
     quote_hub.setup(loop)
     manual_monitor.setup(loop)
 
-    # 啟動就訂閱三檔期貨：讓 dashboard 閒置（沒跑策略）時也有台指報價可看。
-    # 關鍵：subscribe / snapshots 都是同步 shioaji 呼叫，開盤時 Solace 慢就會卡住。
-    # 若直接在 startup event loop 執行，uvicorn 永遠綁不上 port → watchdog 誤殺。
-    # 全部丟到背景 task + broker.acall（executor）：startup 立刻完成、port 立刻開，
-    # 訂閱與底價種入在背景非同步補上。
-    async def _startup_bg() -> None:
-        for getter in ("tmf_contract", "mxf_contract", "txf_contract"):
-            try:
-                c = await broker.acall(lambda g=getter: getattr(broker, g)())
-                await broker.acall(
-                    lambda contract=c: quote_hub.ensure_contract_subscribed(contract)
-                )
-            except Exception as e:
-                logger.warning("啟動訂閱期貨 %s 失敗: %s", getter, e)
-
     tick_recorder.start()
-    keepalive_task = loop.create_task(_keepalive_loop())
-    startup_task = loop.create_task(_startup_bg())
-    cache_task = loop.create_task(cache_refresh_loop())
-    logger.info("系統啟動完成")
+    startup_task   = loop.create_task(_startup_bg())
+    cache_task     = loop.create_task(cache_refresh_loop())
+    logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
-    keepalive_task.cancel()
     startup_task.cancel()
     cache_task.cancel()
     tick_recorder.stop()
@@ -84,8 +78,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 每台機器的 Tailscale IP 不同 → 由 .env 的 CORS_ORIGINS 指定（逗號分隔），
-# 沒設時退回 localhost，main.py 因此可兩台共用、安心 push。
 _cors_origins = [
     o.strip()
     for o in os.getenv(
@@ -118,8 +110,6 @@ def health() -> dict[str, str]:
 if __name__ == "__main__":
     import uvicorn
     dev_mode = os.getenv("DEV", "false").lower() == "true"
-    # BIND_HOST 由各機器 .env 指定（建議填該機 Tailscale IP 做硬化）；
-    # 沒設時退回 0.0.0.0，確保任何機器都能直接起得來。
     uvicorn.run(
         "main:app",
         host=os.getenv("BIND_HOST", "0.0.0.0"),

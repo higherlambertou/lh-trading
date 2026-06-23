@@ -98,8 +98,7 @@ class VWAPRevertStrategy(BarStrategy):
                 logger.info("[vwap] 回歸 VWAP（dev=%.0f）→ 平倉 @ %.0f（%+.0f點）",
                             dev, bar.close, pts)
                 # _go 的反向會自動平倉，但這裡是「平倉不反手」→ 直接送平倉單
-                import shioaji as sj
-                action = sj.constant.Action.Sell if prev_pos > 0 else sj.constant.Action.Buy
+                action = "Sell" if prev_pos > 0 else "Buy"
                 qty = abs(prev_pos)
                 self.state.position = 0
                 self.state.entry_price = 0.0
