@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 from typing import Awaitable, Callable
 
 from core.bar_builder import Bar, BarBuilder
@@ -29,6 +30,9 @@ class QuoteHub:
         self._quote_seen = False
         self._ws_last_close: dict[str, float] = {}
         self._last_price: dict[str, float] = {}
+        self._daily_high: dict[str, float] = {}
+        self._daily_low: dict[str, float] = {}
+        self._daily_date: dict[str, str] = {}
         self.bars = BarBuilder(interval_sec=60)
 
     def get_last_price(self, code: str) -> float | None:
@@ -36,6 +40,16 @@ class QuoteHub:
 
     def all_last_prices(self) -> dict[str, float]:
         return dict(self._last_price)
+
+    def daily_ohlc(self) -> dict[str, dict[str, float]]:
+        result = {}
+        for code in self._last_price:
+            result[code] = {
+                "last":  self._last_price.get(code, 0.0),
+                "high":  self._daily_high.get(code, 0.0),
+                "low":   self._daily_low.get(code, 0.0),
+            }
+        return result
 
     def setup(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -79,6 +93,18 @@ class QuoteHub:
             )
 
         self._last_price[code] = price
+
+        # 日高日低（日期變換自動重置）
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._daily_date.get(code) != today:
+            self._daily_date[code] = today
+            self._daily_high[code] = price
+            self._daily_low[code]  = price
+        else:
+            if price > self._daily_high.get(code, price):
+                self._daily_high[code] = price
+            if price < self._daily_low.get(code, price):
+                self._daily_low[code] = price
 
         # tick 落地 + 1 分 K 聚合
         ts  = snapshot.get("ts", time.time())

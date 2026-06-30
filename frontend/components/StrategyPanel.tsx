@@ -127,6 +127,25 @@ export default function StrategyPanel() {
             ))}
           </div>
 
+          {/* 目前生效的風控參數 */}
+          {(running.params.daily_max_loss > 0 || running.params.max_trades_per_day > 0) && (
+            <div className="bg-[#141420] rounded p-2">
+              <div className="text-[10px] text-[#7070a0] uppercase tracking-widest mb-1.5">風控設定</div>
+              <div className="flex gap-4 flex-wrap">
+                {running.params.daily_max_loss > 0 && (
+                  <span className="text-[11px] font-mono text-[#a0a0c0]">
+                    當日虧損上限 <span className="text-[#ffc107]">{running.params.daily_max_loss.toLocaleString()} 元</span>
+                  </span>
+                )}
+                {running.params.max_trades_per_day > 0 && (
+                  <span className="text-[11px] font-mono text-[#a0a0c0]">
+                    最大進場次數 <span className="text-[#ffc107]">{running.params.max_trades_per_day} 次</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {running.events.length > 0 && (
             <div className="bg-[#141420] rounded p-2">
               <div className="text-[10px] text-[#7070a0] uppercase tracking-widest mb-1.5">事件</div>

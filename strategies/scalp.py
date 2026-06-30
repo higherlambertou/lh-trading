@@ -48,6 +48,7 @@ class ScalpStrategy(BaseStrategy):
         self._pending_entry_price: float = 0.0
         self._tick_buf: deque[int] = deque(maxlen=100)
         self._need_tp_resubmit: bool = False
+        self._consec_failures: int = 0          # 連續入場失敗次數（退避用）
 
         self._entry_filled_qty: int = 0
         self._entry_filled_value: float = 0.0
@@ -67,6 +68,7 @@ class ScalpStrategy(BaseStrategy):
             "signal_mode_int": 0 if self.signal_mode == "momentum" else 1,
             "cooldown_ticks": self.cooldown_ticks,
             "max_qty": self.max_qty,
+            **self._base_params,
         }
 
     @property
@@ -81,6 +83,7 @@ class ScalpStrategy(BaseStrategy):
             {"key": "signal_mode_int",    "label": "訊號模式 0=動量/1=隨機", "type": "number", "min": 0,    "max": 1},
             {"key": "cooldown_ticks",     "label": "冷卻 Ticks",            "type": "number", "min": 0,    "max": 300},
             {"key": "max_qty",            "label": "最大口數",               "type": "number", "min": 1,    "max": 10},
+            *self._base_param_schema,
         ]
 
     def _apply_params(self, params: dict[str, Any]) -> None:
@@ -305,7 +308,8 @@ class ScalpStrategy(BaseStrategy):
         direction = self._direction
         qty       = self._entry_qty
         self._phase          = "cooldown"
-        self._cooldown_count = 0
+        # SL 後多等 2 倍冷卻，讓券商端確認部位歸零、保證金釋放，再開新倉
+        self._cooldown_count = -(self.cooldown_ticks)
 
         await self._cancel_safe(self._tp_trade)
         self._tp_trade = None
@@ -369,14 +373,23 @@ class ScalpStrategy(BaseStrategy):
                 which = "入場單" if is_entry else ("停利單" if is_tp else "委託")
                 logger.warning("[scalp] %s失敗 op_type=%s op_code=%s op_msg=%s",
                                which, op_type, op_code, op_msg)
-                self._event(f"{which}失敗：{op_msg or op_code}")
-                self.state.errors.append(f"{which}失敗：{op_msg or op_code}")
                 if is_entry and self._phase == "pending":
+                    self._consec_failures += 1
+                    # 連續失敗退避：1次=1x, 2次=2x, 3次=4x, 4次以上=8x cooldown
+                    backoff = min(2 ** (self._consec_failures - 1), 8)
+                    effective_cooldown = self.cooldown_ticks * backoff
+                    logger.warning("[scalp] 入場連續失敗 %d 次，冷卻 %d ticks",
+                                   self._consec_failures, effective_cooldown)
+                    self._event(f"{which}失敗（{self._consec_failures}連敗）：{op_msg or op_code}")
+                    self.state.errors.append(f"{which}失敗：{op_msg or op_code}")
                     self._entry_trade    = None
                     self._direction      = 0
                     self._phase          = "cooldown"
-                    self._cooldown_count = 0
+                    self._cooldown_count = -effective_cooldown + self.cooldown_ticks
                     self._tick_buf.clear()
+                else:
+                    self._event(f"{which}失敗：{op_msg or op_code}")
+                    self.state.errors.append(f"{which}失敗：{op_msg or op_code}")
                 return
 
             cancelled = op_type == "Cancel" and op_code in ("", "00")
@@ -406,11 +419,12 @@ class ScalpStrategy(BaseStrategy):
             self._entry_filled_value / self._entry_filled_qty
             if self._entry_filled_qty else price
         )
-        self._last_entry_price = avg
-        self.state.entry_price = avg
-        self.state.position    = self._direction * self._entry_qty
-        self._entry_trade      = None
-        self._phase            = "holding"
+        self._last_entry_price  = avg
+        self.state.entry_price  = avg
+        self.state.position     = self._direction * self._entry_qty
+        self._entry_trade       = None
+        self._phase             = "holding"
+        self._consec_failures   = 0  # 成功入場，重置退避計數
         side = "多" if self._direction == 1 else "空"
         logger.info("[scalp] 入場成交完成 均價 %.0f x%d口 方向=%s → 掛停利",
                     avg, self._entry_qty, side)

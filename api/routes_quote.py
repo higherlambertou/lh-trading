@@ -9,6 +9,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/daily")
+def daily_ohlc() -> dict[str, dict[str, float]]:
+    """當日最高／最低／最新價（由 tick 推播累計，重啟後從第一筆 tick 重新累計）。"""
+    return quote_hub.daily_ohlc()
+
+
 @router.get("/last")
 def last_prices() -> dict[str, float]:
     """最新價快取（code→價），由報價推播填入。純讀我方記憶體，不對永豐發查詢。

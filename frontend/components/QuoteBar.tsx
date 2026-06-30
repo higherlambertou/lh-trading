@@ -140,6 +140,13 @@ export default function QuoteBar() {
               {chg > 0 ? "▲" : chg < 0 ? "▼" : "—"}
               {Math.abs(chg) > 0 ? fmt(Math.abs(chg)) : ""}
             </span>
+            {q.high > 0 && q.low > 0 && (
+              <span className="font-mono text-[10px] tabular-nums text-[#404060]">
+                <span className="text-[#ff5252]">H {fmt(q.high)}</span>
+                {" / "}
+                <span className="text-[#00e676]">L {fmt(q.low)}</span>
+              </span>
+            )}
             <span className="text-[10px] text-[#404060] tabular-nums">
               {tsToTime(q.ts)}
             </span>
