@@ -58,10 +58,10 @@ class BarStrategy(BaseStrategy):
         self.atr_trail_mult = float(params.get("atr_trail_mult", self.atr_trail_mult))
 
     # ── 生命週期 ──────────────────────────────────────────────────
-    def start(self, loop: asyncio.AbstractEventLoop, params: dict[str, Any] | None = None) -> None:
+    async def start(self, loop: asyncio.AbstractEventLoop, params: dict[str, Any] | None = None) -> None:
         if params:
             self._apply_bar_base_params(params)
-        super().start(loop, params)
+        await super().start(loop, params)
         quote_hub.subscribe_strategy_bars(self.name, self._on_bar_async)
 
     async def stop(self) -> None:

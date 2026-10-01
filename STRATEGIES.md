@@ -146,7 +146,9 @@
    成交後自動掛 ROD 停利單（距進場價 `tp_pts` 點）；同時每 tick 檢查是否虧損超過 `sl_pts` → 市價停損
 
 4. **冷卻**（`cooldown` 狀態）：  
-   出場後等待 `cooldown_ticks` 個 tick 再重新找訊號
+   出場後等待 `cooldown_ticks` 個 tick 再重新找訊號；**停損出場冷卻加倍**（等待
+   `2 × cooldown_ticks`，讓券商端確認部位歸零、保證金釋放）；**入場單被拒單**
+   則依連續失敗次數指數退避（1×/2×/4×/8× `cooldown_ticks`，失敗 4 次以上封頂 8×）
 
 **參數**：
 
@@ -190,11 +192,12 @@
 
 **適合**：趨勢日（台指每周都有 2-3 天有明確方向）。
 
+> `trade_end_hhmm` 內建預設就是 **1330**（非共用表的 0），程式碼裡直接寫死尾盤不追。
+
 **建議參數**：
 ```
 or_start_hhmm=845, or_minutes=15, buffer_pts=5
 stop_loss_pts=60, max_trades_per_day=2
-trade_end_hhmm=1330   # 尾盤不追
 atr_trail_mult=2       # 啟用 ATR 移動停損，趨勢日吃更多
 ```
 
@@ -226,10 +229,12 @@ atr_trail_mult=2       # 啟用 ATR 移動停損，趨勢日吃更多
 
 **適合**：震盪盤、開盤後急衝又回來的行情。強趨勢日逆勢連挨打，**務必設 `stop_loss_pts` 和 `daily_max_loss`**。
 
+> `stop_loss_pts` 內建預設就是 **60**（非共用表的 0），程式碼裡已內建這道防護。
+
 **建議參數**：
 ```
 dev_pts=40, exit_ratio=0.25, warmup_bars=10
-stop_loss_pts=60, daily_max_loss=3000, max_trades_per_day=5
+daily_max_loss=3000, max_trades_per_day=5
 ```
 
 ---
