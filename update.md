@@ -25,8 +25,8 @@
 
 | 項目 | 狀態 | 說明 | commit |
 |---|---|---|---|
-| 成交紀錄 `core/trade_log.py` | ✅ 待重啟生效 | 每筆委託＋券商成交回報落地 SQLite，附策略名、原因、訊號價、設定價、市場狀態標記；`/api/tradelog/*`、`python -m core.trade_log` | 未 commit |
-| 盤中即時狀態 `core/live_state.py` | ✅ 待重啟＋前端重 build | TMF 真實成交的外/內盤比例、日盤振幅比、與盤前判斷是否同向；`/api/market/live`、〈盤中即時〉面板 | 未 commit |
+| 成交紀錄 `core/trade_log.py` | ✅ 待重啟生效 | 每筆委託＋券商成交回報落地 SQLite，附策略名、原因、訊號價、設定價、市場狀態標記；`/api/tradelog/*`、`python -m core.trade_log` | 3928997 |
+| 盤中即時狀態 `core/live_state.py` | ✅ 待重啟＋前端重 build | TMF 真實成交的外/內盤比例、日盤振幅比、與盤前判斷是否同向；`/api/market/live`、〈盤中即時〉面板 | 3928997 |
 
 ---
 
@@ -86,7 +86,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-07（續）
+### 2026-10-07（續）— 3928997
 - **成交紀錄**（`core/trade_log.py`）：委託＋成交回報落地 `data/trade_log.db`。掛在 `broker.place_order/place_option_order` 與成交回報；
   策略、手動單、手動停損監看都用 `trade_log.context(...)` 補脈絡（策略名、原因、訊號價、設定價）。
   純加法：記錄永不丟例外、走獨立 writer thread、佇列滿就丟棄；`TRADE_LOG=false` 可關。**下單行為不變**（測試固定住回傳值與例外行為）。
