@@ -239,10 +239,11 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 export const api = {
   market: {
     state: () => req<MarketState>("/market/state"),
+    // POST 的回應刻意標成 unknown：呼叫端送出後要重抓 state()，不可把回應直接當 MarketState 用
     refresh: (force = false) =>
-      req<MarketState>(`/market/refresh${force ? "?force=true" : ""}`, { method: "POST" }),
+      req<unknown>(`/market/refresh${force ? "?force=true" : ""}`, { method: "POST" }),
     setIv: (iv: number) =>
-      req<MarketState>("/market/iv", {
+      req<unknown>("/market/iv", {
         method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ iv }),
       }),
     journal: (limit = 14) => req<JournalRow[]>(`/market/journal?limit=${limit}`),

@@ -24,7 +24,7 @@ from typing import Any
 from core.broker import broker
 from core.hurst_analyzer import HURST_LABEL, TREND_TH, REVERT_TH, aggregate_daily, analyze, trend_direction
 from core.iv_monitor import (
-    HIGH_PCT, IV_LABEL, LOOKBACK, LOW_PCT, evaluate_iv, fetch_atm_iv,
+    HIGH_PCT, LOOKBACK, LOW_PCT, evaluate_iv, fetch_atm_iv,
 )
 from core.market_store import MarketStore
 
@@ -158,7 +158,7 @@ def build_summary(store: MarketStore, cfg: Config, today: date, mode: str, phase
         "iv": iv,
         "direction": direction, "direction_label": DIRECTION_LABEL[direction],
         "state": state,
-        "state_label": f"{HURST_LABEL[hurst.state]} + IV{IV_LABEL[iv['state']]}",
+        "state_label": f"{HURST_LABEL[hurst.state]} + IV{iv['label']}",     # 例：趨勢 + IV正常／IV累積中 0/60
         "strategies": strategies, "hint": hint,
         "notes": notes,
     }

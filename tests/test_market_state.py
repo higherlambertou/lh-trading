@@ -429,6 +429,25 @@ def test_build_summary_without_iv_falls_back_to_hurst_only(store):
     assert s["direction"] in (-1, 0, 1)
 
 
+def test_a_lone_iv_value_does_not_change_the_judgement_until_history_exists(store):
+    """輸入了今日 ATM IV、但歷史是 0 天：IV 層仍是「累積中」，判斷只看 Hurst（面板『今日判斷』不會變）。
+    歷史夠了才會動：同一個 IV 值若比歷史低 → 偏低 → 判斷變成選擇權。"""
+    _seed_bars(store, _ar1_prices(60, 0.4, 3))
+    without = build_summary(store, Config(), date(2026, 10, 7), "sim", "pre")
+    store.upsert_iv("2026-10-07", 19.9, "manual")
+    with_iv = build_summary(store, Config(), date(2026, 10, 7), "sim", "pre")
+    assert with_iv["iv"]["value"] == 19.9 and with_iv["iv"]["state"] == "UNKNOWN"
+    assert with_iv["iv"]["label"] == "累積中 0/60"
+    assert (with_iv["state"], with_iv["hint"]) == (without["state"], without["hint"])
+    assert with_iv["state_label"].endswith("IV累積中 0/60") and without["state_label"].endswith("IV未知")
+
+    for i in range(60):                                                 # 歷史 60 天、全都比 19.9 高
+        store.upsert_iv((date(2026, 7, 1) + timedelta(days=i)).isoformat(), 25.0 + i * 0.1, "csv")
+    ready = build_summary(store, Config(), date(2026, 10, 7), "sim", "pre")
+    assert ready["iv"]["state"] == "LOW" and ready["state"] == "IV_LOW"
+    assert ready["state_label"].endswith("IV偏低")
+
+
 def test_build_summary_uses_only_bars_before_today(store):
     _seed_bars(store, _ar1_prices(60, 0.0, 1), end=date(2026, 10, 7))   # 最後一根是「今天」
     s = build_summary(store, Config(), date(2026, 10, 7), "sim", "pre")
@@ -646,6 +665,19 @@ def test_api_state_journal_stats_and_validation(client):
     assert r.status_code == 200 and r.json()["iv"]["value"] == 18.5
     st = c.get("/api/market/state").json()
     assert st["ready"] is True and st["iv"]["source"] == "manual" and st["config"]["window"] == 60
+
+
+def test_api_state_endpoints_share_one_shape(client, frozen):
+    """GET /state 與 POST /refresh、POST /iv 必須同形狀（含 ready / config）。
+    前端曾把 POST 回應直接當狀態用，缺 config 而整頁崩潰（This page couldn't load）。"""
+    c, svc, _ = client
+    before = c.get("/api/market/state").json()
+    assert before["ready"] is False and "config" in before
+    for resp in (c.post("/api/market/refresh"), c.post("/api/market/iv", json={"iv": 18.5})):
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ready"] is True and "config" in body
+        assert set(body) == set(c.get("/api/market/state").json())
 
 
 def test_api_refresh_refuses_while_strategy_running(client, frozen):

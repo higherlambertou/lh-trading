@@ -61,7 +61,8 @@ async def refresh(force: bool = False) -> dict[str, Any]:
             409, f"策略 {running[0]} 執行中：查詢期間 worker 會暫時排隊下單指令。"
                  "確定要重算請加 ?force=true"
         )
-    return await market_state.refresh("manual")
+    await market_state.refresh("manual")
+    return market_state.snapshot()          # 與 GET /state 同形狀（含 ready / config）
 
 
 @router.post("/iv")
@@ -72,7 +73,8 @@ async def set_iv(req: IVRequest) -> dict[str, Any]:
             date.fromisoformat(req.date)
         except ValueError:
             raise HTTPException(422, "date 格式需為 YYYY-MM-DD")
-    return await market_state.set_manual_iv(req.iv, req.date)
+    await market_state.set_manual_iv(req.iv, req.date)
+    return market_state.snapshot()          # 與 GET /state 同形狀（含 ready / config）
 
 
 @router.get("/journal")

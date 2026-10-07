@@ -76,15 +76,17 @@ export default function MarketStatePanel() {
 
   const handleRefresh = async () => {
     setBusy(true);
+    // 狀態一律以 GET /state 為準：POST 的回應不直接拿來當狀態（形狀不保證相同，曾因此整頁崩潰）
     try {
-      setSt(await api.market.refresh());
+      await api.market.refresh();
+      await loadState();
       flash(true, "已重算今日市場狀態");
     } catch (e) {
       const text = errText(e);
       // 策略執行中：後端預設拒絕（查詢期間 worker 會排隊下單指令），確認後才強制
       if (text.startsWith("409") &&
           window.confirm("策略執行中：查詢期間券商 worker 會暫時排隊下單指令。仍要重算嗎？")) {
-        try { setSt(await api.market.refresh(true)); flash(true, "已重算今日市場狀態"); }
+        try { await api.market.refresh(true); await loadState(); flash(true, "已重算今日市場狀態"); }
         catch (e2) { flash(false, errText(e2)); }
       } else {
         flash(false, text);
@@ -100,7 +102,8 @@ export default function MarketStatePanel() {
     if (!(v > 0 && v < 300)) { flash(false, "IV 需為 0~300 之間的數字（單位 %）"); return; }
     setBusy(true);
     try {
-      setSt(await api.market.setIv(v));
+      await api.market.setIv(v);
+      await loadState();
       setIvInput("");
       flash(true, `已記錄 ATM IV ${v}%，今日狀態已重算`);
     } catch (e) {
@@ -163,7 +166,7 @@ export default function MarketStatePanel() {
 
       {!st?.ready ? (
         <p className="text-[11px] text-[#404060]">
-          尚未計算：券商連線後會自動計算（盤前 {String(st?.config.pre_hhmm ?? 830).padStart(4, "0")}），或按右上「重算」。
+          尚未計算：券商連線後會自動計算（盤前 {String(st?.config?.pre_hhmm ?? 830).padStart(4, "0")}），或按右上「重算」。
         </p>
       ) : (
         <>
@@ -183,36 +186,47 @@ export default function MarketStatePanel() {
 
             <Card title="第二層 · IV">
               <div className="flex items-baseline gap-2">
+                {/* 大字：有百分位顯示百分位；歷史不足時改顯示 ATM IV 本身，不要留一個「—」 */}
                 <span className="font-mono text-2xl">
-                  {iv?.percentile != null ? `${iv.percentile.toFixed(0)}%` : "—"}
+                  {iv?.percentile != null
+                    ? `${iv.percentile.toFixed(0)}%`
+                    : iv?.value != null ? `${iv.value.toFixed(1)}%` : "—"}
                 </span>
                 <Chip code={iv?.state} text={iv?.label ?? "—"} />
               </div>
               <div className="text-[11px] text-[#7070a0] font-mono">
-                {iv?.value != null
-                  ? `ATM IV ${iv.value.toFixed(1)}%（${iv.source}${iv.as_of && iv.as_of !== st.date ? ` ${iv.as_of}` : ""}）`
+                {iv?.percentile != null
+                  ? `歷史百分位 · ATM IV ${iv.value?.toFixed(1)}%`
+                  : iv?.value != null
+                  ? `ATM IV（百分位需 ${iv.min_history} 天歷史）`
                   : "尚無 IV"}
               </div>
               <div className="text-[11px] text-[#404060] font-mono">
                 歷史 {iv?.history_n}/{iv?.min_history} 天
+                {iv?.value != null &&
+                  ` · 來源 ${iv.source}${iv.as_of && iv.as_of !== st.date ? ` ${iv.as_of}` : ""}`}
               </div>
             </Card>
 
             <Card title="今日判斷">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Chip code={st.state} text={STATE_TEXT[st.state ?? ""] ?? st.state ?? "—"} />
-                <span className="text-[11px] text-[#7070a0]">{st.state_label}</span>
+                {/* 由結構化欄位組字串，不依賴後端的 state_label */}
+                <span className="text-[11px] text-[#7070a0]">{h?.label} + IV {iv?.label}</span>
               </div>
               <div className="text-sm text-[#e0e0f0]">{st.hint}</div>
+              {iv?.state === "UNKNOWN" && (
+                <div className="text-[11px] text-[#ffc107]">IV 層未就緒，目前只依 Hurst 判斷</div>
+              )}
               <div className="text-[11px] text-[#404060] font-mono">
                 方向 {st.direction_label}（scalp market_bias：1 順勢／-1 逆勢／2 依狀態自動）
               </div>
             </Card>
           </div>
 
-          {(st.notes?.length ?? 0) > 0 && (
+          {(st.notes ?? []).filter((n) => !n.startsWith("IV 層未就緒")).length > 0 && (
             <ul className="space-y-0.5">
-              {st.notes!.map((n, i) => (
+              {st.notes!.filter((n) => !n.startsWith("IV 層未就緒")).map((n, i) => (
                 <li key={i} className="text-[11px] text-[#ffc107] leading-tight">※ {n}</li>
               ))}
             </ul>
@@ -233,7 +247,7 @@ export default function MarketStatePanel() {
           className="px-2.5 py-1 text-[11px] rounded border border-[#3b82f6]/40 text-[#3b82f6] bg-[#3b82f6]/10 hover:bg-[#3b82f6]/20 transition-colors disabled:opacity-40"
         >送出</button>
         <span className="text-[10px] text-[#404060]">
-          {st?.config.iv_auto ? "已啟用券商自動抓取；手動值優先" : "僅手動輸入"}
+          {st?.config?.iv_auto ? "已啟用券商自動抓取；手動值優先" : "僅手動輸入"}
         </span>
       </div>
 
