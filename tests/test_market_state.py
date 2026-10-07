@@ -16,8 +16,8 @@ from core.hurst_analyzer import (
     aggregate_daily, analyze, classify_hurst, null_stats, trend_direction, ts_to_local,
 )
 from core.iv_monitor import (
-    atm_iv_from_quotes, black76, evaluate_iv, expiry_of, fetch_atm_iv, implied_vol,
-    iv_percentile, iv_signal, pick_expiry, read_iv_csv,
+    _option_price, atm_iv_from_quotes, black76, evaluate_iv, expiry_of, fetch_atm_iv,
+    implied_vol, iv_percentile, iv_signal, pick_expiry, read_iv_csv,
 )
 from core.market_store import MarketStore
 
@@ -63,8 +63,9 @@ def make_kbars(start: date, end: date) -> dict[str, list]:
 class FakeBroker:
     is_connected = True
 
-    def __init__(self) -> None:
+    def __init__(self, dead_strikes: set[int] | None = None) -> None:
         self.kbar_calls: list[tuple[str, str, str]] = []
+        self.dead_strikes = dead_strikes or set()          # 沒有報價也沒成交的履約價
 
     async def kbars(self, code, start, end):
         self.kbar_calls.append((code, start, end))
@@ -80,6 +81,8 @@ class FakeBroker:
         return [19900, 20000, 20100]
 
     async def option_snapshot(self, month, strike, right, category="TXO"):
+        if strike in self.dead_strikes:
+            return {"code": f"TXO{strike}", "close": 0.0, "bid": 0.0, "ask": 0.0, "total_volume": 0}
         T = (expiry_of(month) - datetime(2026, 10, 7, 8, 30)).total_seconds() / (365 * 86400)
         px = black76(20000.0, float(strike), T, 0.18, 0.015, right == "C")
         return {"code": f"TXO{strike}", "close": round(px, 4), "bid": 0, "ask": 0}
@@ -235,6 +238,80 @@ def test_fetch_atm_iv_with_fake_broker():
     res = asyncio.run(fetch_atm_iv(FakeBroker(), now=datetime(2026, 10, 7, 8, 30)))
     assert res["month"] == "202610" and res["strike"] == 20000        # 20010 最近的履約價
     assert res["iv"] == pytest.approx(18.0, abs=0.05)
+
+
+def test_option_price_prefers_mid_over_stale_last():
+    assert _option_price({"close": 715, "bid": 735, "ask": 755}) == 745       # 最近成交低於買價 = 陳舊
+    assert _option_price({"close": 805, "bid": 785, "ask": 805}) == 795
+    assert _option_price({"close": 300, "bid": 100, "ask": 200}) == 300       # 價差過寬 → 退回成交價
+    assert _option_price({"close": 300, "bid": 0, "ask": 0}) == 300           # 沒報價（盤前/休市）
+    assert _option_price({"close": 0, "bid": 0, "ask": 0}) == 0
+
+
+def test_fetch_atm_iv_skips_strikes_without_quotes():
+    # 離現價最近的 20000 沒有報價沒成交 → 往下一檔（20100 比 19900 近）
+    res = asyncio.run(fetch_atm_iv(FakeBroker(dead_strikes={20000}), now=datetime(2026, 10, 7, 8, 30)))
+    assert res["strike"] == 20100 and res["iv"] == pytest.approx(18.0, abs=0.05)
+
+
+def test_fetch_atm_iv_raises_when_nothing_is_quoted():
+    broker = FakeBroker(dead_strikes={19900, 20000, 20100})
+    with pytest.raises(RuntimeError, match="沒有可用報價"):
+        asyncio.run(fetch_atm_iv(broker, now=datetime(2026, 10, 7, 8, 30)))
+
+
+def test_fetch_atm_iv_rejects_absurd_iv():
+    class Absurd(FakeBroker):
+        async def option_snapshot(self, month, strike, right, category="TXO"):
+            return {"code": "x", "close": 3000.0, "bid": 3000.0, "ask": 3000.0}      # 隱含 IV ~190%
+
+    with pytest.raises(RuntimeError, match="沒有可用報價"):
+        asyncio.run(fetch_atm_iv(Absurd(), now=datetime(2026, 10, 7, 8, 30)))
+
+
+class ReplayBroker(FakeBroker):
+    """2026-10-07 16:26 在正式盤實際抓到的 snapshot（夜盤時段）：TXF=49840，
+    最近的 49850 沒報價沒成交，有量的是 49800 / 49900；49900 Call 最近成交 715 低於買價 735（陳舊）。"""
+    QUOTES = {  # (履約價, 買賣權) → (close, bid, ask)
+        (49850, "C"): (0, 0, 0), (49850, "P"): (0, 0, 0),
+        (49800, "C"): (805, 785, 805), (49800, "P"): (760, 745, 760),
+        (49900, "C"): (715, 735, 755), (49900, "P"): (815, 795, 815),
+    }
+
+    async def snapshots(self, codes):
+        return [{"code": "TXFR1", "close": 49840.0}]
+
+    async def option_strikes(self, month, right, category="TXO"):
+        return [49700, 49750, 49800, 49850, 49900, 49950, 50000]
+
+    async def option_snapshot(self, month, strike, right, category="TXO"):
+        if (strike, right) not in self.QUOTES:
+            raise RuntimeError("找不到選擇權合約")
+        close, bid, ask = self.QUOTES[(strike, right)]
+        return {"code": f"TXO{strike}", "close": float(close), "bid": float(bid), "ask": float(ask)}
+
+
+def test_fetch_atm_iv_replays_real_snapshots_from_2026_10_07():
+    now = datetime(2026, 10, 7, 16, 26)
+    res = asyncio.run(fetch_atm_iv(ReplayBroker(), now=now))
+    assert res["strike"] == 49800                                   # 49850 沒報價 → 跳過
+    assert res["forward"] == pytest.approx(49840, abs=5)            # 平價推出的遠期價 ≈ TXF 現價
+    # 獨立估算：Brenner-Subrahmanyam  σ ≈ 跨式價 / (0.8·F·√T)
+    T = (expiry_of("202610") - now).total_seconds() / (365 * 86400)
+    approx = 100 * (795 + 752.5) / (0.7979 * res["forward"] * T ** 0.5)
+    assert res["iv"] == pytest.approx(approx, abs=0.3) and 19.0 < res["iv"] < 21.0
+    # 另一檔 49900（用中價）算出的 IV 應與 49800 一致，證明資料與方法自洽
+    other = atm_iv_from_quotes(745, 805, 49900, T, 0.015)[0]
+    assert other == pytest.approx(res["iv"], abs=0.3)
+    # 若誤用陳舊的最近成交價（49900 Call=715），平價推出的遠期價會偏離 TXF 約 40 點；中價不會
+    stale_forward = atm_iv_from_quotes(715, 815, 49900, T, 0.015)[1]
+    assert abs(stale_forward - 49840) > 30 and abs(res["forward"] - 49840) < 5
+
+    # 其餘履約價查不到合約（RuntimeError）也不應中斷，而是換下一檔
+    class OnlyFar(ReplayBroker):
+        QUOTES = {k: v for k, v in ReplayBroker.QUOTES.items() if k[0] == 49900}
+
+    assert asyncio.run(fetch_atm_iv(OnlyFar(), now=now))["strike"] == 49900
 
 
 # ── 儲存層 ────────────────────────────────────────────────────────

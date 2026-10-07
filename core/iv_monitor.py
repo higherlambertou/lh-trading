@@ -2,8 +2,8 @@
 
 資料來源（優先序）：
   1. 手動輸入（POST /api/market/iv，單位 %），永遠優先於自動抓取
-  2. Shioaji 自動抓：取最近且距到期 >= IV_MIN_DAYS 天的 TXO 月選擇權，ATM 履約價的 Call/Put，
-     用賣權買權平價推遠期價 F = K + (C-P)/df，再以 Black-76 反推 IV（Call/Put 取平均）
+  2. Shioaji 自動抓：取最近且距到期 >= IV_MIN_DAYS 天的 TXO 月選擇權，由近到遠找「Call/Put 都有報價」
+     的履約價（買賣中價），用賣權買權平價推遠期價 F = K + (C-P)/df，再以 Black-76 反推 IV（Call/Put 取平均）
   3. CSV 回填歷史（python -m core.iv_monitor import file.csv）：百分位需要歷史，
      不回填就要等每天累積到 IV_MIN_HISTORY 天
 
@@ -138,13 +138,20 @@ def evaluate_iv(current: float | None, history: Sequence[float], *,
 
 # ── Shioaji 自動抓 ATM IV ─────────────────────────────────────────
 
+MAX_STRIKE_TRIES = 4        # ATM 附近最多試幾檔履約價（有些 50 點間距的履約價完全沒報價沒成交）
+MAX_SPREAD_RATIO = 0.3      # 買賣價差超過中價的這個比例，視為報價不可信
+IV_SANE_RANGE = (3.0, 150.0)
+
+
 def _option_price(q: dict[str, Any]) -> float:
-    """最近成交價優先；沒有成交才用買賣中價。"""
-    close = float(q.get("close") or 0)
-    if close > 0:
-        return close
+    """買賣中價優先：最近成交價可能是很久以前的陳舊價（實測 Call 最近成交 715 < 買價 735）。
+    價差過寬或沒有報價才退回最近成交價；兩者都沒有回傳 0。"""
     bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
-    return (bid + ask) / 2 if bid > 0 and ask >= bid else 0.0
+    if bid > 0 and ask >= bid:
+        mid = (bid + ask) / 2
+        if ask - bid <= MAX_SPREAD_RATIO * mid:
+            return mid
+    return float(q.get("close") or 0)
 
 
 async def fetch_atm_iv(broker: Any, now: datetime | None = None, *,
@@ -165,17 +172,28 @@ async def fetch_atm_iv(broker: Any, now: datetime | None = None, *,
     strikes = await asyncio.wait_for(broker.option_strikes(month, "C", "TXO"), timeout=15)
     if not strikes:
         raise RuntimeError(f"{month} 無履約價")
-    k = min(strikes, key=lambda s: abs(s - under))
-    call = await asyncio.wait_for(broker.option_snapshot(month, k, "C", "TXO"), timeout=10)
-    put = await asyncio.wait_for(broker.option_snapshot(month, k, "P", "TXO"), timeout=10)
-    pc, pp = _option_price(call), _option_price(put)
     T = (expiry_of(month) - now).total_seconds() / (365 * 86400)
-    res = atm_iv_from_quotes(pc, pp, float(k), T, rate)
-    if res is None:
-        raise RuntimeError(f"IV 反推失敗（{month} {k} call={pc} put={pp}）")
-    iv, F = res
-    return {"iv": iv, "strike": int(k), "month": month, "call": pc, "put": pp,
-            "forward": F, "days": round(T * 365, 1), "underlying": under}
+
+    # 由近到遠試：最靠近現價的履約價不一定有報價（實測 49850 Call/Put 全 0，有量的是 100 點間距的 49800/49900）
+    tried: list[str] = []
+    for k in sorted(strikes, key=lambda s: abs(s - under))[:MAX_STRIKE_TRIES]:
+        try:
+            call = await asyncio.wait_for(broker.option_snapshot(month, k, "C", "TXO"), timeout=10)
+            put = await asyncio.wait_for(broker.option_snapshot(month, k, "P", "TXO"), timeout=10)
+        except (RuntimeError, ValueError) as e:      # 該檔查不到合約 → 換下一檔（逾時照常往外丟）
+            tried.append(f"{k}:{e}")
+            continue
+        pc, pp = _option_price(call), _option_price(put)
+        tried.append(f"{k}:{pc:g}/{pp:g}")
+        if pc <= 0 or pp <= 0:
+            continue
+        res = atm_iv_from_quotes(pc, pp, float(k), T, rate)
+        if res is None or not (IV_SANE_RANGE[0] <= res[0] <= IV_SANE_RANGE[1]):
+            continue
+        iv, F = res
+        return {"iv": iv, "strike": int(k), "month": month, "call": pc, "put": pp,
+                "forward": F, "days": round(T * 365, 1), "underlying": under}
+    raise RuntimeError(f"ATM 附近 {len(tried)} 檔履約價都沒有可用報價（{month}：{'、'.join(tried)}）")
 
 
 # ── CSV 回填：python -m core.iv_monitor import file.csv ───────────
