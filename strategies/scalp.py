@@ -5,6 +5,7 @@ from collections import deque
 from typing import Any
 
 from core.broker import broker
+from core.daily_summary import market_state
 from strategies.base import BaseStrategy, POINT_VALUE_TMF
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ class ScalpStrategy(BaseStrategy):
         self.signal_mode: str = "momentum"
         self.cooldown_ticks: int = 30
         self.max_qty: int = 1
+        self.market_bias: int = 0               # 0=不限 1=順勢 -1=逆勢 2=依今日市場狀態自動
+        self._last_bias_reason: str = ""        # 偏向擋單的理由（同一理由只記一次）
 
         self._phase: str = "idle"
         self._direction: int = 0
@@ -68,6 +71,7 @@ class ScalpStrategy(BaseStrategy):
             "signal_mode_int": 0 if self.signal_mode == "momentum" else 1,
             "cooldown_ticks": self.cooldown_ticks,
             "max_qty": self.max_qty,
+            "market_bias": self.market_bias,
             **self._base_params,
         }
 
@@ -83,6 +87,7 @@ class ScalpStrategy(BaseStrategy):
             {"key": "signal_mode_int",    "label": "訊號模式 0=動量/1=隨機", "type": "number", "min": 0,    "max": 1},
             {"key": "cooldown_ticks",     "label": "冷卻 Ticks",            "type": "number", "min": 0,    "max": 300},
             {"key": "max_qty",            "label": "最大口數",               "type": "number", "min": 1,    "max": 10},
+            {"key": "market_bias",        "label": "市場偏向 0=不限/1=順勢/-1=逆勢/2=自動", "type": "number", "min": -1, "max": 2},
             *self._base_param_schema,
         ]
 
@@ -96,11 +101,15 @@ class ScalpStrategy(BaseStrategy):
         self.signal_mode        = "random" if int(params.get("signal_mode_int", 0)) else "momentum"
         self.cooldown_ticks     = int(params.get("cooldown_ticks",     self.cooldown_ticks))
         self.max_qty            = max(1, int(params.get("max_qty",     self.max_qty)))
+        bias = int(params.get("market_bias", self.market_bias))
+        self.market_bias        = bias if bias in (-1, 0, 1, 2) else 0
+        self._last_bias_reason  = ""
         self._tick_buf = deque(maxlen=self.momentum_window)
         logger.info(
-            "[scalp] 套用參數: TP=%d SL=%d offset=%d mode=%s window=%d threshold=%.2f cooldown=%d max_qty=%d",
+            "[scalp] 套用參數: TP=%d SL=%d offset=%d mode=%s window=%d threshold=%.2f cooldown=%d max_qty=%d bias=%d",
             self.tp_pts, self.sl_pts, self.entry_offset, self.signal_mode,
             self.momentum_window, self.momentum_threshold, self.cooldown_ticks, self.max_qty,
+            self.market_bias,
         )
 
     # ── 啟動帶倉接管 ──────────────────────────────────────────────
@@ -150,6 +159,25 @@ class ScalpStrategy(BaseStrategy):
             return -1
         return 0
 
+    def _apply_market_bias(self, sig: int) -> int:
+        """market_bias != 0 時，只放行與「日K方向 × 偏向」同向的訊號，其餘擋下（回 0）。
+        只讀 market_state 的記憶體快取，沒有 I/O，可放心跑在 tick 路徑上。"""
+        if self.market_bias == 0:
+            return sig
+        want, reason = market_state.bias_direction(self.market_bias)
+        if want == 0 or sig != want:
+            self._note_bias_block(reason or f"訊號{'多' if sig > 0 else '空'}與偏向{'多' if want > 0 else '空'}不符")
+            return 0
+        self._last_bias_reason = ""
+        return sig
+
+    def _note_bias_block(self, reason: str) -> None:
+        if reason == self._last_bias_reason:        # 同一理由只記一次，避免每個 tick 洗版
+            return
+        self._last_bias_reason = reason
+        logger.info("[scalp] market_bias 擋下進場：%s", reason)
+        self._event(f"偏向擋單：{reason}")
+
     # ── 主要 tick 邏輯 ──────────────────────────────────────────
 
     async def on_quote(self, quote: dict) -> None:
@@ -159,7 +187,7 @@ class ScalpStrategy(BaseStrategy):
             if self.state.position != 0:
                 logger.warning("[scalp] idle 但 position=%d，暫停進場", self.state.position)
                 return
-            sig = self._get_signal(quote)
+            sig = self._apply_market_bias(self._get_signal(quote))
             if sig != 0:
                 await self._do_enter(price, sig)
 

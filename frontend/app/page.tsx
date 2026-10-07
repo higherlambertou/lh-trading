@@ -7,6 +7,7 @@ import ModeToggle from "@/components/ModeToggle";
 import UsageIndicator from "@/components/UsageIndicator";
 import StatusDot from "@/components/StatusDot";
 import QuoteBar from "@/components/QuoteBar";
+import MarketStatePanel from "@/components/MarketStatePanel";
 
 export default function Page() {
   return (
@@ -24,8 +25,9 @@ export default function Page() {
         </div>
       </header>
 
-      {/* ── 2×2 Grid ───────────────────────────────────────────── */}
+      {/* ── 市場狀態（全寬）+ 2×2 Grid ──────────────────────────── */}
       <main className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-[1400px] mx-auto">
+        <MarketStatePanel />
         <StrategyPanel />
         <PositionPanel />
         <OrderPanel />

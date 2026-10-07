@@ -92,6 +92,32 @@ curl http://100.127.125.13:8002/api/position | python3 -m json.tool
 curl http://100.127.125.13:8002/api/quote/last | python3 -m json.tool
 ```
 
+### 市場狀態（Hurst + IV）
+
+```bash
+# 今日狀態（純讀快取）
+curl http://100.127.125.13:8002/api/market/state | python3 -m json.tool
+
+# 手動輸入今日 ATM IV（%），並重算今日狀態
+curl -X POST http://100.127.125.13:8002/api/market/iv -H 'Content-Type: application/json' -d '{"iv": 18.5}'
+
+# 立刻重算（向券商抓日K/選擇權；策略執行中預設 409，加 ?force=true 強制）
+curl -X POST http://100.127.125.13:8002/api/market/refresh
+
+# 每日日誌、驗證統計
+curl 'http://100.127.125.13:8002/api/market/journal?limit=14' | python3 -m json.tool
+curl 'http://100.127.125.13:8002/api/market/stats?strategy=scalp' | python3 -m json.tool
+
+# 不連券商，只讀 db 印出文字版（含 Hurst 單獨輸出）
+python -m core.daily_summary
+python -m core.hurst_analyzer
+
+# 回填歷史 IV（CSV 欄位：日期, IV%），讓百分位不用等 60 天
+python -m core.iv_monitor import iv_history.csv
+```
+
+資料庫在 `data/market_state.db`（IV 歷史與手動備註無法重建，記得備份）。
+
 ---
 
 ## 日誌查看

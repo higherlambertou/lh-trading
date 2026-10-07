@@ -118,6 +118,32 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   覆寫 `_on_position_synced()` 在帶倉啟動時把既有部位接管進狀態機（否則會卡在 idle）。
 - 同帳戶同合約**一次只能跑一個策略**（`api/routes_strategy.py` 有 409 守衛）。
 
+### 市場狀態判斷（盤前 Hurst + IV → 策略對應 → 日誌）
+
+依《市場狀態判斷系統.md》：開倉前先判斷市場狀態。**預設只顯示＋警告，不擋下單**（`MARKET_STATE_GATE=off` 關警告）。
+流程：盤前 08:30 算一次今日狀態（盤中不改，手動重算除外）→ 盤後 13:50 更新日 K／IV／當日振幅 → 每 30s 取樣策略損益進日誌。
+參數見 `.env.example` 末段。
+
+- **`core/hurst_analyzer.py`** — 第一層。純 numpy：DFA-1 + 蒙地卡羅校準（隨機漫步＝0.5）並輸出 z 值；1 分 K 合成日盤日 K。
+  ⚠️ 原 `~/Downloads/hurst_analyzer.py` 的估計器有系統性偏誤（R/S 套在對數價格，隨機漫步得 ~0.97）、
+  且 shioaji 1.5.x 沒有 `constant.Timeframe`（只有 1 分 K，ts 為奈秒），已重寫，**不要搬回舊版**。
+  ⚠️ 60 根窗口的 H 雜訊約 ±0.13，文件的 0.45/0.55 門檻落在雜訊內（純隨機漫步也有 ~70% 窗口被標成趨勢/回歸）。
+  看 z 值；想更準加大 `HURST_WINDOW`（250 根約 ±0.06），想更保守設 `HURST_MIN_Z`。
+- **`core/iv_monitor.py`** — 第二層。ATM IV（Black-76 反推）→ 歷史百分位 → LOW/NORMAL/HIGH。
+  資料來源優先序：手動輸入 > Shioaji 自動抓（最近月、距到期 ≥7 天、ATM Call/Put 平價取遠期）> CSV 回填
+  （`python -m core.iv_monitor import file.csv`）。百分位需 `IV_MIN_HISTORY` 天歷史，不夠時只依 Hurst。
+- **`core/daily_summary.py`** — 整合、策略對應表、排程、策略日績效取樣；`market_state` 單例。
+  CLI：`python -m core.daily_summary`（只讀 db，不連券商）。
+- **`core/market_store.py`** — SQLite `data/market_state.db`（日 K 快取、IV 歷史、日誌、策略日績效）。
+  **IV 歷史與手動備註無法重建，請備份。** sim/live 共用同一檔，日誌以 `(date, mode)` 區分。
+- **`api/routes_market.py`** — `/api/market/{state,refresh,iv,journal,stats}`；前端 `MarketStatePanel`。
+- **scalp `market_bias`** — 0 不限（預設，行為不變）／1 順勢／-1 逆勢／2 依今日狀態自動
+  （趨勢→順勢、均值回歸→逆勢、不明確→不進場）。方向＝日 K 收盤 vs 20 日均線。
+- 測試：`python -m pytest tests -q`（需 numpy、fastapi、httpx；用裝了 shioaji 的 Python 環境）。
+
+> `broker.kbars()` 會佔住 worker（單執行緒）、下單指令排隊，所以只在盤前/盤後用；
+> `POST /api/market/refresh` 有策略執行中時預設回 409（`?force=true` 才強制）。
+
 ### event loop 鐵則
 任何同步 shioaji 呼叫**不可**直接跑在 asyncio event loop 上——一旦 SDK 卡住會凍結整個服務。
 一律用 `broker.acall(...)` 或 `loop.run_in_executor(...)` 丟到 executor。

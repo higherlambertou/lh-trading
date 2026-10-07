@@ -262,6 +262,14 @@ class BrokerClient:
     async def snapshots(self, contract_codes: list[str]) -> list[dict]:
         return await self._acall("snapshots", contracts=contract_codes)
 
+    async def kbars(self, contract_code: str, start: str, end: str) -> dict:
+        """1 分 K（ts/open/high/low/close/volume 平行陣列），start/end 為 YYYY-MM-DD。
+        worker 單執行緒：查詢期間下單指令會排隊，只在盤前/盤後呼叫，且單次區間別太長。"""
+        return await self._acall(
+            "kbars", timeout=60.0,
+            contract_code=contract_code.upper(), start=start, end=end, timeout_ms=45000,
+        )
+
     # 選擇權查詢
 
     async def option_snapshot(

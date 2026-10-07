@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from core.daily_summary import market_state
 from strategies.base import BaseStrategy, StrategyState
 from strategies.ma_cross import MACrossStrategy
 from strategies.breakout import BreakoutStrategy
@@ -78,8 +79,16 @@ def get_strategy(name: str) -> dict[str, Any]:
     return _strategy_summary(name, s)
 
 
+async def _sample_pnl() -> None:
+    """啟停後立刻取樣一次策略日績效（日誌用），失敗不影響啟停。"""
+    try:
+        await market_state.sample_strategies(strategy_engine.strategies)
+    except Exception as e:
+        logger.debug("策略日績效取樣失敗: %r", e)
+
+
 @router.post("/{name}/start")
-async def start_strategy(name: str, req: StartRequest) -> dict[str, str]:
+async def start_strategy(name: str, req: StartRequest) -> dict[str, Any]:
     s = strategy_engine.strategies.get(name)
     if not s:
         raise HTTPException(404, f"Strategy '{name}' not found")
@@ -94,8 +103,15 @@ async def start_strategy(name: str, req: StartRequest) -> dict[str, str]:
         )
     if strategy_engine.loop is None:
         raise HTTPException(503, "Event loop not ready")
+    # 與今日市場狀態不符 → 只警告不擋（MARKET_STATE_GATE=off 可關閉）
+    warning = market_state.check_strategy(name)
     await s.start(strategy_engine.loop, params=req.params or None)
-    return {"status": "started", "name": name}
+    await _sample_pnl()
+    resp: dict[str, Any] = {"status": "started", "name": name}
+    if warning:
+        logger.warning("策略 [%s] 啟動警告: %s", name, warning)
+        resp["warning"] = warning
+    return resp
 
 
 @router.post("/{name}/stop")
@@ -106,6 +122,7 @@ async def stop_strategy(name: str) -> dict[str, str]:
     if not s.state.is_running:
         raise HTTPException(400, "Strategy not running")
     await s.stop()
+    await _sample_pnl()
     return {"status": "stopped", "name": name}
 
 

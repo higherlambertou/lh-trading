@@ -152,13 +152,110 @@ export interface OptionOrderRequest {
   exit_buffer_pts?: number;
 }
 
+// ─── 市場狀態 ─────────────────────────────────────────────────────
+
+export interface HurstInfo {
+  value: number | null;       // 校準後 H（隨機漫步 = 0.5）
+  raw: number | null;
+  z: number | null;           // 與隨機漫步差幾個標準差
+  se: number | null;          // 此窗口長度下純隨機漫步的 H 雜訊
+  state: string;              // TREND | REVERT | RANDOM | UNCERTAIN
+  label: string;
+  window: number;
+  last_bar: string;
+  note: string;
+}
+
+export interface IvInfo {
+  state: string;              // LOW | NORMAL | HIGH | UNKNOWN
+  label: string;
+  percentile: number | null;
+  history_n: number;
+  min_history: number;
+  value: number | null;       // ATM IV %
+  source: string | null;      // manual | shioaji | csv
+  as_of: string | null;
+  note: string;
+}
+
+export interface MarketState {
+  ready: boolean;
+  mode: string;
+  date?: string;
+  phase?: string;             // early | pre | manual
+  computed_at?: number;
+  hurst?: HurstInfo;
+  iv?: IvInfo;
+  direction?: number;         // +1 偏多 / -1 偏空 / 0 中性
+  direction_label?: string;
+  state?: string;             // TREND | REVERT | UNCLEAR | IV_LOW | IV_HIGH
+  state_label?: string;
+  strategies?: string[];
+  hint?: string;
+  notes?: string[];
+  config: {
+    window: number; trend_th: number; revert_th: number; min_z: number;
+    iv_min_history: number; iv_auto: boolean; gate: string; pre_hhmm: number; post_hhmm: number;
+  };
+}
+
+export interface JournalRow {
+  date: string;
+  phase: string | null;
+  hurst: number | null;
+  hurst_z: number | null;
+  hurst_state: string | null;
+  iv: number | null;
+  iv_pct: number | null;
+  iv_state: string | null;
+  direction: number | null;
+  market_state: string | null;
+  strategy_hint: string | null;
+  range_ratio: number | null;
+  basis: string;
+  notes: string;
+  trades: number;
+  pnl: number;
+  scalp_on: boolean;
+  result: string;             // 獲利 | 虧損 | 持平 | 未進場
+}
+
+export interface MarketStats {
+  strategy: string;
+  big_move: number;
+  by_state: {
+    state: string; days: number; wins: number; losses: number; win_rate: number | null;
+    avg_win: number; avg_loss: number; payoff: number | null; total_pnl: number;
+  }[];
+  by_iv: {
+    iv_state: string; days: number; big_move_days: number; big_move_rate: number; avg_range_ratio: number;
+  }[];
+}
+
 // ─── API client ───────────────────────────────────────────────────
 
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
 export const api = {
+  market: {
+    state: () => req<MarketState>("/market/state"),
+    refresh: (force = false) =>
+      req<MarketState>(`/market/refresh${force ? "?force=true" : ""}`, { method: "POST" }),
+    setIv: (iv: number) =>
+      req<MarketState>("/market/iv", {
+        method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ iv }),
+      }),
+    journal: (limit = 14) => req<JournalRow[]>(`/market/journal?limit=${limit}`),
+    saveNote: (date: string, data: { basis?: string; notes?: string }) =>
+      req(`/market/journal/${date}`, {
+        method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify(data),
+      }),
+    stats: (strategy = "scalp") => req<MarketStats>(`/market/stats?strategy=${strategy}`),
+  },
   strategy: {
     list: () => req<StrategyInfo[]>("/strategy/"),
     start: (name: string, params: Record<string, number>) =>
-      req(`/strategy/${name}/start`, {
+      req<{ status: string; name: string; warning?: string }>(`/strategy/${name}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ params }),

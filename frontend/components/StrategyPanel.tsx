@@ -9,7 +9,7 @@ export default function StrategyPanel() {
   const [selected, setSelected] = useState<string | null>(null);
   const [editParams, setEditParams] = useState<Record<string, Record<string, number>>>({});
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string; warn?: boolean } | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -31,16 +31,18 @@ export default function StrategyPanel() {
     return () => clearInterval(id);
   }, [loadData]);
 
-  const flash = (ok: boolean, text: string) => {
-    setMsg({ ok, text });
-    setTimeout(() => setMsg(null), 4000);
+  const flash = (ok: boolean, text: string, warn = false) => {
+    setMsg({ ok, text, warn });
+    setTimeout(() => setMsg(null), warn ? 10000 : 4000);
   };
 
   const handleStart = async (s: StrategyInfo) => {
     setBusy(true);
     try {
-      await api.strategy.start(s.name, editParams[s.name] ?? {});
-      flash(true, `${s.name} 已啟動`);
+      const res = await api.strategy.start(s.name, editParams[s.name] ?? {});
+      // 與今日市場狀態不符：已啟動，但後端附警告（MARKET_STATE_GATE=off 可關閉）
+      if (res.warning) flash(true, `${s.name} 已啟動，但：${res.warning}`, true);
+      else flash(true, `${s.name} 已啟動`);
     } catch (e: unknown) {
       flash(false, e instanceof Error ? e.message : String(e));
     } finally {
@@ -74,7 +76,9 @@ export default function StrategyPanel() {
 
       {msg && (
         <div className={`px-3 py-2 rounded text-xs ${
-          msg.ok
+          msg.warn
+            ? "bg-[#ffc107]/10 text-[#ffc107] border border-[#ffc107]/20"
+            : msg.ok
             ? "bg-[#00e676]/10 text-[#00e676] border border-[#00e676]/20"
             : "bg-[#ff1744]/10 text-[#ff1744] border border-[#ff1744]/20"
         }`}>

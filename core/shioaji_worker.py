@@ -315,6 +315,21 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
                     for s in snaps
                 ]
 
+            elif method == "kbars":
+                # 1 分 K（shioaji 1.5.x 的 kbars 只有 1 分 K，ts 為奈秒）。
+                # worker 是單執行緒，查詢期間下單指令會排隊——呼叫端只在盤前/盤後用。
+                contract = _get_futures_contract(cmd["contract_code"])
+                kb = api.kbars(contract=contract, start=cmd["start"], end=cmd["end"],
+                               timeout=int(cmd.get("timeout_ms", 30000)))
+                result = {
+                    "ts": [int(x) for x in kb.ts],
+                    "open": [float(x) for x in kb.Open],
+                    "high": [float(x) for x in kb.High],
+                    "low": [float(x) for x in kb.Low],
+                    "close": [float(x) for x in kb.Close],
+                    "volume": [int(x) for x in kb.Volume],
+                }
+
             elif method == "option_snapshot":
                 contract = _get_option_contract(
                     cmd["delivery_month"], cmd["strike"], cmd["right"], cmd["category"]
