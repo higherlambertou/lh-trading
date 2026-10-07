@@ -51,6 +51,13 @@ def get_state() -> dict[str, Any]:
     return market_state.snapshot()
 
 
+@router.get("/live")
+async def get_live() -> dict[str, Any]:
+    """盤中即時狀態：真實成交的外/內盤比例、日盤振幅、與盤前判斷是否同向（純讀記憶體，僅供顯示）。
+    用 async（跑在 event loop）讀取，與 tick 餵入同一執行緒，不需要鎖。"""
+    return await market_state.live_snapshot()
+
+
 @router.post("/refresh")
 async def refresh(force: bool = False) -> dict[str, Any]:
     """立刻重算今日狀態（向券商抓日K + ATM 選擇權報價）。

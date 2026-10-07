@@ -26,7 +26,9 @@ from core.hurst_analyzer import HURST_LABEL, TREND_TH, REVERT_TH, aggregate_dail
 from core.iv_monitor import (
     HIGH_PCT, LOOKBACK, LOW_PCT, evaluate_iv, fetch_atm_iv,
 )
+from core.live_state import BIG_MOVE, FLOW_DOWN, FLOW_UP, QUIET, live_state
 from core.market_store import MarketStore
+from core.trade_log import trade_log
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +187,7 @@ class MarketStateService:
         self._was_running: dict[str, bool] = {}
         self._row_day = ""
         self._row_seen: set[str] = set()
+        self._avg_range_cache: tuple[str, float | None] = ("", None)
 
     @property
     def mode(self) -> str:
@@ -207,6 +210,63 @@ class MarketStateService:
         if s is None:
             return {"ready": False, "mode": self.mode, "config": cfg}
         return {"ready": True, **s, "mode": self.mode, "config": cfg}
+
+    def _set_summary(self, s: dict[str, Any]) -> None:
+        """設定目前的今日判斷，並把市場狀態標記同步給成交紀錄（之後的委託會標上這組狀態）。"""
+        self.summary = s
+        try:
+            trade_log.set_market_tag({
+                "market_state": s.get("state"), "hurst_state": s["hurst"]["state"],
+                "iv_state": s["iv"]["state"], "direction": s.get("direction"), "as_of": s.get("date"),
+            })
+        except Exception:
+            logger.debug("set_market_tag 失敗（已忽略）", exc_info=True)
+
+    # ── 盤中即時狀態（純記憶體 + 每天一次的小查詢）────────────────
+    async def _avg_range(self) -> float | None:
+        """近 20 個交易日的日盤平均振幅（點）；每天只查一次資料庫。"""
+        today = date.today().isoformat()
+        if self._avg_range_cache[0] == today:
+            return self._avg_range_cache[1]
+        bars = await asyncio.to_thread(self.store.bars, self.cfg.code, 25, today)
+        rngs = [b["high"] - b["low"] for b in bars][-20:]
+        val = round(sum(rngs) / len(rngs), 1) if len(rngs) >= 5 else None
+        self._avg_range_cache = (today, val)
+        return val
+
+    async def live_snapshot(self) -> dict[str, Any]:
+        """盤中即時狀態（真實成交的外/內盤比例、日盤振幅）+ 與盤前判斷是否同向。
+        純顯示；判讀門檻見 live_state（未經驗證）。"""
+        live = live_state.snapshot()
+        today = date.today().isoformat()
+        avg = await self._avg_range()
+        rng = live["range"] if live["session_day"] == today else None      # 不是今天的日盤 → 不顯示
+        ratio = round(rng / avg, 2) if rng is not None and avg else None
+        range_label = None if ratio is None else ("大波動" if ratio >= BIG_MOVE else "清淡" if ratio <= QUIET else "正常")
+
+        want, why = self.bias_direction(2)      # 盤前判斷偏向放行的方向：+1 做多／-1 做空／0 今日不偏向任何方向
+        s = self._valid_summary()
+        share = live["flow"]["100"]["share"]
+        flow_dir = 0 if share is None else 1 if share >= FLOW_UP else -1 if share <= FLOW_DOWN else 0
+        side = {1: "做多", -1: "做空"}
+        flow_side = {1: "偏多（外盤主動）", -1: "偏空（內盤主動）", 0: "中性"}
+        if want == 0:
+            coherence, text = None, f"今日判斷不偏向任何方向：{why}"
+        elif share is None:
+            coherence, text = None, "尚無足夠的成交可判斷買賣力道"
+        elif flow_dir == 0:
+            coherence, text = 0, f"盤前偏向{side[want]}；現在買賣力道中性"
+        else:
+            coherence = 1 if flow_dir == want else -1
+            text = f"{'協調' if coherence == 1 else '矛盾'}：盤前偏向{side[want]}，現在買賣力道{flow_side[flow_dir]}"
+        return {
+            **live, "ready": live["last"] is not None, "as_of": time.time(),
+            "range": rng, "avg_range": avg, "range_ratio": ratio, "range_label": range_label,
+            "pre": {"date": s["date"] if s else None, "state": s["state"] if s else None,
+                    "hint": s["hint"] if s else None, "want": want, "want_reason": why},
+            "flow_dir": flow_dir, "coherence": coherence, "coherence_text": text,
+            "thresholds": {"flow_up": FLOW_UP, "flow_down": FLOW_DOWN, "big_move": BIG_MOVE, "quiet": QUIET},
+        }
 
     def _valid_summary(self, max_age_days: int = 3) -> dict[str, Any] | None:
         s = self.summary
@@ -330,7 +390,7 @@ class MarketStateService:
             s["text"] = format_summary(s)
             if today.weekday() < 5:                 # 週末不寫日誌
                 await asyncio.to_thread(self._persist, s)
-            self.summary = s
+            self._set_summary(s)
             logger.info("市場狀態（%s）\n%s", phase, s["text"])
             return s
 
@@ -358,7 +418,7 @@ class MarketStateService:
         ds = now.date().isoformat()
         row = await asyncio.to_thread(self.store.get_journal, ds, self.mode)
         if row and row.get("summary_json"):                 # 重啟不重算：盤中判斷維持不變
-            self.summary = json.loads(row["summary_json"])
+            self._set_summary(json.loads(row["summary_json"]))
             if row.get("phase") in ("pre", "manual"):
                 self._pre_done = ds
             logger.info("載入今日已存的市場狀態（phase=%s）", row.get("phase"))
@@ -366,7 +426,7 @@ class MarketStateService:
         if now.weekday() >= 5:
             latest = await asyncio.to_thread(self.store.latest_journal, self.mode)
             if latest:
-                self.summary = json.loads(latest["summary_json"])
+                self._set_summary(json.loads(latest["summary_json"]))
                 return
         phase = "pre" if now.hour * 100 + now.minute >= self.cfg.pre_hhmm else "early"
         s = await self.refresh(phase)
@@ -392,7 +452,7 @@ class MarketStateService:
             try:
                 row = await asyncio.to_thread(self.store.get_journal, ds, self.mode)
                 if row and row.get("summary_json") and row.get("phase") in ("pre", "manual"):
-                    self.summary = json.loads(row["summary_json"])
+                    self._set_summary(json.loads(row["summary_json"]))
                     self._pre_done = ds
                 else:
                     s = await self.refresh("pre")

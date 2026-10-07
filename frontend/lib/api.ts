@@ -232,6 +232,40 @@ export interface MarketStats {
   }[];
 }
 
+// 盤中即時狀態（真實成交的外/內盤比例、日盤振幅、與盤前判斷是否同向；僅供顯示）
+export interface FlowWindow {
+  n: number;                  // 視窗內實際的成交筆數
+  buy: number;
+  sell: number;
+  share: number | null;       // 外盤筆數占比（沒資料為 null，不是 0）
+  vol_share: number | null;   // 外盤口數占比
+  span_sec: number;           // 這個視窗涵蓋多少秒
+}
+
+export interface LiveState {
+  ready: boolean;
+  as_of: number;
+  prefix: string;             // 追蹤的合約（TMF）
+  last: number | null;
+  last_age: number | null;
+  flow: Record<string, FlowWindow>;   // "20" | "100" | "300" 筆
+  high: number | null;
+  low: number | null;
+  range: number | null;       // 今日日盤振幅（點）；非今日日盤為 null
+  avg_range: number | null;   // 近 20 日日盤平均振幅
+  range_ratio: number | null;
+  range_label: string | null; // 大波動 | 正常 | 清淡
+  session_day: string;
+  since: string | null;       // 振幅累計起點（重啟後重新累計）
+  partial: boolean;           // 起點晚於 08:50 → 振幅可能不完整
+  in_session: boolean;
+  pre: { date: string | null; state: string | null; hint: string | null; want: number; want_reason: string };
+  flow_dir: number;           // +1 買方主動 / -1 賣方主動 / 0 中性
+  coherence: number | null;   // +1 協調 / -1 矛盾 / 0 中性 / null 無法比較
+  coherence_text: string;
+  thresholds: { flow_up: number; flow_down: number; big_move: number; quiet: number };
+}
+
 // ─── API client ───────────────────────────────────────────────────
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -239,6 +273,7 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 export const api = {
   market: {
     state: () => req<MarketState>("/market/state"),
+    live: () => req<LiveState>("/market/live"),
     // POST 的回應刻意標成 unknown：呼叫端送出後要重抓 state()，不可把回應直接當 MarketState 用
     refresh: (force = false) =>
       req<unknown>(`/market/refresh${force ? "?force=true" : ""}`, { method: "POST" }),

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from core.broker import broker
 from core.quote_hub import quote_hub
+from core.trade_log import trade_log
 
 logger = logging.getLogger(__name__)
 
@@ -249,46 +250,56 @@ class ManualOrderMonitor:
 
         triggered = False
         reason = ""
+        kind = ""
         if watch.take_profit_pts > 0 and pts >= watch.take_profit_pts:
             triggered = True
             reason = f"停利 +{pts:.0f}點"
+            kind = "tp"
         elif watch.stop_loss_pts > 0 and pts <= -watch.stop_loss_pts:
             triggered = True
             reason = f"停損 {pts:.0f}點"
+            kind = "sl"
 
         if triggered:
             logger.info("手動下單 [%s] %s @ %.0f，執行平倉", watch.id, reason, current_price)
-            await self._close(watch)
+            # 成交紀錄用：設定的停損/停利價位與觸發當下的價格（滑價 = 實際成交價 vs 這些）
+            ref = watch.entry_price + watch.direction * (
+                watch.take_profit_pts if kind == "tp" else -watch.stop_loss_pts)
+            await self._close(watch, kind, ref, current_price)
 
-    async def _close(self, watch: ManualWatch) -> None:
+    async def _close(self, watch: ManualWatch, kind: str = "exit",
+                     ref_price: float | None = None, signal_price: float | None = None) -> None:
         close_action = "Sell" if watch.direction == 1 else "Buy"
 
         try:
-            if watch.is_option and watch.delivery_month:
-                last = quote_hub.get_last_price(watch.match_code) or watch.entry_price
-                buf = watch.exit_buffer_pts or 0
-                raw = last - buf if watch.direction == 1 else last + buf
-                limit_price = _txo_round_tick(max(0.1, raw))
-                await broker.place_option_order(
-                    delivery_month=watch.delivery_month,
-                    strike=watch.strike_price,
-                    right=watch.option_right,
-                    category=watch.option_category,
-                    action=close_action,
-                    quantity=watch.quantity,
-                    price=limit_price,
-                    order_type="IOC",
-                )
-            else:
-                await broker.place_order(
-                    contract_code=watch.contract,
-                    action=close_action,
-                    quantity=watch.quantity,
-                    price=0,
-                    price_type="MKT",
-                    order_type="IOC",
-                    octype="Auto",
-                )
+            # kind / ref_price / signal_price 只給成交紀錄用，不影響下單
+            with trade_log.context(strategy="manual_monitor", reason=kind,
+                                   signal_price=signal_price, ref_price=ref_price):
+                if watch.is_option and watch.delivery_month:
+                    last = quote_hub.get_last_price(watch.match_code) or watch.entry_price
+                    buf = watch.exit_buffer_pts or 0
+                    raw = last - buf if watch.direction == 1 else last + buf
+                    limit_price = _txo_round_tick(max(0.1, raw))
+                    await broker.place_option_order(
+                        delivery_month=watch.delivery_month,
+                        strike=watch.strike_price,
+                        right=watch.option_right,
+                        category=watch.option_category,
+                        action=close_action,
+                        quantity=watch.quantity,
+                        price=limit_price,
+                        order_type="IOC",
+                    )
+                else:
+                    await broker.place_order(
+                        contract_code=watch.contract,
+                        action=close_action,
+                        quantity=watch.quantity,
+                        price=0,
+                        price_type="MKT",
+                        order_type="IOC",
+                        octype="Auto",
+                    )
             self.remove(watch.id)
             logger.info("手動停損停利平倉成功: %s", watch.id)
         except Exception as e:

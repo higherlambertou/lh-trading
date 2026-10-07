@@ -23,8 +23,10 @@ from api.routes_position import router as position_router, cache_refresh_loop
 from api.routes_strategy import router as strategy_router, strategy_engine
 from api.routes_quote import router as quote_router
 from api.routes_market import router as market_router, market_state_loop
+from api.routes_tradelog import router as tradelog_router
 from core.manual_monitor import manual_monitor
 from core.tick_store import tick_recorder
+from core.trade_log import trade_log
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +64,7 @@ async def lifespan(app: FastAPI):
     manual_monitor.setup(loop)
 
     tick_recorder.start()
+    trade_log.start()
     startup_task   = loop.create_task(_startup_bg())
     cache_task     = loop.create_task(cache_refresh_loop())
     trades_task    = loop.create_task(trades_refresh_loop())
@@ -76,6 +79,7 @@ async def lifespan(app: FastAPI):
     await strategy_engine.stop_all()
     await manual_monitor.shutdown()
     broker.logout()
+    trade_log.stop()          # 最後才停：收盤前的取消委託/成交回報也要寫進去
     logger.info("系統已關閉")
 
 
@@ -106,6 +110,7 @@ app.include_router(position_router, prefix="/api/position", tags=["position"])
 app.include_router(strategy_router, prefix="/api/strategy", tags=["strategy"])
 app.include_router(quote_router,    prefix="/api/quote",    tags=["quote"])
 app.include_router(market_router,   prefix="/api/market",   tags=["market"])
+app.include_router(tradelog_router, prefix="/api/tradelog", tags=["tradelog"])
 
 
 @app.get("/api/health")

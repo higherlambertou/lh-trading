@@ -118,6 +118,25 @@ python -m core.iv_monitor import iv_history.csv
 
 資料庫在 `data/market_state.db`（IV 歷史與手動備註無法重建，記得備份）。
 
+### 盤中即時狀態與成交紀錄
+
+```bash
+# 盤中即時：TMF 真實成交的外/內盤比例、日盤振幅、與盤前判斷是否同向（純讀記憶體）
+curl http://100.127.125.13:8002/api/market/live | python3 -m json.tool
+
+# 成交紀錄：最近的委託（含實際成交價、滑價；slip 為正 = 對我方不利，單位點）
+curl 'http://100.127.125.13:8002/api/tradelog/orders?limit=20' | python3 -m json.tool
+
+# 依 (策略, 原因) 彙總近 N 天：成交結果、滑價分布、送單延遲
+curl 'http://100.127.125.13:8002/api/tradelog/summary?days=7' | python3 -m json.tool
+
+# 不連券商，只讀 db 印出文字版彙總
+python -m core.trade_log 7
+```
+
+成交紀錄在 `data/trade_log.db`（**無法回補，記得備份**）；`TRADE_LOG=false` 可整個關掉。
+`outcome=unfilled` 代表 IOC 單超過 30 秒仍沒有任何成交/取消回報，值得查（停損單沒成交就是這種）。
+
 ---
 
 ## 日誌查看

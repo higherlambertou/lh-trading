@@ -137,7 +137,10 @@
 
 1. **訊號判斷**（`idle` 狀態）：  
    - `momentum` 模式：統計最近 `momentum_window` 筆的外/內盤比例，超過 `momentum_threshold` → 觸發方向  
-   - `random` 模式：隨機決定方向（測試用）
+   - `random` 模式：隨機決定方向（測試用）  
+   - ⚠️ 這裡的「筆」是**行情事件**：含 `volume=0` 的報價更新（實測 TMF 只有 ~27% 是真實成交），
+     且 TMF/MXF/TXF 三個合約混在同一個視窗；所以 `momentum_threshold` 的實際意義和上面的描述不同。
+     儀表板〈盤中即時〉的外/內盤比例是只算 TMF 真實成交的版本。詳見 update.md「發現」4
 
 2. **掛限價單**（`pending` 狀態）：  
    依方向和 `entry_offset` 偏移掛 ROD 限價單；超過 `cancel_after_ticks` 個 tick 未成交自動取消

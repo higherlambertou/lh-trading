@@ -104,7 +104,7 @@ class VWAPRevertStrategy(BarStrategy):
                 self.state.entry_price = 0.0
                 self.state.unrealized_pnl = 0.0
                 try:
-                    await self.place_order(action, qty)
+                    await self.place_order(action, qty, kind="revert_exit")
                 except Exception as e:
                     self.state.position = prev_pos
                     self.state.entry_price = prev_entry

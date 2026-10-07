@@ -8,6 +8,8 @@ from pydantic import BaseModel, field_validator
 
 from core.broker import broker
 from core.manual_monitor import manual_monitor, _txo_round_tick
+from core.quote_hub import quote_hub
+from core.trade_log import trade_log
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -70,15 +72,17 @@ class ManualOrderRequest(BaseModel):
 @router.post("/place")
 async def place_order(req: ManualOrderRequest) -> dict[str, Any]:
     try:
-        trade = await broker.place_order(
-            contract_code=req.contract,
-            action=req.action,
-            quantity=req.quantity,
-            price=req.price or 0,
-            price_type=req.price_type,
-            order_type=req.order_type,
-            octype=req.octype,
-        )
+        with trade_log.context(strategy="manual", reason="manual",
+                               signal_price=quote_hub.last_price_by_prefix(req.contract)):
+            trade = await broker.place_order(
+                contract_code=req.contract,
+                action=req.action,
+                quantity=req.quantity,
+                price=req.price or 0,
+                price_type=req.price_type,
+                order_type=req.order_type,
+                octype=req.octype,
+            )
     except asyncio.TimeoutError:
         raise HTTPException(503, "下單逾時（券商連線忙碌）")
     except Exception as e:
@@ -222,16 +226,17 @@ class OptionOrderRequest(BaseModel):
 async def place_option(req: OptionOrderRequest) -> dict[str, Any]:
     limit_price = _txo_round_tick(req.price)
     try:
-        trade = await broker.place_option_order(
-            delivery_month=req.delivery_month,
-            strike=req.strike,
-            right=req.option_right,
-            category=req.category,
-            action=req.action,
-            quantity=req.quantity,
-            price=limit_price,
-            order_type=req.order_type,
-        )
+        with trade_log.context(strategy="manual", reason="manual"):
+            trade = await broker.place_option_order(
+                delivery_month=req.delivery_month,
+                strike=req.strike,
+                right=req.option_right,
+                category=req.category,
+                action=req.action,
+                quantity=req.quantity,
+                price=limit_price,
+                order_type=req.order_type,
+            )
     except asyncio.TimeoutError:
         raise HTTPException(503, "選擇權下單逾時")
     except Exception as e:

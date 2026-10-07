@@ -136,7 +136,7 @@ class BarStrategy(BaseStrategy):
         stop_px = self._trail_stop
         self._trail_stop = 0.0
         try:
-            await self.place_order(action, qty)
+            await self.place_order(action, qty, kind="trail", ref_price=stop_px)
         except Exception as e:
             self.state.position = prev_pos
             self.state.entry_price = prev_entry

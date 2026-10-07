@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
@@ -19,7 +20,9 @@ from core.iv_monitor import (
     _option_price, atm_iv_from_quotes, black76, evaluate_iv, expiry_of, fetch_atm_iv,
     implied_vol, iv_percentile, iv_signal, pick_expiry, read_iv_csv,
 )
+from core.live_state import LiveState
 from core.market_store import MarketStore
+from core.trade_log import TradeLog
 
 
 # ── 工具 ──────────────────────────────────────────────────────────
@@ -699,3 +702,133 @@ def test_api_journal_note_roundtrip(client, frozen):
     row = c.get("/api/market/journal").json()[0]
     assert row["date"] == day and row["basis"] == "急拉後回測" and row["notes"] == "N"
     assert row["market_state"] and "summary_json" not in row
+
+
+# ── 盤中即時狀態（live_snapshot）／成交紀錄標記 ───────────────────
+
+def _live_with(monkeypatch, *, flow: str = "none", prices=(), day: int = 7) -> LiveState:
+    """建一個餵好資料的 LiveState 並換進 daily_summary。flow: buy / sell / mixed / none（各 100 筆真實成交）。"""
+    ls = LiveState()
+    t0 = time.mktime((2026, 10, day, 10, 0, 0, 0, 0, -1))
+    for i in range(100 if flow != "none" else 0):
+        side = 1 if flow == "buy" else 2 if flow == "sell" else (1 if i % 2 else 2)
+        ls.feed("TMFJ6", 100.0, 1, i + 1, side, t0 + i)
+    for j, p in enumerate(prices):
+        ls.feed("TMFJ6", p, 0, 0, 0, t0 + 200 + j)
+    monkeypatch.setattr(ds, "live_state", ls)
+    return ls
+
+
+def _summary(svc, state: str, direction: int) -> None:
+    svc.summary = {"date": "2026-10-07", "state": state, "direction": direction, "hint": "H",
+                   "hurst": {"label": "x", "state": state}, "iv": {"state": "UNKNOWN"}}
+
+
+@pytest.mark.parametrize("state,direction,flow,want,coherence,word", [
+    ("TREND", 1, "buy", 1, 1, "協調"),           # 盤前偏向做多、現在買方主動
+    ("TREND", 1, "sell", 1, -1, "矛盾"),
+    ("REVERT", 1, "sell", -1, 1, "協調"),        # 均值回歸 + 日K偏多 → 偏向做空；賣方主動 = 協調
+    ("REVERT", 1, "buy", -1, -1, "矛盾"),
+    ("TREND", -1, "sell", -1, 1, "協調"),
+    ("TREND", 1, "mixed", 1, 0, "中性"),
+    ("UNCLEAR", 1, "buy", 0, None, "不偏向"),     # 今日判斷不操作 → 沒有可比較的方向
+    ("TREND", 1, "none", 1, None, "尚無"),        # 還沒有成交資料
+])
+def test_live_coherence_with_pre_open_judgement(svc, frozen, monkeypatch, state, direction, flow, want, coherence, word):
+    _live_with(monkeypatch, flow=flow)
+    _summary(svc, state, direction)
+    res = asyncio.run(svc.live_snapshot())
+    assert res["pre"]["want"] == want and res["coherence"] == coherence and word in res["coherence_text"]
+
+
+@pytest.mark.parametrize("prices,ratio,label", [
+    ((100.0, 116.0), 1.6, "大波動"),      # 振幅 16 / 近 20 日均 10
+    ((100.0, 108.0), 0.8, "正常"),
+    ((100.0, 105.0), 0.5, "清淡"),
+])
+def test_live_range_ratio_and_labels(svc, store, frozen, monkeypatch, prices, ratio, label):
+    _seed_bars(store, [20000.0] * 25)                    # 每根日K振幅 10 → 近 20 日均 10
+    _live_with(monkeypatch, prices=prices)
+    _summary(svc, "TREND", 1)
+    res = asyncio.run(svc.live_snapshot())
+    assert res["avg_range"] == 10.0 and res["range_ratio"] == ratio and res["range_label"] == label
+
+
+def test_live_range_is_hidden_when_it_is_not_todays_session(svc, store, frozen, monkeypatch):
+    _seed_bars(store, [20000.0] * 25)
+    _live_with(monkeypatch, prices=(100.0, 150.0), day=6)         # 資料是昨天日盤的
+    _summary(svc, "TREND", 1)
+    res = asyncio.run(svc.live_snapshot())
+    assert res["range"] is None and res["range_ratio"] is None and res["session_day"] == "2026-10-06"
+
+
+def test_live_endpoint_shape_and_empty_state(client, frozen, monkeypatch):
+    c, svc, _ = client
+    monkeypatch.setattr(ds, "live_state", LiveState())
+    empty = c.get("/api/market/live").json()
+    assert empty["ready"] is False and empty["flow"]["100"]["share"] is None
+    _live_with(monkeypatch, flow="buy", prices=(100.0, 110.0))
+    _summary(svc, "TREND", 1)
+    body = c.get("/api/market/live").json()
+    assert body["ready"] is True and body["flow"]["100"]["share"] == 1.0
+    assert {"range", "avg_range", "range_ratio", "pre", "coherence", "coherence_text", "thresholds"} <= set(body)
+
+
+def test_live_state_failure_never_blocks_quote_dispatch(monkeypatch):
+    """即時狀態只是顯示用：feed 丟例外，報價仍要派發給策略（真錢路徑不能被它拖累）。"""
+    import core.quote_hub as qh
+    hub, got = qh.QuoteHub(), []
+
+    async def cb(snapshot):
+        got.append(snapshot["close"])
+
+    async def run():
+        hub.setup(asyncio.get_running_loop())
+        hub.subscribe_strategy("t", cb)
+        monkeypatch.setattr(qh.live_state, "feed", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        hub._inject_quote({"code": "TMFJ6", "close": 100.0, "volume": 1, "total_volume": 5,
+                           "tick_type": 1, "ts": time.time()})
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run())
+    assert got == [100.0]
+
+
+def test_quote_hub_feeds_live_state_and_exposes_last_price_by_prefix(monkeypatch):
+    import core.quote_hub as qh
+    ls = LiveState()
+    monkeypatch.setattr(qh, "live_state", ls)
+    hub = qh.QuoteHub()
+    hub._inject_quote({"code": "TMFJ6", "close": 49700.0, "volume": 2, "total_volume": 10, "tick_type": 1, "ts": time.time()})
+    hub._inject_quote({"code": "TXFJ6", "close": 49701.0, "volume": 1, "total_volume": 7, "tick_type": 2, "ts": time.time()})
+    assert ls.snapshot()["flow"]["100"]["n"] == 1                      # 只追蹤 TMF
+    assert hub.last_price_by_prefix("TMF") == 49700.0 and hub.last_price_by_prefix("TXF") == 49701.0
+    assert hub.last_price_by_prefix("MXF") is None
+
+
+def test_summary_updates_tag_the_trade_log(svc, frozen, monkeypatch, tmp_path):
+    t = TradeLog(tmp_path / "tag.db")
+    monkeypatch.setattr(ds, "trade_log", t)
+    asyncio.run(svc.refresh("pre"))
+    assert t._tag["market_state"] == svc.summary["state"]
+    assert t._tag["as_of"] == "2026-10-07" and t._tag["hurst_state"] == svc.summary["hurst"]["state"]
+
+
+def test_tradelog_endpoints(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import main
+    from api import routes_tradelog
+    monkeypatch.setenv("SIMULATION", "true")
+    t = TradeLog(tmp_path / "api.db")
+    monkeypatch.setattr(routes_tradelog, "trade_log", t)
+    t.start()
+    with t.context(strategy="scalp", reason="sl", signal_price=100.0, ref_price=100.0):
+        t.record_order(contract="TMF", action="Sell", qty=1, order_type="IOC", trade_id="A", status="PendingSubmit")
+    t.record_event({"state": "FuturesDeal", "trade_id": "A", "price": 97.0, "quantity": 1})
+    t.stop()
+    c = TestClient(main.app)
+    rows = c.get("/api/tradelog/orders?limit=10").json()
+    assert rows[0]["strategy"] == "scalp" and rows[0]["slip_ref"] == 3.0 and rows[0]["outcome"] == "filled"
+    assert c.get("/api/tradelog/orders?strategy=nope").json() == []
+    g = c.get("/api/tradelog/summary?days=1").json()["groups"][0]
+    assert (g["strategy"], g["reason"], g["slip_ref"]["max"]) == ("scalp", "sl", 3.0)

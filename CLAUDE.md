@@ -145,6 +145,14 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 - **`api/routes_market.py`** — `/api/market/{state,refresh,iv,journal,stats}`；前端 `MarketStatePanel`。
 - **scalp `market_bias`** — 0 不限（預設，行為不變）／1 順勢／-1 逆勢／2 依今日狀態自動
   （趨勢→順勢、均值回歸→逆勢、不明確→不進場）。方向＝日 K 收盤 vs 20 日均線。
+- **`core/live_state.py`** — 盤中即時狀態（純記憶體、僅顯示）：TMF 最近 20/100/300 筆**真實成交**的外/內盤比例、日盤振幅
+  （vs 近 20 日均）、與盤前判斷是否同向。`QuoteHub._inject_quote` 餵入（包 try/except，絕不影響報價派發）；
+  `GET /api/market/live`；前端〈盤中即時〉。判定真實成交：`volume>0` 且 `total_volume` 增加——實測 TMF 行情事件只有 ~27% 是成交，其餘是報價更新。
+- **`core/trade_log.py`** — 成交紀錄（`data/trade_log.db`，**無法回補，請備份**）：每筆委託（策略、原因 entry/tp/sl/trail、
+  訊號價、停損停利設定價、當時的市場狀態標記）+ 券商成交回報，讀取時以 trade_id join 出實際成交價與滑價。
+  掛在 `broker.place_order/place_option_order`（唯一出口）與 `_dispatch`（成交回報）；策略/手動單用 `trade_log.context(...)` 補脈絡
+  （參數叫 `kind`，不要叫 `reason`——`BaseStrategy.place_order` 內有同名區域變數）。純加法：所有 record 吞例外、走獨立 writer thread、
+  佇列滿就丟棄；`TRADE_LOG=false` 整個關掉。`GET /api/tradelog/{orders,summary}`、`python -m core.trade_log [天數]`。
 - 測試：`python -m pytest tests -q`（需 numpy、fastapi、httpx；用裝了 shioaji 的 Python 環境）。
 
 > `broker.kbars()` 會佔住 worker（單執行緒）、下單指令排隊，所以只在盤前/盤後用；

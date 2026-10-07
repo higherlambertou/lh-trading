@@ -170,6 +170,9 @@ export default function MarketStatePanel() {
         </p>
       ) : (
         <>
+          <div className="text-[10px] text-[#404060]">
+            以下是盤前判斷：每日 {String(st.config?.pre_hhmm ?? 830).padStart(4, "0")} 算一次，盤中不變（即時狀態看下方「盤中即時」）
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Card title="第一層 · Hurst">
               <div className="flex items-baseline gap-2">

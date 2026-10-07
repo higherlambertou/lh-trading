@@ -6,7 +6,10 @@ import itertools
 import logging
 import multiprocessing
 import threading
+import time
 from typing import Any, Callable, Optional
+
+from core.trade_log import trade_log
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,10 @@ class BrokerClient:
                 )
 
         elif mtype == "order_event":
+            try:
+                trade_log.record_event(msg)  # 成交紀錄：不阻塞；任何問題都不能影響下面的回報派發給策略
+            except Exception:
+                logger.exception("成交紀錄失敗（已忽略，不影響成交回報派發）")
             if self._order_callback and self._loop and self._loop.is_running():
                 self._loop.call_soon_threadsafe(
                     self._order_callback, msg
@@ -223,16 +230,41 @@ class BrokerClient:
         order_type: str = "IOC",
         octype: str = "Auto",
     ) -> dict:
-        return await self._acall(
-            "place_order",
-            contract_code=contract_code.upper(),
-            action=action,
-            quantity=quantity,
-            price=price,
-            price_type=price_type,
-            order_type=order_type,
-            octype=octype,
-        )
+        t0 = time.monotonic()
+        code = contract_code.upper()
+        try:
+            res = await self._acall(
+                "place_order",
+                contract_code=code,
+                action=action,
+                quantity=quantity,
+                price=price,
+                price_type=price_type,
+                order_type=order_type,
+                octype=octype,
+            )
+        except Exception as e:
+            self._log_order(code, action, quantity, price_type, order_type, price, octype, None, t0, e)
+            raise
+        self._log_order(code, action, quantity, price_type, order_type, price, octype, res, t0, None)
+        return res
+
+    @staticmethod
+    def _log_order(contract: str, action: str, qty: int, price_type: str, order_type: str,
+                   price: float, octype: str, res: Any, t0: float, err: BaseException | None) -> None:
+        """成交紀錄：委託送出結果（成功帶 trade_id；失敗/逾時也記，逾時的單可能仍已送達券商）。
+        這裡在「下單已成功」之後才執行，所以無論如何都不能丟例外（否則呼叫端會以為下單失敗）。"""
+        try:
+            ok = isinstance(res, dict)
+            trade_log.record_order(
+                contract=contract, action=action, qty=qty, price_type=price_type, order_type=order_type,
+                limit_price=price, octype=octype,
+                trade_id=res.get("trade_id", "") if ok else "",
+                status=str(res.get("status", "")) if ok else ("timeout" if isinstance(err, asyncio.TimeoutError) else "error"),
+                error=repr(err) if err else "", latency_ms=(time.monotonic() - t0) * 1000,
+            )
+        except Exception:
+            logger.exception("成交紀錄失敗（已忽略，不影響下單）")
 
     async def place_option_order(
         self,
@@ -245,13 +277,22 @@ class BrokerClient:
         price: float,
         order_type: str = "ROD",
     ) -> dict:
-        return await self._acall(
-            "place_option_order",
-            delivery_month=delivery_month, strike=strike,
-            right=right, category=category,
-            action=action, quantity=quantity,
-            price=price, order_type=order_type,
-        )
+        t0 = time.monotonic()
+        code = f"{category}{delivery_month}{strike}{right}"
+        try:
+            res = await self._acall(
+                "place_option_order",
+                delivery_month=delivery_month, strike=strike,
+                right=right, category=category,
+                action=action, quantity=quantity,
+                price=price, order_type=order_type,
+            )
+        except Exception as e:
+            self._log_order(code, action, quantity, "LMT", order_type, price, "Auto", None, t0, e)
+            raise
+        self._log_order(str(res.get("code") or code) if isinstance(res, dict) else code,
+                        action, quantity, "LMT", order_type, price, "Auto", res, t0, None)
+        return res
 
     async def margin(self) -> dict:
         return await self._acall("margin", timeout=5.0)

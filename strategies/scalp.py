@@ -6,6 +6,7 @@ from typing import Any
 
 from core.broker import broker
 from core.daily_summary import market_state
+from core.trade_log import trade_log
 from strategies.base import BaseStrategy, POINT_VALUE_TMF
 
 logger = logging.getLogger(__name__)
@@ -214,17 +215,20 @@ class ScalpStrategy(BaseStrategy):
 
     # ── 下單輔助 ────────────────────────────────────────────────
 
-    async def _lmt(self, action: str, price: float, qty: int = 1) -> dict:
-        """掛 ROD 限價單，回傳 {"trade_id": ..., "status": ...}"""
-        return await broker.place_order(
-            contract_code="TMF",
-            action=action,
-            quantity=qty,
-            price=round(price),
-            price_type="LMT",
-            order_type="ROD",
-            octype="Auto",
-        )
+    async def _lmt(self, action: str, price: float, qty: int = 1, kind: str = "",
+                   signal_price: float | None = None, ref_price: float | None = None) -> dict:
+        """掛 ROD 限價單，回傳 {"trade_id": ..., "status": ...}
+        kind / signal_price / ref_price 只給成交紀錄用，不影響下單。"""
+        with trade_log.context(strategy=self.name, reason=kind, signal_price=signal_price, ref_price=ref_price):
+            return await broker.place_order(
+                contract_code="TMF",
+                action=action,
+                quantity=qty,
+                price=round(price),
+                price_type="LMT",
+                order_type="ROD",
+                octype="Auto",
+            )
 
     async def _cancel_safe(self, trade: dict | None) -> None:
         if not trade:
@@ -256,7 +260,7 @@ class ScalpStrategy(BaseStrategy):
             entry_price, price, self.entry_offset, self.signal_mode, self.max_qty,
         )
         try:
-            trade = await self._lmt(action, entry_price, qty=self.max_qty)
+            trade = await self._lmt(action, entry_price, qty=self.max_qty, kind="entry", signal_price=price)
         except Exception as e:
             logger.error("[scalp] 掛單失敗: %s", e)
             self.state.errors.append(f"掛單失敗: {e}")
@@ -325,7 +329,8 @@ class ScalpStrategy(BaseStrategy):
         action = "Sell" if self._direction == 1 else "Buy"
         logger.info("[scalp] 掛停利單 @ %.0f  qty=%d", tp_price, self._entry_qty)
         try:
-            self._tp_trade = await self._lmt(action, tp_price, qty=self._entry_qty)
+            self._tp_trade = await self._lmt(action, tp_price, qty=self._entry_qty, kind="tp",
+                                             signal_price=self.state.last_price or None, ref_price=tp_price)
         except Exception as e:
             logger.error("[scalp] 掛停利單失敗: %s", e)
             self.state.errors.append(f"掛停利單失敗: {e}")
@@ -344,7 +349,8 @@ class ScalpStrategy(BaseStrategy):
 
         close_action = "Sell" if direction == 1 else "Buy"
         try:
-            await self.place_order(close_action, qty)
+            await self.place_order(close_action, qty, kind="sl",
+                                   ref_price=self._last_entry_price - direction * self.sl_pts)
         except Exception as e:
             logger.error("[scalp] 停損平倉失敗: %s", e)
             self.state.errors.append(f"停損平倉失敗: {e}")

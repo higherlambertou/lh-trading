@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from core.broker import broker
 from core.quote_hub import quote_hub
+from core.trade_log import trade_log
 
 logger = logging.getLogger(__name__)
 
@@ -145,12 +146,15 @@ class BaseStrategy(ABC):
             return False
         pts = (price - self.state.entry_price) * (1 if self.state.position > 0 else -1)
         triggered = False
+        kind = ""
         if self.take_profit_pts > 0 and pts >= self.take_profit_pts:
             logger.info("策略 [%s] 停利觸發: +%.0f點 @ %.0f", self.name, pts, price)
             triggered = True
+            kind = "tp"
         elif self.stop_loss_pts > 0 and pts <= -self.stop_loss_pts:
             logger.info("策略 [%s] 停損觸發: %.0f點 @ %.0f", self.name, pts, price)
             triggered = True
+            kind = "sl"
         if not triggered:
             return False
 
@@ -158,11 +162,14 @@ class BaseStrategy(ABC):
         prev_entry = self.state.entry_price
         action = "Sell" if prev_pos > 0 else "Buy"
         qty = abs(prev_pos)
+        # 成交紀錄用：設定的停損/停利價位（與實際成交價的差 = 該單的滑價）
+        ref = prev_entry + (1 if prev_pos > 0 else -1) * (
+            self.take_profit_pts if kind == "tp" else -self.stop_loss_pts)
         self.state.position = 0
         self.state.entry_price = 0.0
         self.state.unrealized_pnl = 0.0
         try:
-            await self.place_order(action, qty)
+            await self.place_order(action, qty, kind=kind, ref_price=ref)
         except Exception as e:
             self.state.position = prev_pos
             self.state.entry_price = prev_entry
@@ -187,10 +194,10 @@ class BaseStrategy(ABC):
         try:
             if prev_pos != 0:
                 close_qty = abs(prev_pos)
-                await self.place_order(action, close_qty)
+                await self.place_order(action, close_qty, kind="reverse_close")
                 pts = (price - prev_entry) * (1 if prev_pos > 0 else -1)
                 self.state.realized_pnl += pts * close_qty * self.point_value
-            await self.place_order(action, 1)
+            await self.place_order(action, 1, kind="entry")
         except Exception as e:
             self.state.position = prev_pos
             self.state.entry_price = prev_entry
@@ -332,8 +339,12 @@ class BaseStrategy(ABC):
         price: Optional[float] = None,
         price_type: str = "MKT",
         order_type: str = "IOC",
+        kind: str = "",
+        ref_price: Optional[float] = None,
     ):
         # action is "Buy" or "Sell"
+        # kind / ref_price 只給成交紀錄用（原因 entry/tp/sl/trail…、停損停利設定價），不影響下單。
+        # 參數不叫 reason：下面風控檢查的區域變數 reason 會把它蓋掉
         is_reducing = (
             (action == "Buy"  and self.state.position < 0) or
             (action == "Sell" and self.state.position > 0)
@@ -349,15 +360,17 @@ class BaseStrategy(ABC):
                 raise RuntimeError(msg)
 
         try:
-            trade = await broker.place_order(
-                contract_code="TMF",
-                action=action,
-                quantity=quantity,
-                price=price or 0,
-                price_type=price_type,
-                order_type=order_type,
-                octype="Auto",
-            )
+            with trade_log.context(strategy=self.name, reason=kind or ("exit" if is_reducing else "entry"),
+                                   signal_price=self.state.last_price or None, ref_price=ref_price):
+                trade = await broker.place_order(
+                    contract_code="TMF",
+                    action=action,
+                    quantity=quantity,
+                    price=price or 0,
+                    price_type=price_type,
+                    order_type=order_type,
+                    octype="Auto",
+                )
             if not is_reducing:
                 self._trades_today += 1
             logger.info(

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Awaitable, Callable
 
 from core.bar_builder import Bar, BarBuilder
+from core.live_state import live_state
 from core.tick_store import tick_recorder
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,13 @@ class QuoteHub:
 
     def all_last_prices(self) -> dict[str, float]:
         return dict(self._last_price)
+
+    def last_price_by_prefix(self, prefix: str) -> float | None:
+        """依合約前綴（TMF/MXF/TXF）取最新價；報價快取的 key 是實際合約代碼（如 TMFJ6）。"""
+        for code, px in self._last_price.items():
+            if code.startswith(prefix):
+                return px
+        return None
 
     def daily_ohlc(self) -> dict[str, dict[str, float]]:
         result = {}
@@ -109,6 +117,12 @@ class QuoteHub:
         # tick 落地 + 1 分 K 聚合
         ts  = snapshot.get("ts", time.time())
         vol = snapshot.get("volume", 0)
+        # 盤中即時狀態（只給儀表板顯示）：任何例外都不可影響下面的報價派發
+        try:
+            live_state.feed(code, price, vol, snapshot.get("total_volume", 0),
+                            snapshot.get("tick_type", 0), ts)
+        except Exception:
+            logger.debug("live_state.feed 失敗（已忽略）", exc_info=True)
         tick_recorder.record(code, ts, price, vol, snapshot.get("tick_type", 0))
         done_bar = self.bars.feed(code, price, vol, ts)
         if done_bar and self._bar_subs and self._loop and self._loop.is_running():
