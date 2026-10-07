@@ -10,7 +10,7 @@ import pytest
 
 import core.broker as broker_mod
 from core.bar_builder import Bar
-from core.manual_monitor import ManualWatch, manual_monitor
+from core.manual_monitor import ManualWatch
 from core.trade_log import TradeLog
 from strategies.bar_base import BarStrategy
 from strategies.base import BaseStrategy
@@ -273,13 +273,16 @@ def test_scalp_entry_tp_and_sl_orders(wired, tlog):
 
 
 def test_manual_monitor_exit_carries_reason(wired, tlog):
+    from core.manual_monitor import ManualOrderMonitor
+    mm = ManualOrderMonitor()
     w = ManualWatch(id="w1", contract="TMF", direction=1, quantity=1, entry_price=100.0,
                     stop_loss_pts=10, take_profit_pts=0)
-    manual_monitor._watches["w1"] = w
-    asyncio.run(manual_monitor._close(w, "sl", 90.0, 89.0))
+    mm._watches["w1"] = w
+    asyncio.run(mm._close(w, "sl", 90.0, 89.0))
     r = rows_by_reason(tlog)["sl"]
     assert (r["strategy"], r["action"], r["ref_price"], r["signal_price"], r["order_type"]) == ("manual_monitor", "Sell", 90.0, 89.0, "IOC")
-    assert "w1" not in manual_monitor._watches                                # 既有行為不變
+    # 送出後不再立刻移除監看：要等確認成交（見 test_manual_close.py）
+    assert "w1" in mm._watches and w.close_attempts == 1 and w.close_order_id == "T1"
 
 
 def test_manual_order_route_is_labelled_manual(wired, tlog):

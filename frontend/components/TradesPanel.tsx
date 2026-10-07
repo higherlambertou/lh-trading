@@ -49,6 +49,11 @@ function WatchRow({ watch, onChanged }: { watch: Watch; onChanged: () => void })
       <td className="py-2 pr-2 font-mono text-[11px] text-[#7070a0]">{watch.id}</td>
       <td className={`py-2 pr-2 text-xs font-semibold ${dirColor}`}>
         {watch.direction === "Buy" ? "多" : "空"} {watch.contract}
+        {watch.close_gave_up ? (
+          <div className="text-[10px] font-normal text-[#ff1744]">⚠ 平倉失敗，請手動處理</div>
+        ) : (watch.close_attempts ?? 0) > 0 ? (
+          <div className="text-[10px] font-normal text-[#ffc107]">平倉中（第 {watch.close_attempts} 次）</div>
+        ) : null}
       </td>
       <td className="py-2 pr-2 font-mono text-[11px] text-[#e0e0f0]">
         {watch.entry_price > 0 ? watch.entry_price.toLocaleString() : "市價"}

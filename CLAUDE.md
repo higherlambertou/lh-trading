@@ -153,6 +153,10 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   掛在 `broker.place_order/place_option_order`（唯一出口）與 `_dispatch`（成交回報）；策略/手動單用 `trade_log.context(...)` 補脈絡
   （參數叫 `kind`，不要叫 `reason`——`BaseStrategy.place_order` 內有同名區域變數）。純加法：所有 record 吞例外、走獨立 writer thread、
   佇列滿就丟棄；`TRADE_LOG=false` 整個關掉。`GET /api/tradelog/{orders,summary}`、`python -m core.trade_log [天數]`。
+- **手動停損確認**（`core/manual_monitor.py`）：觸發後送出平倉單**不立刻移除監看**，用委託狀態確認——全數成交才移除、沒成交才重送
+  （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
+  動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。
+- **scalp `flow_source`**：0（預設）= 所有行情事件（舊算法）；1 = 只算 TMF 真實成交（`core/live_state.py` 的 `TradeDetector`）。
 - 測試：`python -m pytest tests -q`（需 numpy、fastapi、httpx；用裝了 shioaji 的 Python 環境）。
 
 > `broker.kbars()` 會佔住 worker（單執行緒）、下單指令排隊，所以只在盤前/盤後用；

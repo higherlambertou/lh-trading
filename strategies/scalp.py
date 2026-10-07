@@ -6,6 +6,7 @@ from typing import Any
 
 from core.broker import broker
 from core.daily_summary import market_state
+from core.live_state import TradeDetector
 from core.trade_log import trade_log
 from strategies.base import BaseStrategy, POINT_VALUE_TMF
 
@@ -40,6 +41,8 @@ class ScalpStrategy(BaseStrategy):
         self.max_qty: int = 1
         self.market_bias: int = 0               # 0=不限 1=順勢 -1=逆勢 2=依今日市場狀態自動
         self._last_bias_reason: str = ""        # 偏向擋單的理由（同一理由只記一次）
+        self.flow_source: int = 0               # 外/內盤統計來源：0=所有行情事件（現行）1=只算 TMF 真實成交
+        self._trade_detector = TradeDetector()  # flow_source=1 時判定「真實成交」用
 
         self._phase: str = "idle"
         self._direction: int = 0
@@ -73,6 +76,7 @@ class ScalpStrategy(BaseStrategy):
             "cooldown_ticks": self.cooldown_ticks,
             "max_qty": self.max_qty,
             "market_bias": self.market_bias,
+            "flow_source": self.flow_source,
             **self._base_params,
         }
 
@@ -89,6 +93,7 @@ class ScalpStrategy(BaseStrategy):
             {"key": "cooldown_ticks",     "label": "冷卻 Ticks",            "type": "number", "min": 0,    "max": 300},
             {"key": "max_qty",            "label": "最大口數",               "type": "number", "min": 1,    "max": 10},
             {"key": "market_bias",        "label": "市場偏向 0=不限/1=順勢/-1=逆勢/2=自動", "type": "number", "min": -1, "max": 2},
+            {"key": "flow_source",        "label": "外/內盤來源 0=所有事件(現行)/1=只算TMF真實成交", "type": "number", "min": 0, "max": 1},
             *self._base_param_schema,
         ]
 
@@ -105,12 +110,15 @@ class ScalpStrategy(BaseStrategy):
         bias = int(params.get("market_bias", self.market_bias))
         self.market_bias        = bias if bias in (-1, 0, 1, 2) else 0
         self._last_bias_reason  = ""
+        flow = int(params.get("flow_source", self.flow_source))
+        self.flow_source        = flow if flow in (0, 1) else 0
+        self._trade_detector    = TradeDetector()
         self._tick_buf = deque(maxlen=self.momentum_window)
         logger.info(
-            "[scalp] 套用參數: TP=%d SL=%d offset=%d mode=%s window=%d threshold=%.2f cooldown=%d max_qty=%d bias=%d",
+            "[scalp] 套用參數: TP=%d SL=%d offset=%d mode=%s window=%d threshold=%.2f cooldown=%d max_qty=%d bias=%d flow_source=%d",
             self.tp_pts, self.sl_pts, self.entry_offset, self.signal_mode,
             self.momentum_window, self.momentum_threshold, self.cooldown_ticks, self.max_qty,
-            self.market_bias,
+            self.market_bias, self.flow_source,
         )
 
     # ── 啟動帶倉接管 ──────────────────────────────────────────────
@@ -142,6 +150,13 @@ class ScalpStrategy(BaseStrategy):
             return random.choice([1, -1])
 
         tt = int(quote.get("tick_type", 0))
+        if self.flow_source == 1:
+            # 只算 TMF 真實成交：報價更新（volume=0）、重複回報、MXF/TXF 的事件都不進視窗；
+            # 也只在「新成交」那一刻判斷訊號（沒有新資訊就不重複觸發）。預設 0 = 維持舊算法
+            code = str(quote.get("code", ""))
+            if not code.startswith("TMF") or not self._trade_detector.is_trade(
+                    code, int(quote.get("volume", 0) or 0), int(quote.get("total_volume", 0) or 0)):
+                return 0
         if tt in (1, 2):
             self._tick_buf.append(tt)
 

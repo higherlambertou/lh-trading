@@ -27,11 +27,30 @@ BIG_MOVE = 1.5                      # 日盤振幅 / 近 20 日均振幅 >= 此�
 QUIET = 0.6                         # <= 此值 → 清淡
 
 
+class TradeDetector:
+    """判斷一個行情事件是不是「真實成交」：volume>0 且 total_volume 比上次增加（去除重複回報）。
+    total_volume 變小（換盤/換月）視為新成交；沒有 total_volume 欄位時只看 volume。
+    即時面板與 scalp（flow_source=1）共用同一套判定，數字才會一致。"""
+
+    def __init__(self) -> None:
+        self._last_total: dict[str, int] = {}
+
+    def is_trade(self, code: str, volume: int, total_volume: int) -> bool:
+        if not volume or volume <= 0:                                # 純報價更新，不是成交
+            return False
+        if total_volume:
+            prev = self._last_total.get(code)
+            self._last_total[code] = total_volume
+            if prev is not None and total_volume == prev:            # 重複回報同一筆成交
+                return False
+        return True
+
+
 class LiveState:
     def __init__(self, prefix: str = "TMF") -> None:
         self.prefix = prefix
         self._trades: deque[tuple[float, int, int]] = deque(maxlen=max(FLOW_WINDOWS))   # (ts, 方向 1/2, 口數)
-        self._last_total: dict[str, int] = {}
+        self._detector = TradeDetector()
         self.last_price: float | None = None
         self.last_ts: float = 0.0
         self._day = ""
@@ -56,13 +75,8 @@ class LiveState:
                 self._hi = price if self._hi is None else max(self._hi, price)
                 self._lo = price if self._lo is None else min(self._lo, price)
 
-        if not volume or volume <= 0:                                # 純報價更新，不是成交
+        if not self._detector.is_trade(code, volume, total_volume):
             return
-        if total_volume:
-            prev = self._last_total.get(code)
-            self._last_total[code] = total_volume
-            if prev is not None and total_volume == prev:            # 重複回報同一筆成交
-                return                                               # （total_volume 變小 = 換盤/換月，視為新成交）
         if tick_type in (1, 2):
             self._trades.append((ts, tick_type, int(volume)))
 

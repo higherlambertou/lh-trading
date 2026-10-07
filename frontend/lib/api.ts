@@ -112,6 +112,8 @@ export interface Watch {
   take_profit_pts: number;
   is_option?: boolean;
   match_code?: string;
+  close_attempts?: number;     // 已送出幾次平倉單（>0 = 平倉中，等成交確認）
+  close_gave_up?: boolean;     // 超過上限仍未平倉：不再自動重送，需人工處理
 }
 
 export interface Trade {
