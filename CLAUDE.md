@@ -167,6 +167,8 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 - **破產機率驗證**（`core/ruin.py`、`api/routes_risk.py`、前端〈風險〉面板）：蒙地卡羅＋對稱公式＋Lundberg 上界＋bootstrap；不給勝率就用「無技巧基準勝率」＝停損÷(停利+停損)（20/60 → 75%）；
   `TradeLog.round_trips()` 把成交 FIFO 配對成來回，成交紀錄 ≥30 筆才允許用真實損益分布。純計算、不碰交易路徑。
   CLI：`python -m core.ruin --capital 51482 --tp 20 --sl 60 --win 0.65 --cost-pts 2`。
+- **指標歷史**（市場指標視覺化的資料基礎）：`core/flow_store.py` 每分鐘彙總 TMF 真實成交（買／賣／不明 筆數與口數、成交價 OHLC）存 `flow_1m`，在報價進入點餵入（包 try/except、不影響派發），`RECORD_FLOW=false` 關閉；`core/indicator_history.py` 重建每日 Hurst／日 K 方向／IV 到 `indicator_daily`（date＝as-of，T 日盤前只能用 date<T 的列，回放別用到未來）、回補歷史（本機 ticks.db，或券商 `api.ticks()`——`date` 是**交易日**，夜盤＋日盤一次給；單日約 5～10 MB，流量計數有延遲所以上限用筆數估算）。CLI：`python -m core.indicator_history status|daily|flow-from-ticks|flow-fetch`。IV 歷史補不回來，只能每天累積。
+- **市場指標回放與驗證**（`core/viz_replay.py`、`GET /api/market/replay`、前端〈市場指標回放〉）：Hurst 色相（連續漸變，中性帶內灰色）、IV 飽和度、外/內盤形狀；協調＝買賣力道方向與盤前預期方向（`want_direction`，與 scalp market_bias=2 同一套）一致。**買賣力道逐分鐘重現即時面板**（最近 100 筆＋60/40＋遲滯）、取各格結束時的狀態——不能拿整格的占比套 60/40（一格幾千筆，必貼近 50%）；預期報酬起點用訊號後第一筆成交價（避免買賣價差彈跳偏差）；每日指標只用 date<T 的最後一列。驗證＝同日內排列檢定＋CUSUM＋日級檢定，正向／負向對照與「不偷看未來」固定在 `tests/test_viz_replay.py`。**結論（37 天）：沒有顯著差異，不做即時版**（update.md 發現 14）。
 - **硬門檻盤點與震盪量測**（`THRESHOLDS.md`、`core/threshold_study.py`）：只讀本機資料，量測各指標在硬門檻附近的切換／來回／遲滯可省多少；門檻與指標算式直接讀程式常數與策略自己的方法，不另抄。`python -m core.threshold_study`。
 - **報價進入點的盤前試算隔離**（`core/quote_hub.py` 的 `PREOPEN_WINDOWS`）：08:30~08:45、14:50~15:00 的行情是試算價（三合約價差平均 189 點、最大 270 點），只讓畫面（WebSocket）看到，**不更新日高日低、不餵策略／K 棒／即時狀態／tick 落地**。靠**時段**隔離，不靠 `simtrade` 旗標——旗標若誤判，丟掉真實行情會讓策略變瞎子、停損失效；旗標（worker 已帶出）只用來記 log 核對。`FILTER_PREOPEN_QUOTES=false` 恢復舊行為。測試的報價時間常是 `time.time()`，所以 `tests/conftest.py` 預設關閉它，要測的測試自己打開。
 - **逐 tick 策略只吃 TMF**（`strategies/base.py` 的 `quote_prefix`）：ma_cross／breakout／rsi／bollinger／momentum 設 `"TMF"`，價格序列、未實現損益、**停損停利檢查**都只看 TMF；scalp 與 K 棒策略維持 `None`（所有合約）。`TICK_STRATEGIES_TMF_ONLY=false` 恢復舊行為。新增逐 tick 策略時記得設 `quote_prefix`。
@@ -193,7 +195,7 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 
 | 限制 | 數字 | 本專案的注意點 |
 |---|---|---|
-| **同一 person_id 連線數** | 最多 **5 條** | sim(8003)+live(8002) 同跑就佔 2 條；**watchdog `kill -9` / `Stop-Process` 不會乾淨 logout**，殘留連線要等券商端逾時才釋放，**頻繁重啟可能累積逼近 5 條**而登不進去。卡住時先停掉所有進程等幾分鐘。 |
+| **同一 person_id 連線數** | 最多 **5 條** | sim(8003)+live(8002) 同跑就佔 2 條；**watchdog `kill -9` / `Stop-Process` 不會乾淨 logout**，殘留連線要等券商端逾時才釋放，**頻繁重啟可能累積逼近 5 條**而登不進去。卡住時先停掉所有進程等幾分鐘。**唯讀歷史工具（`hurst_study fetch`、`indicator_history flow-fetch`）每次再佔 1 條，登出後券商端也要幾分鐘才回收**——它們登入前會先問後端（`core/broker_guard.py`），現有超過 3 條就不登入；自己另外開券商登入前，也先看 `/api/position/usage` 的 `connections`。 |
 | **登入次數** | **1000 次/日** | 每次 watchdog 重啟都會 login。正常夠用，但若 session 一直不穩狂 flapping 重啟會燒額度。 |
 | **委託操作** | **10 秒 250 次**（下單/改單/取消） | `scalp.py` 掃單頻率高；連反手平倉一次 tick 可能 2 單，掃太密要留意。 |
 | **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、`positions_refresh_loop`(部位 5s 一次、已實現損益 60s／300s 一次)、前端 PositionPanel(2s)、TradesPanel(3s)。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |

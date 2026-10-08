@@ -157,6 +157,42 @@ grep -E "試算時段" /tmp/lh_live.log | tail
 - `.env`：`FILTER_PREOPEN_QUOTES=false` 恢復舊行為（試算價會污染 vwap_revert 等指標）；`TICK_STRATEGIES_TMF_ONLY=false` 讓逐 tick 策略恢復吃所有合約。改完要重啟後端。
 - 部位刷新連續失敗時 log 會出現 `部位刷新連續失敗 3 次（券商端異常？最近一次：…）`，恢復時 `部位刷新恢復`；平常不會有。
 
+### 市場指標歷史資料（外/內盤逐分鐘、每日指標）
+
+市場指標視覺化要先歷史回放、統計驗證才能上線，需要三個指標合在一起的歷史。資料存在 `data/market_state.db`（有每日備份）：
+- `flow_1m`：每分鐘 TMF 真實成交的買／賣／不明 筆數與口數、成交價 OHLC。**重啟後端後**即時記錄（`RECORD_FLOW=false` 可關）；歷史用下面的指令回補。
+- `indicator_daily`：每日 Hurst／日 K 方向／IV 與 IV 百分位。
+
+```bash
+python -m core.indicator_history status                                  # 目前有多少資料
+python -m core.indicator_history daily                                   # 重建每日指標（不連券商）
+python -m core.indicator_history flow-from-ticks                         # 把本機 ticks.db 的逐筆聚合進 flow_1m（不連券商）
+python -m core.indicator_history flow-fetch --probe --date 2026-10-08    # 向券商抓一天，並和本機 ticks.db 比對數字
+python -m core.indicator_history flow-fetch --days 140                   # 補更早的日子（可重複執行，已抓過的會跳過）
+python -m core.hurst_study fetch 400                                     # 延長日 K／1 分 K 歷史（Hurst 用）
+```
+
+**連線數與流量（會連到券商的兩個指令：`flow-fetch`、`hurst_study fetch`）**
+- 它們會另外登入一條「模擬盤」唯讀連線；登入前自動問正式盤後端現有幾條，超過 3 條就不登入並告訴你原因。
+- 券商同一身分上限 5 條，**登出後券商端要幾分鐘才回收**——不要連續手動跑好幾次，也不要在它跑的時候重啟後端。
+  看現在幾條：`curl http://100.127.125.13:8002/api/position/usage`（`connections`，最多落後 2 分鐘）。
+- 流量：單日逐筆約 5～10 MB（每筆約 40 位元組），這個帳戶每日 2 GB；預設單次最多 320 MB、剩餘流量低於 800 MB 就停（`--max-mb`、`--reserve-mb` 可調）。
+  券商的流量計數有延遲（抓完當下 +0、約 15 秒後才反映）。
+- 券商逐筆的 `date` 是**交易日**（夜盤＋日盤一次給）；休市日會回前一個有資料的日子，寫入是冪等的不會重複。
+- IV 歷史補不回來（過期選擇權沒有歷史報價），只能每天累積；三個指標的完整歷史要等 IV 滿 60 天。
+
+### 市場指標回放與統計驗證
+
+```bash
+# 日 × 時段的格子＋統計驗證（純讀本機歷史資料，不連券商）
+curl 'http://100.127.125.13:8002/api/market/replay?days=40&block_min=15' | python3 -m json.tool | head -60
+# 只要格子、不做檢定（比較快）；可調參數：neutral_band、full_at（顏色）、flow_up／flow_down／flow_margin／flow_window（買賣力道）
+curl 'http://100.127.125.13:8002/api/market/replay?validate=false&neutral_band=0.03&full_at=0.08'
+```
+
+前端在〈市場指標回放〉面板。目前的驗證結論是**沒有顯著差異**（update.md 發現 14），所以這只是回放工具，不是交易訊號。
+資料來源是 `flow_1m`（外/內盤逐分鐘）與 `indicator_daily`（每日 Hurst／日 K 方向／IV）；累積更多資料後按面板的「重新計算」就會重新檢定。
+
 ### 硬門檻震盪量測
 
 ```bash
