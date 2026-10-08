@@ -18,7 +18,7 @@
 | 偏差正常化檢查 | ⬜ | 成交紀錄已能記錄訊號價、停損停利設定價、實際成交價（檢查一、二的資料來源） | 資料要累積才有意義；檢查三（各策略虧損重疊）需要逐日逐策略的真實損益 | — |
 | 破產機率驗證 | ✅ 待重啟＋前端重 build | 〈風險〉面板＋`GET /api/risk/ruin`、`python -m core.ruin`：蒙地卡羅破產機率、損益兩平勝率、對稱公式與 Lundberg 上界、預期最長連虧、勝率×本金敏感度；成交紀錄 ≥30 筆時可改用**真實損益分布**（bootstrap） | 成交紀錄目前 0 筆，**勝率是輸入的假設值，不是實測**；手續費／稅需自己填成本（點） | 14e89c0 |
 | 停損機制極端行情驗證 | ⬜ | — | 驗證一（ATR vs 停損幅度）可用 1 分 K 歷史做；驗證二需極端事件樣本；文件前提與程式不符（見「發現」3） | — |
-| 門檻判斷連續化檢查 | ✅ 分析完成＋小修已做（待重啟） | 盤點所有硬門檻（`THRESHOLDS.md`）、`python -m core.threshold_study` 量測震盪（可重跑）、逐項評估連續權重；據此處理：外盤占比加遲滯、**盤前試算行情隔離**、逐 tick 策略只吃 TMF（發現 10、11） | IV 百分位要累積 ≥40 筆後重跑；scalp 的連續化要重做狀態機，需和你討論 | 47f823d 85c518f 未 commit |
+| 門檻判斷連續化檢查 | ✅ 分析完成＋小修已做（待重啟） | 盤點所有硬門檻（`THRESHOLDS.md`）、`python -m core.threshold_study` 量測震盪（可重跑）、逐項評估連續權重；據此處理：外盤占比加遲滯、**盤前試算行情隔離**、逐 tick 策略只吃 TMF（發現 10、11） | IV 百分位要累積 ≥40 筆後重跑；scalp 的連續化要重做狀態機，需和你討論 | 47f823d 85c518f 915296b df932c6 3587466 |
 
 
 ### 基礎建設（非需求文件，為上面幾份鋪路）
@@ -33,9 +33,9 @@
 | Hurst 5 分 K 版 `HURST_FREQ=5m` ＋ `core/hurst_study.py` | ✅ 待重啟（**預設仍是 `D`**，行為不變） | 去季節性＋波動標準化的 5 分 K Hurst（置換檢定校準）；`python -m core.hurst_study fetch\|study` 在真實歷史上比較穩定度；1 分 K 改存 `bars_1m` | 14e89c0 |
 | 自動備份 `core/backup.py` | ✅ 待重啟 | 每個交易日 14:00 用 SQLite 線上備份 `market_state.db`／`trade_log.db` 到 `data/backup/日期/`，驗證完整性、保留 14 天；`python -m core.backup` | 14e89c0 |
 | tick 瘦身 `core/tick_store.py` | ✅ 待重啟；**舊資料需手動 compact** | 只存真實成交（砍掉 77% 的報價更新）、新增 `total_volume` 欄位（舊資料庫自動升級）；`python -m core.tick_store compact [--keep-days N] [--apply]` | 14e89c0 |
-| 盤前試算行情隔離 `core/quote_hub.py` | ✅ 待重啟 | 08:30~08:45、14:50~15:00 的行情只顯示在畫面，不餵策略／K 棒／即時狀態／tick 落地、不算日高日低；worker 帶出 `simtrade` 旗標只供 log 核對；`FILTER_PREOPEN_QUOTES=false` 可恢復 | 未 commit |
-| 逐 tick 策略只吃 TMF `strategies/base.py` | ✅ 待重啟 | ma_cross／breakout／rsi／bollinger／momentum 的價格序列、未實現損益、停損停利檢查只看 TMF；`TICK_STRATEGIES_TMF_ONLY=false` 可恢復；scalp 與 K 棒策略沒動 | 未 commit |
-| 小修三項 | ✅ 待重啟＋前端重 build | 即時面板外盤占比加遲滯（`flow_direction`）；持倉輪詢失敗退避（5→60 秒）；〈風險〉面板加「無技巧基準勝率」並以它當預設 | 未 commit |
+| 盤前試算行情隔離 `core/quote_hub.py` | ✅ 待重啟 | 08:30~08:45、14:50~15:00 的行情只顯示在畫面，不餵策略／K 棒／即時狀態／tick 落地、不算日高日低；worker 帶出 `simtrade` 旗標只供 log 核對；`FILTER_PREOPEN_QUOTES=false` 可恢復 | df932c6 |
+| 逐 tick 策略只吃 TMF `strategies/base.py` | ✅ 待重啟 | ma_cross／breakout／rsi／bollinger／momentum 的價格序列、未實現損益、停損停利檢查只看 TMF；`TICK_STRATEGIES_TMF_ONLY=false` 可恢復；scalp 與 K 棒策略沒動 | df932c6 |
+| 小修三項 | ✅ 待重啟＋前端重 build | 即時面板外盤占比加遲滯（`flow_direction`）；持倉輪詢失敗退避（5→60 秒）；〈風險〉面板加「無技巧基準勝率」並以它當預設 | 915296b |
 
 ---
 
@@ -149,7 +149,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-08（又續）— 依門檻檢查的結論做五項修正（未 commit）
+### 2026-10-08（又續）— 依門檻檢查的結論做五項修正 — 915296b df932c6
 - **盤前試算行情隔離**（`quote_hub`）：08:30~08:45、14:50~15:00 的行情只顯示在畫面；用真 `BarBuilder` 測過盤前 K 棒不再存在。時段隔離為主、`simtrade` 旗標只記 log（旗標誤判會讓停損失效，所以不靠它）。測試用的報價時間常是 `time.time()`，為了不讓測試受「幾點執行」影響，`tests/conftest.py` 預設關閉這個隔離，要測的測試自己打開。
 - **逐 tick 策略只吃 TMF**（`strategies/base.py` 的 `quote_prefix`）：五個策略的價格序列、未實現損益、**停損停利檢查**都只看 TMF。scalp 與 K 棒策略沒動（有測試固定 `quote_prefix is None`）。
 - **外盤占比遲滯**：`flow_direction` 每筆成交更新各視窗方向；前端顏色與「協調／矛盾」都用它，舊後端沒有 `dir` 時前端退回硬門檻（SSR 渲染驗證過三種情況）。
