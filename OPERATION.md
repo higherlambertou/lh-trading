@@ -174,7 +174,7 @@ python -m core.hurst_study fetch 400                                     # 延�
 
 **連線數與流量（會連到券商的兩個指令：`flow-fetch`、`hurst_study fetch`）**
 - 它們會另外登入一條「模擬盤」唯讀連線；登入前自動問正式盤後端現有幾條，超過 3 條就不登入並告訴你原因。
-- 券商同一身分上限 5 條，**登出後券商端要幾分鐘才回收**——不要連續手動跑好幾次，也不要在它跑的時候重啟後端。
+- 券商同一身分上限 5 條。後端顯示的連線數**最多落後 2 分鐘**（每 120 秒刷新）——不要連續手動跑好幾次，也不要在它跑的時候重啟後端。
   看現在幾條：`curl http://100.127.125.13:8002/api/position/usage`（`connections`，最多落後 2 分鐘）。
 - 流量：單日逐筆約 5～10 MB（每筆約 40 位元組），這個帳戶每日 2 GB；預設單次最多 320 MB、剩餘流量低於 800 MB 就停（`--max-mb`、`--reserve-mb` 可調）。
   券商的流量計數有延遲（抓完當下 +0、約 15 秒後才反映）。
@@ -192,6 +192,30 @@ curl 'http://100.127.125.13:8002/api/market/replay?validate=false&neutral_band=0
 
 前端在〈市場指標回放〉面板。目前的驗證結論是**沒有顯著差異**（update.md 發現 14），所以這只是回放工具，不是交易訊號。
 資料來源是 `flow_1m`（外/內盤逐分鐘）與 `indicator_daily`（每日 Hurst／日 K 方向／IV）；累積更多資料後按面板的「重新計算」就會重新檢定。
+
+### 孤兒 worker（佔住券商連線的殘留進程）
+
+重啟時 main.py 若被強殺，shioaji 子進程（worker）可能沒被關掉，變成父進程是 1 的孤兒，**帶著券商連線一直活著、不會逾時**。
+連線數基準值偏高（正常是 1 條，正式盤與模擬盤同跑才 2 條）時先查：
+
+```bash
+# 1) 列出 worker 與它們的父進程；PPID 是 1 的就是孤兒（目前正式盤的 worker，PPID 是 main.py 的 PID）
+ps -axo pid,ppid,lstart,command | grep -E "multiprocessing\.(spawn|resource_tracker)" | grep -v grep
+pgrep -f "python3.11 main.py"                      # 目前正式盤 main.py 的 PID，它的子進程不要動
+
+# 2) 確認孤兒是這個專案的（工作目錄），而且真的連著券商
+lsof -a -p <孤兒PID> -d cwd -Fn
+lsof -nP -p <孤兒PID> | grep ESTABLISHED
+
+# 3) 關掉孤兒 worker（一般終止訊號即可；它的 resource_tracker 會自己跟著結束，沒結束再 kill 它）
+kill <孤兒worker PID>
+
+# 4) 約 2 分鐘後（後端每 120 秒刷新一次）確認連線數回到正常
+curl http://100.127.125.13:8002/api/position/usage
+```
+
+`core/shioaji_worker.py` 的 `parent_alive()` 修正之後（需重啟後端才生效），worker 會在父進程消失時自己登出並結束，不會再漏。
+**修正生效前的最後一次重啟，停掉的還是舊的 worker——重啟後請再檢查一次有沒有新的孤兒。**
 
 ### 硬門檻震盪量測
 

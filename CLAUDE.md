@@ -195,7 +195,7 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 
 | 限制 | 數字 | 本專案的注意點 |
 |---|---|---|
-| **同一 person_id 連線數** | 最多 **5 條** | sim(8003)+live(8002) 同跑就佔 2 條；**watchdog `kill -9` / `Stop-Process` 不會乾淨 logout**，殘留連線要等券商端逾時才釋放，**頻繁重啟可能累積逼近 5 條**而登不進去。卡住時先停掉所有進程等幾分鐘。**唯讀歷史工具（`hurst_study fetch`、`indicator_history flow-fetch`）每次再佔 1 條，登出後券商端也要幾分鐘才回收**——它們登入前會先問後端（`core/broker_guard.py`），現有超過 3 條就不登入；自己另外開券商登入前，也先看 `/api/position/usage` 的 `connections`。 |
+| **同一 person_id 連線數** | 最多 **5 條** | sim(8003)+live(8002) 同跑就佔 2 條；**重啟漏出孤兒 worker**：`run_live.sh` 的 cleanup() 只給 main.py 正常關閉 2 秒就 `kill -9`（凍結自動重啟也是 `kill -9`），強殺時 shioaji 子進程（worker）來不及登出，變成 PPID=1 的孤兒、**帶著券商連線一直活著、不會逾時**（2026-10-08 實測：最近 4 次停機漏 2 次，基準連線數因此是 3）；上限 5 條，滿了新 worker 就登不進去。`core/shioaji_worker.py` 的 `parent_alive()` 已修（worker 閒置時每秒檢查父進程，不在就先登出再結束；**需重啟後端才生效**，且這次重啟停掉的還是舊 worker，要檢查有沒有新孤兒）。檢查與清理見 OPERATION.md「孤兒 worker」。**唯讀歷史工具（`hurst_study fetch`、`indicator_history flow-fetch`）每次再佔 1 條**——它們登入前會先問後端（`core/broker_guard.py`），現有超過 3 條就不登入；後端顯示的連線數最多落後 2 分鐘（每 120 秒刷新）；自己另外開券商登入前，也先看 `/api/position/usage` 的 `connections`。 |
 | **登入次數** | **1000 次/日** | 每次 watchdog 重啟都會 login。正常夠用，但若 session 一直不穩狂 flapping 重啟會燒額度。 |
 | **委託操作** | **10 秒 250 次**（下單/改單/取消） | `scalp.py` 掃單頻率高；連反手平倉一次 tick 可能 2 單，掃太密要留意。 |
 | **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、`positions_refresh_loop`(部位 5s 一次、已實現損益 60s／300s 一次)、前端 PositionPanel(2s)、TradesPanel(3s)。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |
