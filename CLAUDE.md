@@ -116,6 +116,8 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 - **`main_sim.py`** — 模擬盤入口，強制 `SIMULATION=true`/`DEV=false`，綁 `0.0.0.0:8003`，掛 faulthandler。
 - **`core/broker.py`** — shioaji 連線封裝。`call`（同步）/`acall`（丟 executor，非阻塞 event loop）為重連安全包裝。
   登入有硬性逾時（`LOGIN_TIMEOUT`，預設 25s）避免 Solace 卡死時 startup 無限懸住。
+- **委託回報解析**（`core/shioaji_worker.py` 的 `extract_order_event`／`to_mapping`）：shioaji 1.5.x 的回報是 `OrderEventDict`，**不是 dict 子類**，不要用 `isinstance(msg, dict)` 判斷；
+  解析壞了 scalp 會認不出自己的成交而重複進場（update.md 發現 21）。重啟後 log 前 3 筆回報會印出解析結果，萃取不到 trade_id 會警告。
 - **`core/quote_hub.py`** — 報價訂閱與派發；每個 tick 用 `run_coroutine_threadsafe` 派給策略。
 - **`strategies/base.py`** — 策略基底。`_go()` 進場、`_check_sl_tp()` 停損停利，
   皆有**重入防護**（先改 state 再 await，避免報價重入時重複下單 / OcType.Auto 反向疊單）。
@@ -124,7 +126,11 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   （它會先換日再記帳；策略裡不要直接 `realized_pnl +=`，`tests/test_risk_day.py` 會檢查）。損益只在記憶體，後端重啟歸零。
 - **`strategies/scalp.py`** — 限價掃單，有自己的 `_phase` 狀態機；
   覆寫 `_on_position_synced()` 在帶倉啟動時把既有部位接管進狀態機（否則會卡在 idle）。
+  `max_qty` 是**持倉上限**：進場前 `_entry_gate()` 向券商查 TMF 部位與未成交委託，已有就不進場（查不到也不進；`ENTRY_POSITION_CHECK=false` 關閉）。
+  狀態機的鐵則同 base：**先改 state 再 await**（`_do_enter`、入場單逾時處理都踩過：await 期間每個 tick 都會進 `on_quote`），await 之後要重新確認狀態才能改；測試在 `tests/test_scalp_state.py`。
 - 同帳戶同合約**一次只能跑一個策略**（`api/routes_strategy.py` 有 409 守衛）。
+  停止策略時，策略自己記有部位、或券商帳上有 TMF 部位（策略不知道的也算；查不到券商也先不停），一律回 409，`?force=true` 才強制停止；
+  `STOP_POSITION_CHECK=false` 關掉券商那一層。`stop_all()`（關機）不經過這個檢查。
 
 ### 市場狀態判斷（盤前 Hurst + IV → 策略對應 → 日誌）
 
@@ -200,7 +206,7 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 | **同一 person_id 連線數** | 最多 **5 條** | sim(8003)+live(8002) 同跑就佔 2 條；**重啟漏出孤兒 worker**：`run_live.sh` 的 cleanup() 只給 main.py 正常關閉 2 秒就 `kill -9`（凍結自動重啟也是 `kill -9`），強殺時 shioaji 子進程（worker）來不及登出，變成 PPID=1 的孤兒、**帶著券商連線一直活著、不會逾時**（2026-10-08 實測：最近 4 次停機漏 2 次，基準連線數因此是 3）；上限 5 條，滿了新 worker 就登不進去。`core/shioaji_worker.py` 的 `parent_alive()` 已修（worker 閒置時每秒檢查父進程，不在就先登出再結束；**需重啟後端才生效**，且這次重啟停掉的還是舊 worker，要檢查有沒有新孤兒）。檢查與清理見 OPERATION.md「孤兒 worker」。**唯讀歷史工具（`hurst_study fetch`、`indicator_history flow-fetch`）每次再佔 1 條**——它們登入前會先問後端（`core/broker_guard.py`），現有超過 3 條就不登入；後端顯示的連線數最多落後 2 分鐘（每 120 秒刷新）；自己另外開券商登入前，也先看 `/api/position/usage` 的 `connections`。 |
 | **登入次數** | **1000 次/日** | 每次 watchdog 重啟都會 login。正常夠用，但若 session 一直不穩狂 flapping 重啟會燒額度。 |
 | **委託操作** | **10 秒 250 次**（下單/改單/取消） | `scalp.py` 掃單頻率高；連反手平倉一次 tick 可能 2 單，掃太密要留意。 |
-| **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、`positions_refresh_loop`(部位 5s 一次、已實現損益 60s／300s 一次)、前端 PositionPanel(2s)、TradesPanel(3s)。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |
+| **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、`positions_refresh_loop`(部位 5s 一次、已實現損益 60s／300s 一次)、scalp 進場把關(每次進場前 2 次：部位＋委託；被擋下後 3 秒內不再查)、前端 PositionPanel(2s)、TradesPanel(3s)。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |
 | **行情查詢** | **5 秒 50 次**（snapshots/ticks/kbars，盤中 ticks 另限 10 次/5s） | 即時報價走訂閱推播（QuoteHub）不算查詢；但若策略改用主動拉 kbars/snapshot 要算進來。 |
 | **每日流量** | **500MB / 2GB / 10GB**（依近 30 日成交量分級，**開盤日 08:00 重置**） | 訂閱報價會吃流量。同時訂多合約、或多策略各自訂閱會放大用量——`QuoteHub` 已做集中訂閱去重，別繞過它各自 `quote.subscribe`。 |
 | **報價訂閱數** | **200 個** | 本專案只訂 TMF/MXF/TXF，遠低於上限，無虞。 |
