@@ -197,6 +197,12 @@
 
 ## 更新紀錄（新 → 舊）
 
+### 2026-10-08（深夜）— 快速上手頁補「名詞與參數速查」— 未 commit
+- 你說 QUICKSTART 沒講各種指標和參數是什麼意思、要去哪看。原本只有文末的文件地圖，沒說哪個畫面／參數在哪份文件的哪一節。
+- 新增〈名詞與參數速查〉：畫面上的指標（點、外/內盤占比、Hurst、z、IV 百分位、日 K 方向、振幅比、協調／矛盾、順勢／逆勢、兩平勝率／破產機率、流量／連線）
+  與策略參數（共用風控、ATR 移動停損、scalp 常用）各一句白話，再指到 FRONTEND.md／STRATEGIES.md／THRESHOLDS.md 的對應章節。標題去掉「（一頁版）」。
+- 所有內容對照 FRONTEND.md、STRATEGIES.md、程式預設值（`daily_summary` 的 Hurst／IV 門檻、`UsageIndicator`、`base.py`）寫的，沒有新增任何未經核對的說法。
+
 ### 2026-10-08（深夜）— 風控「當日」改成交易日（發現 20）— 7d08bad
 - 你說照建議做：**從 15:00 起算**。`daily_max_loss`（當日最大虧損）原本比後端啟動以來的累計損益，現在比「累計 − 換日基準」；`max_trades_per_day`、停機旗標用同一個換日點。
 - 程式：`strategies/base.py`（`risk_day_key`、`RISK_DAY_START`、`_roll_risk_day`、`_add_realized`、`_day_pnl`、`_now` 供測試注入時鐘；`start()`、`_on_quote_async`、`_risk_ok`、`_check_sl_tp`、`_go` 接上）；

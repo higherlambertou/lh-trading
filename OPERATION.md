@@ -1,6 +1,6 @@
 # lh-trading 操作手冊
 
-日常操作與第一次上手先看 [QUICKSTART.md](QUICKSTART.md)（一頁版）。
+日常操作與第一次上手先看 [QUICKSTART.md](QUICKSTART.md)（含名詞與參數速查）。
 
 ## 快速開始
 
