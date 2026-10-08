@@ -135,13 +135,16 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   且 shioaji 1.5.x 沒有 `constant.Timeframe`（只有 1 分 K，ts 為奈秒），已重寫，**不要搬回舊版**。
   ⚠️ 60 根窗口的 H 雜訊約 ±0.13，文件的 0.45/0.55 門檻落在雜訊內（純隨機漫步也有 ~70% 窗口被標成趨勢/回歸）。
   看 z 值；想更準加大 `HURST_WINDOW`（250 根約 ±0.06），想更保守設 `HURST_MIN_Z`。
+  真實歷史驗證（`python -m core.hurst_study study`，詳見 update.md 發現 6）：日 K 60 根的日間變動是純噪音的 2.4 倍、幾乎每天換標籤；
+  `HURST_FREQ=5m`（5 分 K 近 `HURST_DAYS` 日，去季節性＋波動標準化＋置換檢定校準）和噪音一樣穩，但 93~100% 的日子判隨機漫步。
+  **預設仍是 `D`**（換了會改變策略對應表與 `market_bias=2`）。1 分 K 存在 `bars_1m`；`hurst_study fetch` 另開**模擬盤**登入抓歷史（唯讀）。
 - **`core/iv_monitor.py`** — 第二層。ATM IV（Black-76 反推）→ 歷史百分位 → LOW/NORMAL/HIGH。
   資料來源優先序：手動輸入 > Shioaji 自動抓（最近月、距到期 ≥7 天、ATM Call/Put 平價取遠期）> CSV 回填
   （`python -m core.iv_monitor import file.csv`）。百分位需 `IV_MIN_HISTORY` 天歷史，不夠時只依 Hurst。
 - **`core/daily_summary.py`** — 整合、策略對應表、排程、策略日績效取樣；`market_state` 單例。
   CLI：`python -m core.daily_summary`（只讀 db，不連券商）。
 - **`core/market_store.py`** — SQLite `data/market_state.db`（日 K 快取、IV 歷史、日誌、策略日績效）。
-  **IV 歷史與手動備註無法重建，請備份。** sim/live 共用同一檔，日誌以 `(date, mode)` 區分。
+  **IV 歷史與手動備註無法重建**（有自動備份，見下）。sim/live 共用同一檔，日誌以 `(date, mode)` 區分。
 - **`api/routes_market.py`** — `/api/market/{state,refresh,iv,journal,stats}`；前端 `MarketStatePanel`。
 - **scalp `market_bias`** — 0 不限（預設，行為不變）／1 順勢／-1 逆勢／2 依今日狀態自動
   （趨勢→順勢、均值回歸→逆勢、不明確→不進場）。方向＝日 K 收盤 vs 20 日均線。
@@ -157,6 +160,16 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
   動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。
 - **scalp `flow_source`**：0（預設）= 所有行情事件（舊算法）；1 = 只算 TMF 真實成交（`core/live_state.py` 的 `TradeDetector`）。
+- **部位快取**（`api/routes_position.py`）：`_cache["positions"]`／`["pnl"]` 由 `positions_refresh_loop` 寫入（部位 5s、已實現損益 60s／策略執行中 300s，
+  都走 worker）。**不要把 `list_profit_loss` 之類的帳務查詢調得更頻繁**——worker 單執行緒，查詢期間下單指令會排隊。
+  `/api/position/meta` 的 `*_age_sec`（-1 = 從未取得）讓前端分辨「沒資料」與「沒持倉」。
+- **破產機率驗證**（`core/ruin.py`、`api/routes_risk.py`、前端〈風險〉面板）：蒙地卡羅＋對稱公式＋Lundberg 上界＋bootstrap；
+  `TradeLog.round_trips()` 把成交 FIFO 配對成來回，成交紀錄 ≥30 筆才允許用真實損益分布。純計算、不碰交易路徑。
+  CLI：`python -m core.ruin --capital 51482 --tp 20 --sl 60 --win 0.65 --cost-pts 2`。
+- **備份**（`core/backup.py`）：交易日 `BACKUP_TIME`（14:00）由 `daily_summary` 排程，用 SQLite 線上備份把 `market_state.db`／`trade_log.db` 存到
+  `data/backup/日期/`（`BACKUP_DIR` 可改）；副本轉成單一獨立檔、驗證完整性、保留 `BACKUP_KEEP_DAYS` 天，只清日期命名的資料夾。手動：`python -m core.backup`。
+- **tick 落地**（`core/tick_store.py`）：預設只存真實成交（約 23%）並帶 `total_volume`；`RECORD_QUOTE_UPDATES=true` 恢復全存。
+  舊資料用 `python -m core.tick_store compact [--keep-days N] [--apply]` 瘦身（預設只預覽；VACUUM 要獨佔鎖，**先停服務**）。
 - 測試：`python -m pytest tests -q`（需 numpy、fastapi、httpx；用裝了 shioaji 的 Python 環境）。
 
 > `broker.kbars()` 會佔住 worker（單執行緒）、下單指令排隊，所以只在盤前/盤後用；
@@ -179,7 +192,7 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 | **同一 person_id 連線數** | 最多 **5 條** | sim(8003)+live(8002) 同跑就佔 2 條；**watchdog `kill -9` / `Stop-Process` 不會乾淨 logout**，殘留連線要等券商端逾時才釋放，**頻繁重啟可能累積逼近 5 條**而登不進去。卡住時先停掉所有進程等幾分鐘。 |
 | **登入次數** | **1000 次/日** | 每次 watchdog 重啟都會 login。正常夠用，但若 session 一直不穩狂 flapping 重啟會燒額度。 |
 | **委託操作** | **10 秒 250 次**（下單/改單/取消） | `scalp.py` 掃單頻率高；連反手平倉一次 tick 可能 2 單，掃太密要留意。 |
-| **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、前端 PositionPanel(2s)、TradesPanel(3s)。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |
+| **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、`positions_refresh_loop`(部位 5s 一次、已實現損益 60s／300s 一次)、前端 PositionPanel(2s)、TradesPanel(3s)。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |
 | **行情查詢** | **5 秒 50 次**（snapshots/ticks/kbars，盤中 ticks 另限 10 次/5s） | 即時報價走訂閱推播（QuoteHub）不算查詢；但若策略改用主動拉 kbars/snapshot 要算進來。 |
 | **每日流量** | **500MB / 2GB / 10GB**（依近 30 日成交量分級，**開盤日 08:00 重置**） | 訂閱報價會吃流量。同時訂多合約、或多策略各自訂閱會放大用量——`QuoteHub` 已做集中訂閱去重，別繞過它各自 `quote.subscribe`。 |
 | **報價訂閱數** | **200 個** | 本專案只訂 TMF/MXF/TXF，遠低於上限，無虞。 |

@@ -183,7 +183,7 @@ export default function MarketStatePanel() {
                 {h?.z != null ? `z=${h.z >= 0 ? "+" : ""}${h.z.toFixed(1)} · 雜訊 ±${h.se}` : "—"}
               </div>
               <div className="text-[11px] text-[#404060] font-mono">
-                {h?.window} 根日K · 至 {h?.last_bar || "—"}
+                {h?.window_label || `${h?.window} 根日K`} · 至 {h?.last_bar || "—"}
               </div>
             </Card>
 

@@ -166,6 +166,7 @@ export interface HurstInfo {
   window: number;
   last_bar: string;
   note: string;
+  window_label?: string;      // 例：「60 根日K」「近 20 日 5 分K（1180 筆報酬）」
 }
 
 export interface IvInfo {
@@ -196,7 +197,7 @@ export interface MarketState {
   hint?: string;
   notes?: string[];
   config: {
-    window: number; trend_th: number; revert_th: number; min_z: number;
+    window: number; hurst_freq?: string; hurst_days?: number; trend_th: number; revert_th: number; min_z: number;
     iv_min_history: number; iv_auto: boolean; gate: string; pre_hhmm: number; post_hhmm: number;
   };
 }
@@ -268,11 +269,50 @@ export interface LiveState {
   thresholds: { flow_up: number; flow_down: number; big_move: number; quiet: number };
 }
 
+// 破產機率驗證
+export interface RuinPoint {
+  capital: number;
+  ruin_prob: number;                  // n_trades 筆內破產的比例（蒙地卡羅）
+  lundberg: number;                   // 無限期破產機率上界
+  formula: number | null;             // 賺賠對稱且無成本時的公式值
+  median_first_ruin_trade: number | null;
+  drawdown_p95: number;
+  survivor_median_end: number | null;
+  n_trades: number;
+  n_paths: number;
+}
+
+export interface RuinReport {
+  inputs: {
+    capital: number; win_rate: number; win: number; loss: number; cost: number;
+    n_trades: number; n_paths: number; ruin_level: number; source: string;
+  };
+  per_trade: {
+    win: number; loss: number; cost: number; payoff: number | null;
+    breakeven_win_rate: number; expectancy: number; expectancy_pct_of_capital: number | null;
+  };
+  ruin: Record<string, RuinPoint>;    // "0.5x" | "1x" | "2x"
+  capacity: { affordable_losses: number | null; expected_longest_losing_streak: number };
+  grid: { win_rate: number; expectancy: number; "0.5x": number; "1x": number; "2x": number }[];
+  history: null | {
+    n: number; win_rate: number; avg_win: number; avg_loss: number; payoff: number | null;
+    expectancy: number; total: number; worst_trade: number;
+    longest_losing_streak: number; longest_losing_streak_loss: number;
+  };
+  history_used: boolean;
+  history_note: string | null;
+  defaults: { capital_from_equity: boolean; equity: number | null };
+}
+
 // ─── API client ───────────────────────────────────────────────────
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
 export const api = {
+  risk: {
+    ruin: (q: Record<string, string | number | boolean>) =>
+      req<RuinReport>(`/risk/ruin?${new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))}`),
+  },
   market: {
     state: () => req<MarketState>("/market/state"),
     live: () => req<LiveState>("/market/live"),
@@ -311,7 +351,7 @@ export const api = {
     margin: () => req<Margin>("/position/margin"),
     pnl: () => req<ProfitLoss[]>("/position/pnl"),
     usage: () => req<Usage>("/position/usage"),
-    meta: () => req<{ updated_at: number; age_sec: number }>("/position/meta"),
+    meta: () => req<{ updated_at: number; age_sec: number; positions_age_sec?: number; pnl_age_sec?: number }>("/position/meta"),
   },
   order: {
     place: (data: OrderRequest) =>

@@ -24,6 +24,7 @@ export default function PositionPanel() {
   const [error, setError] = useState<string | null>(null);
   const [quotes, setQuotes] = useState<Record<string, number>>({});
   const [dataAge, setDataAge] = useState<number>(-1);
+  const [posAge, setPosAge] = useState<number>(-1);   // 部位資料多久沒更新（-1 = 從未取得）
 
   const loadData = useCallback(async () => {
     const [posResult, marResult, pnlResult, metaResult] = await Promise.allSettled([
@@ -42,6 +43,7 @@ export default function PositionPanel() {
     if (marResult.status === "fulfilled") setMargin(marResult.value);
     if (pnlResult.status === "fulfilled") setPnlList(pnlResult.value);
     setDataAge(metaResult.status === "fulfilled" ? metaResult.value.age_sec : -1);
+    setPosAge(metaResult.status === "fulfilled" ? (metaResult.value.positions_age_sec ?? -1) : -1);
   }, []);
 
   // 部位/保證金：10s 輪詢（後端快取 TTL 10s）＋下單事件立即刷新
@@ -84,9 +86,9 @@ export default function PositionPanel() {
     <div className="bg-[#141420] rounded-xl border border-[#1e1e3a] p-5">
       <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest mb-4 flex items-center">
         部位 / 損益
-        {dataAge > 30 && (
+        {Math.max(dataAge, posAge) > 30 && (
           <span className="ml-auto normal-case tracking-normal text-[10px] text-[#ffc107] bg-[#ffc107]/10 border border-[#ffc107]/20 rounded px-2 py-0.5">
-            ⚠ 資料 {Math.round(dataAge)}s 前（後端可能重啟中）
+            ⚠ 資料 {Math.round(Math.max(dataAge, posAge))}s 前（後端可能重啟中）
           </span>
         )}
       </h2>
@@ -152,7 +154,16 @@ export default function PositionPanel() {
 
           {/* Positions */}
           {positions.length === 0 ? (
-            <p className="text-sm text-[#404060] text-center py-6">目前無持倉</p>
+            // 沒有資料 ≠ 沒有持倉：從未取得或已過期時不能說「目前無持倉」（曾因後端沒刷新部位而永遠顯示這句）
+            posAge < 0 ? (
+              <p className="text-sm text-[#ffc107] text-center py-6">尚未取得部位資料（無法確認是否有持倉）</p>
+            ) : posAge > 30 ? (
+              <p className="text-sm text-[#ffc107] text-center py-6">
+                部位資料已過期（{Math.round(posAge)} 秒前），無法確認是否有持倉
+              </p>
+            ) : (
+              <p className="text-sm text-[#404060] text-center py-6">目前無持倉</p>
+            )
           ) : (
             <div className="space-y-2">
               {positions.map((p, i) => {

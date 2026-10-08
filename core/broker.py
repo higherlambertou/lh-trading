@@ -217,6 +217,10 @@ class BrokerClient:
     async def list_positions(self) -> list[dict]:
         return await self._acall("list_positions")
 
+    async def list_profit_loss(self) -> list[dict]:
+        """當日已實現損益。帳務查詢較慢，worker 逾時 4 秒；呼叫端請低頻使用。"""
+        return await self._acall("list_profit_loss", timeout=8.0, timeout_ms=4000)
+
     async def cancel_order(self, trade_id: str) -> None:
         await self._acall("cancel_order", trade_id=trade_id)
 

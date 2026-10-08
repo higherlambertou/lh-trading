@@ -84,6 +84,9 @@ curl http://100.127.125.13:8002/api/strategy | python3 -m json.tool
 
 ```bash
 curl http://100.127.125.13:8002/api/position | python3 -m json.tool
+
+# 資料多久沒更新（秒；-1 = 從未取得）。部位約每 5 秒刷新、已實現損益約每 60 秒（策略執行中 5 分鐘）
+curl http://100.127.125.13:8002/api/position/meta | python3 -m json.tool
 ```
 
 ### 查看最新報價
@@ -114,9 +117,15 @@ python -m core.hurst_analyzer
 
 # 回填歷史 IV（CSV 欄位：日期, IV%），讓百分位不用等 60 天
 python -m core.iv_monitor import iv_history.csv
+
+# Hurst 穩定度研究：比較日 K 60 根與 5 分 K 版的日間變動（fetch 另開「模擬盤」登入抓 130 天歷史，唯讀；study 只讀本機資料）
+python -m core.hurst_study fetch 130
+python -m core.hurst_study study
 ```
 
-資料庫在 `data/market_state.db`（IV 歷史與手動備註無法重建，記得備份）。
+`.env` 的 `HURST_FREQ=5m`（`HURST_DAYS=20`）改用 5 分 K 版；預設 `D`（日 K 60 根）。改完要重啟後端，結果見 update.md「發現」6。
+
+資料庫在 `data/market_state.db`（IV 歷史與手動備註無法重建；每個交易日 14:00 自動備份，見「備份與 tick 瘦身」）。
 
 ### 盤中即時狀態與成交紀錄
 
@@ -146,8 +155,54 @@ python -m core.trade_log 7
 log 關鍵字：`平倉單已送出`、`前一張平倉單未成交，第 N 次重送`、`平倉單已全數成交，移除監控`。
 （策略自動停損仍是送出即視為出場，沒有這套確認——見 update.md「發現」3。）
 
-成交紀錄在 `data/trade_log.db`（**無法回補，記得備份**）；`TRADE_LOG=false` 可整個關掉。
+成交紀錄在 `data/trade_log.db`（**無法回補**；每個交易日 14:00 自動備份）；`TRADE_LOG=false` 可整個關掉。
 `outcome=unfilled` 代表 IOC 單超過 30 秒仍沒有任何成交/取消回報，值得查（停損單沒成交就是這種）。
+
+### 破產機率驗證
+
+```bash
+# 用 scalp 目前參數試算（不給 capital = 帳戶權益）。win_rate 是「假設」的勝率，不是實測
+curl 'http://100.127.125.13:8002/api/risk/ruin?win_rate=0.65&tp_pts=20&sl_pts=60&cost_pts=2' | python3 -m json.tool
+
+# 成交紀錄 ≥30 筆後，改用真實損益分布（不足 30 筆會自動退回參數試算，並在 note 說明）
+curl 'http://100.127.125.13:8002/api/risk/ruin?use_history=true' | python3 -m json.tool
+
+# 成交 FIFO 配對成來回的明細（假設紀錄起點空倉、不含手續費與稅）
+curl 'http://100.127.125.13:8002/api/risk/trips?limit=50' | python3 -m json.tool
+
+# 不連服務直接算
+python -m core.ruin --capital 51482 --tp 20 --sl 60 --win 0.65 --cost-pts 2
+```
+
+結果對**勝率與賺賠比非常敏感**；模型假設每筆獨立、損益固定，不含跳空與滑價，所以是「下限的提醒」不是預言。`cost_pts` 要自己填（手續費＋稅＋滑價折成點）。
+
+### 備份與 tick 瘦身
+
+**自動備份**：每個交易日 `BACKUP_TIME`（預設 14:00）把 `market_state.db`、`trade_log.db` 備份到 `data/backup/日期/`（`BACKUP_DIR` 可改位置），
+保留 `BACKUP_KEEP_DAYS`（預設 14）天。用 SQLite 線上備份，服務不用停；失敗會 10 分鐘後重試。`BACKUP=false` 關閉。
+
+```bash
+python -m core.backup                       # 手動備份一次
+ls data/backup/                             # 看有哪些日期
+```
+
+> 備份和原檔在同一顆硬碟，擋得住誤刪與資料庫損毀，擋不住硬碟壞掉——想更安全就把 `BACKUP_DIR` 指到另一顆硬碟或雲端同步資料夾（副本是單一獨立檔，可以直接同步）。
+
+**還原**（先停服務；`-wal`／`-shm` 一定要一起刪，否則舊的 WAL 會被套到還原的檔案上）：
+
+```bash
+cp data/backup/2026-10-08/market_state.db data/market_state.db
+rm -f data/market_state.db-wal data/market_state.db-shm
+```
+
+**ticks.db 瘦身**：重啟後新資料只存真實成交（約少 77%）並帶 `total_volume`；`RECORD_QUOTE_UPDATES=true` 可恢復全存。
+舊資料要手動清（**先停服務**，VACUUM 需要獨佔鎖）：
+
+```bash
+python -m core.tick_store compact                    # 預覽：共幾列、其中幾列是報價更新（不改任何東西）
+python -m core.tick_store compact --apply            # 真的清掉報價更新並 VACUUM
+python -m core.tick_store compact --keep-days 30 --apply   # 另外刪掉 30 天前的成交
+```
 
 ---
 

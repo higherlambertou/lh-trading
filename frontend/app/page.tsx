@@ -9,6 +9,7 @@ import StatusDot from "@/components/StatusDot";
 import QuoteBar from "@/components/QuoteBar";
 import MarketStatePanel from "@/components/MarketStatePanel";
 import LiveStatePanel from "@/components/LiveStatePanel";
+import RiskPanel from "@/components/RiskPanel";
 
 export default function Page() {
   return (
@@ -34,6 +35,7 @@ export default function Page() {
         <PositionPanel />
         <OrderPanel />
         <TradesPanel />
+        <RiskPanel />
       </main>
     </div>
   );

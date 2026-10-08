@@ -19,11 +19,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.broker import broker
 from core.quote_hub import quote_hub
 from api.routes_order import router as order_router, trades_refresh_loop
-from api.routes_position import router as position_router, cache_refresh_loop
+from api.routes_position import router as position_router, cache_refresh_loop, positions_refresh_loop
 from api.routes_strategy import router as strategy_router, strategy_engine
 from api.routes_quote import router as quote_router
 from api.routes_market import router as market_router, market_state_loop
 from api.routes_tradelog import router as tradelog_router
+from api.routes_risk import router as risk_router
 from core.manual_monitor import manual_monitor
 from core.tick_store import tick_recorder
 from core.trade_log import trade_log
@@ -67,12 +68,14 @@ async def lifespan(app: FastAPI):
     trade_log.start()
     startup_task   = loop.create_task(_startup_bg())
     cache_task     = loop.create_task(cache_refresh_loop())
+    positions_task = loop.create_task(positions_refresh_loop())
     trades_task    = loop.create_task(trades_refresh_loop())
     market_task    = loop.create_task(market_state_loop())
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
     startup_task.cancel()
     cache_task.cancel()
+    positions_task.cancel()
     trades_task.cancel()
     market_task.cancel()
     tick_recorder.stop()
@@ -111,6 +114,7 @@ app.include_router(strategy_router, prefix="/api/strategy", tags=["strategy"])
 app.include_router(quote_router,    prefix="/api/quote",    tags=["quote"])
 app.include_router(market_router,   prefix="/api/market",   tags=["market"])
 app.include_router(tradelog_router, prefix="/api/tradelog", tags=["tradelog"])
+app.include_router(risk_router,     prefix="/api/risk",     tags=["risk"])
 
 
 @app.get("/api/health")

@@ -74,6 +74,24 @@ def _extract_position(p) -> dict:
     }
 
 
+def _extract_profit_loss(p) -> dict:
+    """FutureProfitLoss → 純 dict。欄位對應前端 ProfitLoss：price = 進場價；dseq 用 id（前端當 key）。"""
+    direction = getattr(p, "direction", None)
+    return {
+        "id": int(getattr(p, "id", 0) or 0),
+        "code": str(getattr(p, "code", "")),
+        "direction": getattr(direction, "value", str(direction)),
+        "quantity": int(getattr(p, "quantity", 0) or 0),
+        "price": float(getattr(p, "entry_price", 0) or 0),
+        "cover_price": float(getattr(p, "cover_price", 0) or 0),
+        "pnl": float(getattr(p, "pnl", 0) or 0),
+        "fee": float(getattr(p, "fee", 0) or 0),
+        "tax": float(getattr(p, "tax", 0) or 0),
+        "date": str(getattr(p, "date", "") or ""),
+        "dseq": str(getattr(p, "id", "") or ""),
+    }
+
+
 # ── Worker 主函式 ─────────────────────────────────────────────────────
 
 def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
@@ -258,6 +276,13 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
             elif method == "list_positions":
                 result = [_extract_position(p)
                           for p in api.list_positions(api.futopt_account)]
+
+            elif method == "list_profit_loss":
+                # 已實現損益（當日）：帳務查詢，worker 單執行緒、查詢期間指令會排隊，呼叫端要控制頻率
+                day = time.strftime("%Y-%m-%d")
+                pls = api.list_profit_loss(api.futopt_account, cmd.get("begin") or day,
+                                           cmd.get("end") or day, timeout=int(cmd.get("timeout_ms", 4000)))
+                result = [_extract_profit_loss(p) for p in pls]
 
             elif method == "cancel_order":
                 trade_id = cmd["trade_id"]

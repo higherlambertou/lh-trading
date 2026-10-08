@@ -123,7 +123,7 @@ class QuoteHub:
                             snapshot.get("tick_type", 0), ts)
         except Exception:
             logger.debug("live_state.feed 失敗（已忽略）", exc_info=True)
-        tick_recorder.record(code, ts, price, vol, snapshot.get("tick_type", 0))
+        tick_recorder.record(code, ts, price, vol, snapshot.get("tick_type", 0), snapshot.get("total_volume", 0))
         done_bar = self.bars.feed(code, price, vol, ts)
         if done_bar and self._bar_subs and self._loop and self._loop.is_running():
             self._dispatch_bar_on_loop(done_bar)

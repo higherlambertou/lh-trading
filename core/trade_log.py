@@ -24,6 +24,7 @@ import queue
 import sqlite3
 import threading
 import time
+from collections import deque
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -36,6 +37,7 @@ FLUSH_BATCH = 200           # 筆
 QUEUE_MAX = 20_000
 RETRY_CAP = 5_000           # 寫入持續失敗時，緩衝超過此數量才丟棄
 IOC_UNFILLED_AFTER = 30     # IOC 單超過幾秒仍無成交/取消回報，才視為「沒成交」
+POINT_VALUE = {"TMF": 10, "MXF": 50, "TXF": 200}     # 期貨每點元數（選擇權不處理）
 
 _CTX: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("trade_log_ctx", default=None)
 
@@ -286,6 +288,44 @@ class TradeLog:
         if r["order_type"] == "IOC" and now - r["ts"] > IOC_UNFILLED_AFTER:
             return "unfilled"            # IOC 該立刻成交或取消，過了這麼久仍沒回報 → 值得查
         return "open"
+
+    def round_trips(self, mode: str | None = None, since_ts: float | None = None) -> dict[str, Any]:
+        """把成交（以委託為單位的均價）依 FIFO 配對成「進場→出場」的完整交易，還原實際損益。
+        pts = 點數、pnl = 元（點 × 口數 × 點值）；**不含手續費與稅**（成交回報沒有這兩項）。
+        只處理期貨（TMF/MXF/TXF），選擇權略過；假設紀錄開始時是空手，所以開倉在紀錄之前的部位，
+        其平倉會被誤當成新開倉（長期使用影響很小，剛開始記錄的前幾筆要留意）。
+        每筆交易帶：平倉單的策略/原因（tp/sl/trail…）與「開倉當時」的市場狀態標記（逐筆績效按狀態拆分用）。"""
+        rows = self.orders(mode=mode, limit=1_000_000, since_ts=since_ts)
+        fills = [r for r in rows if r["fill_qty"] and r["avg_fill"] and r["contract"] in POINT_VALUE]
+        fills.sort(key=lambda r: (r["last_fill_ts"] or r["ts"], r["id"]))
+        books: dict[tuple[str, str], deque] = {}
+        trips: list[dict[str, Any]] = []
+        for r in fills:
+            book = books.setdefault((r["mode"], r["contract"]), deque())
+            side = 1 if r["action"] == "Buy" else -1
+            qty, price = int(r["fill_qty"]), float(r["avg_fill"])
+            close_ts = r["last_fill_ts"] or r["ts"]
+            while qty > 0 and book and book[0]["side"] != side:          # 先平掉反向的舊部位（FIFO）
+                lot = book[0]
+                q = min(qty, lot["qty"])
+                pts = (price - lot["price"]) * lot["side"]
+                trips.append({
+                    "mode": r["mode"], "contract": r["contract"], "side": lot["side"], "qty": q,
+                    "open_ts": lot["ts"], "ts": close_ts, "entry": lot["price"], "exit": price,
+                    "pts": round(pts, 2), "pnl": round(pts * q * POINT_VALUE[r["contract"]], 1),
+                    "strategy": r["strategy"], "reason": r["reason"], "open_strategy": lot["strategy"],
+                    "market_state": lot["market_state"],
+                })
+                lot["qty"] -= q
+                qty -= q
+                if lot["qty"] == 0:
+                    book.popleft()
+            if qty > 0:                                                  # 剩下的口數是新開（或反手）的部位
+                book.append({"side": side, "qty": qty, "price": price, "ts": close_ts,
+                             "strategy": r["strategy"], "market_state": r["market_state"]})
+        open_lots = [{"mode": k[0], "contract": k[1], "side": lot["side"], "qty": lot["qty"], "price": lot["price"]}
+                     for k, book in books.items() for lot in book]
+        return {"trips": trips, "open": open_lots, "n_fills": len(fills)}
 
     def summary(self, mode: str | None = None, since_ts: float | None = None, limit: int = 50_000) -> dict[str, Any]:
         """依 (策略, 原因) 彙總：成交結果、滑價分布（訊號價／設定價）、送單延遲。"""

@@ -530,6 +530,8 @@ def test_refresh_syncs_bars_persists_journal_and_restart_reloads(svc, store, fro
     s = asyncio.run(svc.refresh("pre"))
     assert s["hurst"]["window"] == 60 and s["hurst"]["state"] in ("TREND", "REVERT", "RANDOM")
     assert store.count_bars("TXF") >= 62
+    assert store.days_1m("TXF") >= 62                                # 日盤 1 分 K 也一併保存（日內研究用）
+    assert len(store.bars_1m("TXF")) == store.days_1m("TXF") * 301    # 假資料日盤 08:45~13:45 共 301 根
     assert len(svc.broker.kbar_calls) >= 3                             # 區間被切成多段查詢
     assert all((date.fromisoformat(e) - date.fromisoformat(b)).days <= 26
                for _, b, e in svc.broker.kbar_calls)
@@ -549,6 +551,22 @@ def test_second_refresh_is_incremental(svc, frozen):
     asyncio.run(svc.refresh("manual"))
     assert len(svc.broker.kbar_calls) == 1                             # 只補最近幾天
     assert svc.broker.kbar_calls[0][1] > first
+
+
+def test_missing_minute_history_triggers_a_full_backfill(svc, store, frozen):
+    asyncio.run(svc.refresh("pre"))
+    first_calls = len(svc.broker.kbar_calls)
+    assert first_calls >= 3
+    svc.broker.kbar_calls.clear()
+    asyncio.run(svc.refresh("manual"))
+    assert len(svc.broker.kbar_calls) == 1                              # 日 K 與 1 分 K 都齊 → 只補最近幾天
+
+    import sqlite3
+    with sqlite3.connect(store.path) as c:                              # 模擬「舊版資料庫：有日 K、沒有 1 分 K」
+        c.execute("DELETE FROM bars_1m")
+    svc.broker.kbar_calls.clear()
+    asyncio.run(svc.refresh("manual"))
+    assert len(svc.broker.kbar_calls) >= 3 and store.days_1m("TXF") >= 62   # 整段回補
 
 
 def test_refresh_degrades_when_broker_down(svc, store, frozen):

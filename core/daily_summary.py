@@ -21,8 +21,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from core.backup import backup_databases
 from core.broker import broker
-from core.hurst_analyzer import HURST_LABEL, TREND_TH, REVERT_TH, aggregate_daily, analyze, trend_direction
+from core.hurst_analyzer import (
+    HURST_LABEL, TREND_TH, REVERT_TH, aggregate_daily, analyze, analyze_intraday, day_session_minutes,
+    five_min_closes, trend_direction,
+)
 from core.iv_monitor import (
     HIGH_PCT, LOOKBACK, LOW_PCT, evaluate_iv, fetch_atm_iv,
 )
@@ -55,6 +59,8 @@ def _env(name: str, default: str) -> str:
 class Config:
     code: str = "TXF"
     window: int = 60
+    hurst_freq: str = "D"           # D = 日 K 60 根（現行）；5m = 5 分 K 近 hurst_days 日（較穩定，見 update.md 發現 6）
+    hurst_days: int = 20
     trend_th: float = TREND_TH
     revert_th: float = REVERT_TH
     min_z: float = 0.0
@@ -67,11 +73,16 @@ class Config:
     gate: str = "warn"
     pre_hhmm: int = 830
     post_hhmm: int = 1350
+    backup: bool = True             # 每日自動備份 market_state.db / trade_log.db
+    backup_hhmm: int = 1400
+    backup_keep_days: int = 14
 
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
             window=int(_env("HURST_WINDOW", "60")),
+            hurst_freq="5m" if _env("HURST_FREQ", "D").lower() in ("5m", "5", "5min") else "D",
+            hurst_days=int(_env("HURST_DAYS", "20")),
             trend_th=float(_env("HURST_TREND_TH", str(TREND_TH))),
             revert_th=float(_env("HURST_REVERT_TH", str(REVERT_TH))),
             min_z=float(_env("HURST_MIN_Z", "0")),
@@ -83,6 +94,9 @@ class Config:
             gate=_env("MARKET_STATE_GATE", "warn").lower(),
             pre_hhmm=int(_env("MARKET_STATE_TIME", "0830")),
             post_hhmm=int(_env("MARKET_STATE_POST_TIME", "1350")),
+            backup=_env("BACKUP", "true").lower() == "true",
+            backup_hhmm=int(_env("BACKUP_TIME", "1400")),
+            backup_keep_days=int(_env("BACKUP_KEEP_DAYS", "14")),
         )
 
 
@@ -127,12 +141,22 @@ def format_summary(s: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _intraday_hurst(store: MarketStore, cfg: Config, ds: str) -> Any:
+    """日內做法：用資料庫裡「今天以前」的日盤 1 分 K 合成 5 分 K，取最近 hurst_days 個完整交易日。"""
+    since = (date.fromisoformat(ds) - timedelta(days=cfg.hurst_days * 2 + 14)).isoformat()
+    closes5 = five_min_closes([m for m in store.bars_1m(cfg.code, since) if m["date"] < ds])
+    return analyze_intraday(closes5, sorted(closes5), cfg.hurst_days, cfg.trend_th, cfg.revert_th, cfg.min_z)
+
+
 def build_summary(store: MarketStore, cfg: Config, today: date, mode: str, phase: str) -> dict[str, Any]:
     """純讀資料庫（日 K 快取 + IV 歷史）→ 今日市場狀態。同步函式，event loop 上請 to_thread。"""
     ds = today.isoformat()
     bars = store.bars(cfg.code, cfg.window, before=ds)          # 只用「今天以前」的日 K
     closes = [b["close"] for b in bars]
-    hurst = analyze(closes, [b["date"] for b in bars], cfg.window, cfg.trend_th, cfg.revert_th, cfg.min_z)
+    if cfg.hurst_freq == "5m":
+        hurst = _intraday_hurst(store, cfg, ds)
+    else:
+        hurst = analyze(closes, [b["date"] for b in bars], cfg.window, cfg.trend_th, cfg.revert_th, cfg.min_z)
     direction = trend_direction(closes)
 
     notes: list[str] = []
@@ -151,7 +175,7 @@ def build_summary(store: MarketStore, cfg: Config, today: date, mode: str, phase
         notes.append(hurst.note)
     if hurst.value is not None and cfg.min_z <= 0 and hurst.state in ("TREND", "REVERT") \
             and hurst.z is not None and abs(hurst.z) < 1.0:
-        notes.append(f"H 與隨機漫步差 <1σ（z={hurst.z:+.1f}，窗口 {hurst.window} 根雜訊 ±{hurst.se}）：此判斷統計上不顯著")
+        notes.append(f"H 與隨機漫步差 <1σ（z={hurst.z:+.1f}，{hurst.window_label}的雜訊 ±{hurst.se}）：此判斷統計上不顯著")
 
     state, strategies, hint = combine(hurst.state, iv["state"], cfg.iv_required)
     s = {
@@ -180,6 +204,7 @@ class MarketStateService:
         self._lock: asyncio.Lock | None = None
         self._pre_done = ""
         self._post_done = ""
+        self._backup_done = ""
         self._retry_at: dict[str, float] = {}
         # 策略取樣狀態
         self._last_pnl: dict[str, float] = {}
@@ -201,7 +226,8 @@ class MarketStateService:
     # ── 對外讀取（純記憶體）──────────────────────────────────────
     def snapshot(self) -> dict[str, Any]:
         cfg = {
-            "window": self.cfg.window, "trend_th": self.cfg.trend_th, "revert_th": self.cfg.revert_th,
+            "window": self.cfg.window, "hurst_freq": self.cfg.hurst_freq, "hurst_days": self.cfg.hurst_days,
+            "trend_th": self.cfg.trend_th, "revert_th": self.cfg.revert_th,
             "min_z": self.cfg.min_z, "iv_min_history": self.cfg.iv_min_history,
             "iv_auto": self.cfg.iv_auto, "gate": self.cfg.gate,
             "pre_hhmm": self.cfg.pre_hhmm, "post_hhmm": self.cfg.post_hhmm,
@@ -323,7 +349,8 @@ class MarketStateService:
         need = self.cfg.window + 2
         have = await asyncio.to_thread(self.store.count_bars, code)
         last = await asyncio.to_thread(self.store.last_bar_date, code)
-        if have < need or not last:
+        have_1m = await asyncio.to_thread(self.store.days_1m, code)
+        if have < need or not last or have_1m < need:          # 日 K 不夠、或還沒有 1 分 K 歷史 → 整段回補
             start = today - timedelta(days=int(need * 1.6) + 20)
         else:
             start = date.fromisoformat(last) - timedelta(days=3)
@@ -331,18 +358,22 @@ class MarketStateService:
         complete_today = include_today or now.hour * 100 + now.minute >= 1346
 
         days: dict[str, dict[str, Any]] = {}
+        minutes: list[dict[str, Any]] = []
         cursor = start
         while cursor <= end:
             chunk_end = min(cursor + timedelta(days=KBAR_CHUNK_DAYS), end)
             raw = await self.broker.kbars(code, cursor.isoformat(), chunk_end.isoformat())
             for b in aggregate_daily(raw):
                 days[b["date"]] = b
+            minutes += day_session_minutes(raw)
             cursor = chunk_end + timedelta(days=1)
 
         ds = today.isoformat()
         bars = [b for b in days.values()
                 if b["nbars"] >= MIN_BAR_COUNT and (b["date"] < ds or complete_today)]
         await asyncio.to_thread(self.store.upsert_bars, code, bars)
+        ok_days = {b["date"] for b in bars}                    # 1 分 K 只存「日 K 合格」的那幾天（同樣的完整性規則）
+        await asyncio.to_thread(self.store.upsert_bars_1m, code, [m for m in minutes if m["date"] in ok_days])
         # 日盤一天應有 ~300 根 1 分 K；平均偏離很多代表 kbars 的 ts 時間軸/時段假設有誤
         avg = sum(b["nbars"] for b in bars) / len(bars) if bars else 0
         logger.info("日K同步：%s ~ %s，存入 %d 根（平均 %.0f 分K/日，快取共 %d 根）", start, end, len(bars),
@@ -464,6 +495,20 @@ class MarketStateService:
             except Exception as e:
                 self._retry_at["pre"] = time.time() + 300
                 logger.warning("盤前市場狀態計算失敗，5 分鐘後重試: %r", e)
+
+        if (self.cfg.backup and hhmm >= self.cfg.backup_hhmm and self._backup_done != ds
+                and self._retry_ok("backup")):
+            try:
+                res = await asyncio.to_thread(backup_databases, ds, keep_days=self.cfg.backup_keep_days)
+                if all(f["ok"] for f in res["files"]):
+                    self._backup_done = ds
+                    logger.info("資料庫備份完成 → %s（%s）", res["dir"],
+                                "、".join(f"{f['file']} {f['bytes'] // 1024}KB" for f in res["files"]))
+                else:
+                    raise RuntimeError(f"部分備份失敗: {res['files']}")
+            except Exception as e:
+                self._retry_at["backup"] = time.time() + 600
+                logger.warning("資料庫備份失敗，10 分鐘後重試: %r", e)
 
         if hhmm >= self.cfg.post_hhmm and self._post_done != ds and self._retry_ok("post"):
             try:

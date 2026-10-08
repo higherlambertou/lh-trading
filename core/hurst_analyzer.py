@@ -114,8 +114,9 @@ class HurstResult:
     state: str
     label: str
     window: int                # 實際使用的 K 棒數
-    last_bar: str              # 最後一根日 K 的日期
+    last_bar: str              # 最後一根日 K（或最後一個交易日）的日期
     note: str = ""
+    window_label: str = ""     # 給畫面顯示的資料範圍描述，例：「60 根日K」「近 20 日 5 分K（1180 筆報酬）」
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -145,7 +146,72 @@ def analyze(
     z = (raw - mean0) / sd0 if sd0 > 0 else None
     state = classify_hurst(value, z, trend_th, revert_th, min_z)
     return HurstResult(round(value, 4), round(raw, 4), None if z is None else round(z, 2),
-                       round(sd0, 3), state, HURST_LABEL[state], int(c.size), last)
+                       round(sd0, 3), state, HURST_LABEL[state], int(c.size), last,
+                       window_label=f"{int(c.size)} 根日K")
+
+
+# ── 日內做法（5 分 K 近 N 日）：比日 K 60 根穩定約 10 倍，見 core/hurst_study.py 的驗證 ──────────
+
+def day_returns(closes_by_day: Mapping[str, Sequence[float]], days: Sequence[str]) -> list[np.ndarray]:
+    """每天的日內 5 分 K 對數報酬（日內相鄰收盤之差；隔夜跳空不算）。"""
+    out = []
+    for d in days:
+        c = np.asarray(closes_by_day[d], dtype=float)
+        out.append(np.diff(np.log(c)) if c.size >= 3 else np.array([]))
+    return out
+
+
+def deseasonalize(window: Sequence[np.ndarray]) -> np.ndarray:
+    """去季節性＋波動標準化：每天除以當天日內標準差；再除以「同一個時段（第 s 根報酬）」的平均強度
+    （去掉開盤/收盤的 U 型波動與大波動日的影響）。回傳窗口內串接後的序列。"""
+    scaled = []
+    for r in window:
+        sd = r.std()
+        scaled.append(r / sd if sd > 0 else np.zeros_like(r))
+    width = max(len(r) for r in scaled)
+    slot = np.ones(width)
+    for s in range(width):
+        vals = [r[s] for r in scaled if len(r) > s]
+        rms = math.sqrt(float(np.mean(np.square(vals)))) if vals else 1.0
+        slot[s] = rms if rms > 0 else 1.0
+    return np.concatenate([r / slot[: len(r)] for r in scaled])
+
+
+def dfa_permutation(r: np.ndarray, rng: np.random.Generator, n_perm: int) -> tuple[float, float, float]:
+    """DFA 指數校準到「無序列相關 = 0.5」：回傳 (校準後 H, z, null 標準差)。
+    置換（打亂時間順序）保留報酬的邊際分布（含厚尾），比 iid 常態更貼近真實資料。"""
+    raw = hurst_dfa(r)
+    if not math.isfinite(raw):
+        return float("nan"), float("nan"), float("nan")
+    nulls = np.array([hurst_dfa(rng.permutation(r)) for _ in range(n_perm)])
+    nulls = nulls[np.isfinite(nulls)]
+    m, sd = float(nulls.mean()), float(nulls.std(ddof=1))
+    return 0.5 + raw - m, ((raw - m) / sd if sd > 0 else float("nan")), sd
+
+
+MIN_SLOTS_PER_DAY = 40         # 日內至少這麼多個 5 分時段才算完整的一天
+
+
+def analyze_intraday(closes_by_day: Mapping[str, Sequence[float]], days: Sequence[str], window_days: int = 20,
+                     trend_th: float = TREND_TH, revert_th: float = REVERT_TH, min_z: float = 0.0,
+                     n_perm: int = 200) -> HurstResult:
+    """用最近 window_days 個交易日的日內 5 分 K 報酬（去季節性＋波動標準化）算 Hurst 並分類。
+    置換檢定的亂數種子取自最後一天的日期：同一份資料永遠得到同一個結果（盤前判斷可重現）。"""
+    full = [d for d in days if len(closes_by_day[d]) >= MIN_SLOTS_PER_DAY]
+    last = full[-1] if full else ""
+    if len(full) < window_days:
+        return HurstResult(None, None, None, None, "UNCERTAIN", HURST_LABEL["UNCERTAIN"], len(full), last,
+                           f"資料不足：{len(full)} 個完整交易日的 5 分K，至少需要 {window_days} 個")
+    win = full[-window_days:]
+    r = deseasonalize(day_returns(closes_by_day, win))
+    rng = np.random.default_rng(int(win[-1].replace("-", "")))
+    h, z, sd = dfa_permutation(r, rng, n_perm)
+    if not math.isfinite(h):
+        return HurstResult(None, None, None, None, "UNCERTAIN", HURST_LABEL["UNCERTAIN"], window_days, last, "估計失敗（價格序列退化）")
+    value = float(np.clip(h, 0.0, 1.0))
+    state = classify_hurst(value, z, trend_th, revert_th, min_z)
+    return HurstResult(round(value, 4), None, round(z, 2), round(sd, 3), state, HURST_LABEL[state], window_days, last,
+                       window_label=f"近 {window_days} 日 5 分K（{len(r)} 筆報酬）")
 
 
 def trend_direction(closes: Sequence[float], ma: int = 20, band: float = 0.001) -> int:
@@ -205,6 +271,41 @@ def aggregate_daily(kbars: Mapping[str, Sequence[float]]) -> list[dict[str, Any]
             d["volume"] += int(v or 0)
             d["nbars"] += 1
     return [days[k] for k in sorted(days)]
+
+
+def day_session_minutes(kbars: Mapping[str, Sequence[float]]) -> list[dict[str, Any]]:
+    """1 分 K（平行陣列）→ 日盤 08:45~13:45 的 1 分 K 列（升冪）：date / hhmm / open / high / low / close / volume。
+    kbars 的 ts 是 end-labeled（日盤第一根標 08:46、最後一根標 13:45，一天 300 根）。"""
+    out: list[dict[str, Any]] = []
+    rows = sorted(zip(kbars["ts"], kbars["open"], kbars["high"], kbars["low"],
+                      kbars["close"], kbars["volume"]), key=lambda x: x[0])
+    for ts, o, h, l, c, v in rows:
+        dt = ts_to_local(ts)
+        if not (SESSION_START_MIN <= dt.hour * 60 + dt.minute <= SESSION_END_MIN):
+            continue
+        if not (o and h and l and c):
+            continue
+        out.append({"date": dt.strftime("%Y-%m-%d"), "hhmm": dt.hour * 100 + dt.minute, "open": float(o),
+                    "high": float(h), "low": float(l), "close": float(c), "volume": int(v or 0)})
+    return out
+
+
+def five_min_closes(minutes: Sequence[Mapping[str, Any]]) -> dict[str, list[float]]:
+    """日盤 1 分 K 列 → {日期: 該日每個 5 分鐘時段的收盤價（升冪，最多 60 個）}。
+    時段 k 涵蓋 end-labeled 的 08:46+5k ~ 08:50+5k；一個時段沒有任何成交就沒有該時段（不補值）。"""
+    last: dict[tuple[str, int], tuple[int, float]] = {}
+    for m in minutes:
+        h, mm = divmod(int(m["hhmm"]), 100)
+        idx = (h * 60 + mm - SESSION_START_MIN - 1) // 5
+        if idx < 0:
+            continue
+        key = (m["date"], idx)
+        if key not in last or m["hhmm"] >= last[key][0]:
+            last[key] = (int(m["hhmm"]), float(m["close"]))
+    out: dict[str, list[float]] = {}
+    for (day, idx) in sorted(last):
+        out.setdefault(day, []).append(last[(day, idx)][1])
+    return out
 
 
 # ── CLI：python -m core.hurst_analyzer ────────────────────────────

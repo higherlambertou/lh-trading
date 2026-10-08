@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS bars_daily(
   code TEXT NOT NULL, date TEXT NOT NULL,
   open REAL, high REAL, low REAL, close REAL, volume INTEGER, nbars INTEGER,
   PRIMARY KEY(code, date));
+CREATE TABLE IF NOT EXISTS bars_1m(
+  code TEXT NOT NULL, date TEXT NOT NULL, hhmm INTEGER NOT NULL,
+  open REAL, high REAL, low REAL, close REAL, volume INTEGER,
+  PRIMARY KEY(code, date, hhmm));
 CREATE TABLE IF NOT EXISTS iv_history(
   date TEXT PRIMARY KEY, iv REAL NOT NULL, source TEXT NOT NULL,
   detail TEXT DEFAULT '', updated_at REAL);
@@ -102,6 +106,27 @@ class MarketStore:
         with closing(self._conn()) as c:
             row = c.execute("SELECT MAX(date) FROM bars_daily WHERE code=?", (code,)).fetchone()
         return row[0]
+
+    # ── 日盤 1 分 K（Hurst 日內研究、停損驗證等用；日盤 300 根/天，約 2.5 萬列/百日）──
+    def upsert_bars_1m(self, code: str, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        data = [(code, r["date"], r["hhmm"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in rows]
+        with closing(self._conn()) as c:
+            c.executemany("INSERT OR REPLACE INTO bars_1m VALUES (?,?,?,?,?,?,?,?)", data)
+            c.commit()
+
+    def days_1m(self, code: str) -> int:
+        with closing(self._conn()) as c:
+            return c.execute("SELECT COUNT(DISTINCT date) FROM bars_1m WHERE code=?", (code,)).fetchone()[0]
+
+    def bars_1m(self, code: str, since: str | None = None) -> list[dict[str, Any]]:
+        sql, args = "SELECT * FROM bars_1m WHERE code=?", [code]
+        if since:
+            sql += " AND date >= ?"
+            args.append(since)
+        with closing(self._conn()) as c:
+            return [dict(r) for r in c.execute(sql + " ORDER BY date, hhmm", args).fetchall()]
 
     # ── IV 歷史（單位：%）─────────────────────────────────────────
     def upsert_iv(self, date: str, iv: float, source: str, detail: str = "") -> bool:
