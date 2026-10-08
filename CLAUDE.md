@@ -166,6 +166,7 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 - **破產機率驗證**（`core/ruin.py`、`api/routes_risk.py`、前端〈風險〉面板）：蒙地卡羅＋對稱公式＋Lundberg 上界＋bootstrap；
   `TradeLog.round_trips()` 把成交 FIFO 配對成來回，成交紀錄 ≥30 筆才允許用真實損益分布。純計算、不碰交易路徑。
   CLI：`python -m core.ruin --capital 51482 --tp 20 --sl 60 --win 0.65 --cost-pts 2`。
+- **硬門檻盤點與震盪量測**（`THRESHOLDS.md`、`core/threshold_study.py`）：只讀本機資料，量測各指標在硬門檻附近的切換／來回／遲滯可省多少；門檻與指標算式直接讀程式常數與策略自己的方法，不另抄。`python -m core.threshold_study`。⚠ 開盤前 08:30~08:45 的試算行情三合約價差可達數百點，會污染 `vwap_revert` 等指標（update.md 發現 10）；SDK 的 `simtrade` 旗標 worker 尚未帶出。
 - **備份**（`core/backup.py`）：交易日 `BACKUP_TIME`（14:00）由 `daily_summary` 排程，用 SQLite 線上備份把 `market_state.db`／`trade_log.db` 存到
   `data/backup/日期/`（`BACKUP_DIR` 可改）；副本轉成單一獨立檔、驗證完整性、保留 `BACKUP_KEEP_DAYS` 天，只清日期命名的資料夾。手動：`python -m core.backup`。
 - **tick 落地**（`core/tick_store.py`）：預設只存真實成交（約 23%）並帶 `total_volume`；`RECORD_QUOTE_UPDATES=true` 恢復全存。

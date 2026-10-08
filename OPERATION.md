@@ -143,6 +143,14 @@ curl 'http://100.127.125.13:8002/api/tradelog/summary?days=7' | python3 -m json.
 python -m core.trade_log 7
 ```
 
+### 硬門檻震盪量測
+
+```bash
+python -m core.threshold_study     # 約 6 秒、只讀本機資料（日K／1分K／ticks.db），不連券商
+```
+
+看各指標（Hurst、IV 百分位、外盤占比、各策略訊號）在硬門檻附近的切換次數、來回比例，以及加遲滯帶能省多少；解讀與結論見 `THRESHOLDS.md`。IV 歷史累積到 ≥40 筆後再跑一次，IV 百分位那項才會有數字。
+
 ### 手動停損的平倉確認
 
 手動下單設的停損/停利觸發後，系統送出平倉單**不會立刻移除監看**，而是等券商回報確認：
