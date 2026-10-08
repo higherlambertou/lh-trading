@@ -37,6 +37,14 @@ RISK_DAY_START = _parse_hhmm(os.getenv("RISK_DAY_START", "1500"), 1500)
 _DAY_START_TEXT = f"{RISK_DAY_START // 100:02d}:{RISK_DAY_START % 100:02d}"
 
 
+def is_working_status(status: Any) -> bool:
+    """委託是否還在場上（可能成交、可取消）。Filled／Cancelled／Failed／Inactive 都已結束；PartFilled 還有剩餘口數，算在場上。
+    未知的狀態字串一律當成還在場上——寧可多取消一次、多擋一次進場。
+    （以前用 `"Filled" in status` 的子字串判斷：PartFilled 被當成已結束，Failed 又被當成未成交——啟動／停止時會去取消一堆根本不存在的單。）"""
+    s = str(status or "")
+    return not (s == "Filled" or s.startswith("Cancel") or s in ("Failed", "Inactive"))
+
+
 def risk_day_key(now: datetime, start_hhmm: Optional[int] = None) -> str:
     """風控「當日」的鍵：時間往回推 start_hhmm 再取日期，所以每天剛好在 start_hhmm 換日。"""
     h, m = divmod(RISK_DAY_START if start_hhmm is None else start_hhmm, 100)
@@ -143,10 +151,7 @@ class BaseStrategy(ABC):
         logger.info("策略 [%s] 啟動清理：查詢殘留委託…", self.name)
         try:
             trades = await asyncio.wait_for(broker.list_trades_with_status(), timeout=5)
-            pending = [
-                t for t in trades
-                if not any(k in t.get("status", "") for k in ("Filled", "Cancelled", "Cancel"))
-            ]
+            pending = [t for t in trades if is_working_status(t.get("status", ""))]
             logger.info(
                 "策略 [%s] 啟動清理：共 %d 筆委託，其中 %d 筆未成交待取消",
                 self.name, len(trades), len(pending),
@@ -234,14 +239,10 @@ class BaseStrategy(ABC):
             return
         self._event(f"{'多' if direction > 0 else '空'}單進場 @ {price:.0f}")
 
-    async def _sync_position_from_broker(self) -> None:
-        try:
-            positions = await asyncio.wait_for(broker.list_positions(), timeout=5)
-        except Exception as e:
-            logger.warning("策略 [%s] 啟動對帳部位失敗，略過: %s", self.name, e)
-            return
-
-        net = 0
+    async def _fetch_broker_tmf(self, timeout: float = 5) -> tuple[int, int, float]:
+        """券商端的 TMF 部位：(淨口數, 總口數, 最後一筆的均價)。查詢失敗直接丟例外，由呼叫端決定要略過還是不進場。"""
+        positions = await asyncio.wait_for(broker.list_positions(), timeout=timeout)
+        net = gross = 0
         avg_price = 0.0
         for p in positions or []:
             code = p.get("code", "")
@@ -249,9 +250,17 @@ class BaseStrategy(ABC):
                 continue
             qty     = int(p.get("quantity", 0) or 0)
             dir_str = str(p.get("direction", ""))
-            signed  = qty if "Buy" in dir_str else -qty
-            net    += signed
+            net    += qty if "Buy" in dir_str else -qty
+            gross  += abs(qty)
             avg_price = float(p.get("price", 0) or 0)
+        return net, gross, avg_price
+
+    async def _sync_position_from_broker(self) -> None:
+        try:
+            net, _gross, avg_price = await self._fetch_broker_tmf()
+        except Exception as e:
+            logger.warning("策略 [%s] 啟動對帳部位失敗，略過: %s", self.name, e)
+            return
 
         self.state.position = net
         self.state.entry_price = avg_price if net != 0 else 0.0

@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import random
+import time
 from collections import deque
 from typing import Any
 
@@ -8,9 +10,16 @@ from core.broker import broker
 from core.daily_summary import market_state
 from core.live_state import TradeDetector
 from core.trade_log import trade_log
-from strategies.base import BaseStrategy, POINT_VALUE_TMF
+from strategies.base import BaseStrategy, POINT_VALUE_TMF, is_working_status
 
 logger = logging.getLogger(__name__)
+
+# 進場把關：max_qty 是「持倉上限」，每次進場前向券商確認實際持倉與未成交委託（2026-10-08 成交回報解析壞掉，
+# 策略認不出自己的成交，一分鐘內送了 15 張單；只信策略自己記的部位不夠）。ENTRY_POSITION_CHECK=false 恢復舊行為（不查）。
+ENTRY_POSITION_CHECK = os.getenv("ENTRY_POSITION_CHECK", "true").lower() == "true"
+GATE_TIMEOUT_SEC = 3.0         # 查券商的逾時；查不到就不進場
+GATE_BACKOFF_SEC = 3.0         # 被擋下後幾秒內不再查（訊號每個 tick 都可能再觸發）
+GATE_LOG_EVERY_SEC = 30.0      # 同一個理由最多每 30 秒記一次
 
 
 class ScalpStrategy(BaseStrategy):
@@ -56,6 +65,10 @@ class ScalpStrategy(BaseStrategy):
         self._tick_buf: deque[int] = deque(maxlen=100)
         self._need_tp_resubmit: bool = False
         self._consec_failures: int = 0          # 連續入場失敗次數（退避用）
+        self._cancelling: bool = False          # 入場單逾時處理進行中（擋重入）
+        self._gate_hold_until: float = 0.0      # 進場靜默期（time.monotonic）：被把關擋下、或下單丟例外之後幾秒內不再嘗試
+        self._gate_last_msg: str = ""
+        self._gate_last_at: float = 0.0
 
         self._entry_filled_qty: int = 0
         self._entry_filled_value: float = 0.0
@@ -91,7 +104,7 @@ class ScalpStrategy(BaseStrategy):
             {"key": "momentum_threshold", "label": "動量門檻 0.5~1.0",      "type": "number", "min": 0.5,  "max": 1.0},
             {"key": "signal_mode_int",    "label": "訊號模式 0=動量/1=隨機", "type": "number", "min": 0,    "max": 1},
             {"key": "cooldown_ticks",     "label": "冷卻 Ticks",            "type": "number", "min": 0,    "max": 300},
-            {"key": "max_qty",            "label": "最大口數",               "type": "number", "min": 1,    "max": 10},
+            {"key": "max_qty",            "label": "最大口數（持倉上限）",    "type": "number", "min": 1,    "max": 10},
             {"key": "market_bias",        "label": "市場偏向 0=不限/1=順勢/-1=逆勢/2=自動", "type": "number", "min": -1, "max": 2},
             {"key": "flow_source",        "label": "外/內盤來源 0=所有事件(現行)/1=只算TMF真實成交", "type": "number", "min": 0, "max": 1},
             *self._base_param_schema,
@@ -124,6 +137,8 @@ class ScalpStrategy(BaseStrategy):
     # ── 啟動帶倉接管 ──────────────────────────────────────────────
 
     def _on_position_synced(self, net: int, avg_price: float) -> None:
+        self._gate_hold_until = 0.0
+        self._cancelling = False
         if net == 0:
             self._phase = "idle"
             return
@@ -261,10 +276,24 @@ class ScalpStrategy(BaseStrategy):
     async def _do_enter(self, price: float, direction: int) -> None:
         if self._phase != "idle":
             return
+        if time.monotonic() < self._gate_hold_until:    # 剛被進場把關擋下：幾秒內不再查券商，也不讓每個訊號都重複查詢
+            return
         ok, _reason = self._risk_ok()
         if not ok:
             return
+        # 先改 state 再 await（擋掉報價重入）。上一張入場單的殘留也要先清掉：await 期間每個 tick 都會進 on_quote 的 pending 分支，
+        # 殘留的舊 _entry_trade／_entry_tick_count 會讓逾時檢查立刻對「舊單」動手、把狀態切到冷卻（2026-10-08 實際發生）
         self._phase = "pending"
+        self._entry_trade = None
+        self._entry_tick_count = 0
+
+        if ENTRY_POSITION_CHECK:
+            ok, why = await self._entry_gate()
+            if not ok:
+                self._phase = "idle"
+                self._gate_hold_until = time.monotonic() + GATE_BACKOFF_SEC
+                self._note_gate_block(why)
+                return
 
         entry_price = price - self.entry_offset * direction
         action = "Buy" if direction == 1 else "Sell"
@@ -280,6 +309,7 @@ class ScalpStrategy(BaseStrategy):
             logger.error("[scalp] 掛單失敗: %s", e)
             self.state.errors.append(f"掛單失敗: {e}")
             self._phase = "idle"
+            self._gate_hold_until = time.monotonic() + GATE_BACKOFF_SEC   # 下單丟例外時別在下一個 tick 立刻重試（連帶每次 2 次券商查詢）
             return
 
         self._trades_today += 1
@@ -295,44 +325,103 @@ class ScalpStrategy(BaseStrategy):
         self._phase               = "pending"
         self._event(f"掛{'多' if direction == 1 else '空'}限價 @ {entry_price:.0f} x{self.max_qty}口")
 
+    # ── 進場把關：max_qty 是持倉上限，以券商實際狀態為準 ────────────────
+
+    async def _entry_gate(self) -> tuple[bool, str]:
+        """進場前向券商確認：TMF 部位加上未成交委託的總口數，再加這次要下的 max_qty 口，不能超過 max_qty。
+        策略自己記的部位（state.position）可能是錯的；查不到就不進場（fail-closed）。"""
+        try:
+            net, gross, _avg = await self._fetch_broker_tmf(timeout=GATE_TIMEOUT_SEC)
+            trades = await asyncio.wait_for(broker.list_trades_with_status(), timeout=GATE_TIMEOUT_SEC)
+        except Exception as e:
+            return False, f"無法確認券商部位與委託（{type(e).__name__}: {e}），為安全起見不進場"
+        working = [t for t in trades
+                   if is_working_status(t.get("status", "")) and str(t.get("code") or "TMF").startswith("TMF")]
+        working_qty = sum(max(int(t.get("quantity", 0) or 0) - int(t.get("deal_quantity", 0) or 0), 1) for t in working)
+        exposure = gross + working_qty
+        if exposure + self.max_qty > self.max_qty:
+            return False, (f"券商已有 TMF 部位 {net:+d} 口、未成交委託 {len(working)} 筆（合計 {exposure} 口），"
+                           f"再進 {self.max_qty} 口會超過最大口數 {self.max_qty}")
+        return True, ""
+
+    def _note_gate_block(self, why: str) -> None:
+        now = time.monotonic()
+        if why == self._gate_last_msg and now - self._gate_last_at < GATE_LOG_EVERY_SEC:
+            return                                  # 同一個理由 30 秒內只記一次，避免訊號每幾秒就洗一次版
+        self._gate_last_msg, self._gate_last_at = why, now
+        logger.warning("[scalp] 進場把關：%s", why)
+        self._event(f"進場把關：{why}")
+        self.state.errors.append(f"進場把關：{why}")
+        del self.state.errors[:-50]
+
+    # ── 入場單逾時 ──────────────────────────────────────────────
+
+    def _entry_pending(self, trade: dict) -> bool:
+        """這張入場單是不是還在等待處理。每個 await 之後都要再確認一次：期間成交／取消／失敗的回報可能已經改了狀態。"""
+        return self._phase == "pending" and self._entry_trade is trade
+
+    async def _recover_fill(self, trade: dict) -> bool:
+        """用券商的委託狀態確認入場單有沒有成交（callback 漏接時的備援）。
+        回 True＝這張單已經有結論，呼叫端不要再動狀態：已成交（含部分成交後被取消）並接成 holding，或查詢期間回報已經處理掉了。"""
+        trade_id = trade.get("trade_id", "")
+        try:
+            trades = await asyncio.wait_for(broker.list_trades_with_status(), timeout=5)
+        except Exception as e:
+            logger.warning("[scalp] 查詢委託狀態失敗: %s", e)
+            return False
+        if not self._entry_pending(trade):
+            return True
+        matching = next((t for t in trades if t.get("id") == trade_id), None)
+        if not matching or is_working_status(matching.get("status", "")):
+            return False                            # 查不到或還在場上 → 繼續取消流程
+        filled = int(matching.get("deal_quantity", 0) or 0)
+        if filled <= 0 and matching.get("status") == "Filled":
+            filled = self._entry_qty
+        if filled <= 0:
+            return False                            # 已結束、沒成交（取消／被拒）→ 照原流程進冷卻
+        fill_price = matching.get("avg_deal_price", 0) or self._pending_entry_price or self.state.last_price
+        logger.warning("[scalp] 逾時補抓成交 %d口 @ %.0f → holding", filled, fill_price)
+        self._event(f"逾時補抓成交 {filled}口 @ {fill_price:.0f}（callback 未進）")
+        self._entry_qty          = filled
+        self._entry_filled_qty   = filled
+        self._entry_filled_value = fill_price * filled
+        self._tp_filled_qty      = 0
+        self._last_entry_price   = fill_price
+        self.state.entry_price   = fill_price
+        self.state.position      = self._direction * filled
+        self._entry_trade        = None
+        self._consec_failures    = 0
+        self._phase              = "holding"
+        await self._do_tp()
+        return True
+
     async def _cancel_entry(self) -> None:
-        if self._phase != "pending" or self._entry_trade is None:
+        if self._phase != "pending" or self._entry_trade is None or self._cancelling:
             return
-
-        trade_id = self._entry_trade.get("trade_id", "")
-        logger.info("[scalp] 入場單逾時，查詢狀態 trade_id=%s", trade_id)
-
-        if trade_id:
-            try:
-                trades = await asyncio.wait_for(broker.list_trades_with_status(), timeout=5)
-                matching = next((t for t in trades if t.get("id") == trade_id), None)
-                if matching and "Filled" in matching.get("status", ""):
-                    fill_price = (
-                        matching.get("avg_deal_price", 0)
-                        or self._pending_entry_price
-                        or self.state.last_price
-                    )
-                    logger.warning("[scalp] 逾時補抓成交 @ %.0f → holding", fill_price)
-                    self._event(f"逾時補抓成交 @ {fill_price:.0f}（callback 未進）")
-                    self._last_entry_price = fill_price
-                    self.state.entry_price = fill_price
-                    self.state.position    = self._direction
-                    self._entry_trade      = None
-                    self._phase            = "holding"
-                    await self._do_tp()
+        # 先改 state 再 await：掛單逾時之後每個 tick 都會走到這裡，不擋的話同一張單會被同時查詢、取消十幾次（2026-10-08 實際發生）
+        self._cancelling = True
+        trade = self._entry_trade
+        trade_id = trade.get("trade_id", "")
+        try:
+            logger.info("[scalp] 入場單逾時，查詢狀態 trade_id=%s", trade_id)
+            if trade_id:
+                if await self._recover_fill(trade):
                     return
-            except Exception as e:
-                logger.warning("[scalp] 查詢委託狀態失敗: %s", e)
-
-            try:
-                await asyncio.wait_for(broker.cancel_order(trade_id), timeout=5)
-            except Exception as e:
-                logger.warning("[scalp] cancel_order 失敗: %s", e)
-
-        self._phase          = "cooldown"
-        self._cooldown_count = 0
-        self._tick_buf.clear()
-        logger.info("[scalp] 入場單取消請求已送出 → 冷卻")
+                try:
+                    await asyncio.wait_for(broker.cancel_order(trade_id), timeout=5)
+                except Exception as e:
+                    logger.warning("[scalp] cancel_order 失敗: %s", e)
+                    # 取消失敗最常見的原因是單子已經成交或被拒絕（「無原委託內容」）——不能直接當成已取消，再查一次
+                    if await self._recover_fill(trade):
+                        return
+            if not self._entry_pending(trade):      # 等待期間成交／取消／失敗的回報已經處理過，不要覆蓋它的結果
+                return
+            self._phase          = "cooldown"
+            self._cooldown_count = 0
+            self._tick_buf.clear()
+            logger.info("[scalp] 入場單取消請求已送出 → 冷卻")
+        finally:
+            self._cancelling = False
 
     async def _do_tp(self) -> None:
         if self._last_entry_price == 0:
