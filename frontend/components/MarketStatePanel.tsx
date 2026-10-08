@@ -9,7 +9,7 @@ const COLOR: Record<string, string> = {
   RANDOM: "#7070a0", UNCERTAIN: "#7070a0", NORMAL: "#00e676", LOW: "#ffc107", HIGH: "#ffc107",
   UNKNOWN: "#7070a0",
 };
-const STATE_TEXT: Record<string, string> = {
+export const STATE_TEXT: Record<string, string> = {
   TREND: "趨勢", REVERT: "均值回歸", UNCLEAR: "不明確", IV_LOW: "IV 偏低", IV_HIGH: "IV 偏高",
 };
 const PHASE_TEXT: Record<string, string> = { early: "預算", pre: "盤前判斷", manual: "手動重算" };
@@ -17,7 +17,7 @@ const INPUT =
   "bg-[#0d0d14] border border-[#1e1e3a] rounded px-2 py-1 text-[11px] font-mono text-[#e0e0f0] " +
   "focus:outline-none focus:border-[#3b82f6]";
 
-function Chip({ code, text }: { code?: string | null; text: string }) {
+export function Chip({ code, text }: { code?: string | null; text: string }) {
   const c = COLOR[code ?? ""] ?? "#7070a0";
   return (
     <span className="text-[10px] px-1.5 py-0.5 rounded border font-mono whitespace-nowrap"

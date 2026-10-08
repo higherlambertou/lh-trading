@@ -23,7 +23,7 @@ export default function ModeToggle() {
       onClick={toggle}
       title={sim ? "點擊切換到正式盤（真錢）" : "⚠ 正式盤＝真實下單真錢交易，點擊切換到模擬盤"}
       className={`
-        ml-auto flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold
+        flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold
         transition-colors border
         ${sim
           ? "bg-yellow-500/10 border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/20"
