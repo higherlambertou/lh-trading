@@ -1,12 +1,14 @@
 """券商連線數保護：登入「之前」先看正式盤後端目前有幾條連線，太多就不登入。
 
-同一個身分（person_id）最多 5 條連線，超過的登入會被拒絕。正式盤、模擬盤各佔 1 條；每次重啟被 kill 的進程
-還會留下一條「殘留連線」，要等券商端逾時（好幾分鐘）才釋放。
+同一個身分（person_id）最多 5 條連線，超過的登入會被拒絕。正式盤、模擬盤各佔 1 條。
 
-會另外登入的唯讀工具（hurst_study fetch、indicator_history flow-fetch）每次再佔 1 條——即使有 logout，券商端回收也有延遲，
-連續跑幾次就疊起來（2026-10-08 實際發生：3 → 最高 5 → 幾分鐘後回到 3）。高峰時如果正式盤剛好重啟，第 6 條就登不進去。
-所以：登入前用 GET /api/position/usage（後端背景每 120 秒刷新，不用登入）問目前幾條，登入後最多 MAX_AFTER_LOGIN 條，
-留一條給正式盤重啟。後端沒開（連不上）就放行——沒有別的連線在搶。
+長期多出來的連線是「孤兒 worker」：重啟時 main.py 被 kill -9，shioaji 子進程（worker）沒被關掉、帶著券商連線活下去，
+不會逾時（2026-10-08 實測：兩個孤兒活了 2~4 小時，基準連線數因此是 3）。core/shioaji_worker.py 的 parent_alive() 修正之後
+（需重啟後端才生效），worker 會在父進程消失時自己登出並結束。
+
+會另外登入的唯讀工具（hurst_study fetch、indicator_history flow-fetch）每次再佔 1 條。登入前先用
+GET /api/position/usage（後端背景每 120 秒刷新，不用登入）問目前幾條——這個數字最多落後 2 分鐘，連續登入時看到的會比實際舊；
+登入後最多 MAX_AFTER_LOGIN 條，留一條給正式盤重啟。後端沒開（連不上）就放行——沒有別的連線在搶。
 """
 from __future__ import annotations
 
@@ -60,5 +62,5 @@ def room_for_login(max_after: int = MAX_AFTER_LOGIN, peek: Callable[[], int | No
         return True, "正式盤後端沒有回應，無法預先檢查連線數（沒開就沒有別的連線在搶）"
     if n + 1 > max_after:
         return False, (f"正式盤後端回報目前有 {n} 條券商連線，再登入一條會到 {n + 1} 條"
-                       f"（上限 {LIMIT}，保留 {LIMIT - max_after} 條給正式盤重啟）。殘留連線要幾分鐘才會釋放，稍後再試")
+                       f"（上限 {LIMIT}，保留 {LIMIT - max_after} 條給正式盤重啟）。後端顯示的連線數最多落後 2 分鐘；若長期偏高，檢查有沒有孤兒 worker（OPERATION.md），稍後再試")
     return True, f"目前 {n} 條券商連線，登入後 {n + 1} 條"

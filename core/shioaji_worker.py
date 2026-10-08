@@ -4,6 +4,7 @@ shioaji 子進程 worker。
 所有 shioaji C/Rust 物件只活在這個進程；主進程永遠只碰純 Python dict。
 """
 import logging
+import multiprocessing
 import os
 import time
 import traceback
@@ -94,6 +95,19 @@ def _extract_profit_loss(p) -> dict:
 
 
 # ── Worker 主函式 ─────────────────────────────────────────────────────
+
+def parent_alive() -> bool:
+    """這個 worker 的父進程（main.py）還活著嗎。
+
+    父進程被 kill -9 時沒有機會叫 worker 登出：run_live.sh 的 cleanup() 只給 main.py 正常關閉 2 秒就強殺，
+    watchdog 偵測到凍結的自動重啟也是 kill -9。而 worker 原本只會等指令、從不檢查父進程——
+    它會變成孤兒（PPID=1）、帶著券商連線一直活下去，連線被佔住、不會逾時（2026-10-08 實測：3 小時多都沒掉，
+    最近 4 次停機有 2 次漏，把券商連線數從 1 條撐到 3 條；上限 5 條，滿了新的 worker 就登不進去）。
+
+    不是 multiprocessing 子進程時（直接呼叫、測試）parent_process() 是 None，視為活著。"""
+    pp = multiprocessing.parent_process()
+    return pp is None or pp.is_alive()
+
 
 def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
     """子進程入口，由 multiprocessing.Process 呼叫。"""
@@ -234,10 +248,15 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
 
     # ── command loop ──────────────────────────────────────────────────
 
+    orphaned = False
     while True:
         try:
             cmd = cmd_q.get(timeout=1.0)
         except Exception:
+            if not parent_alive():                 # 閒置時（每秒一次）確認父進程還在；有指令進來代表父進程活著，不必檢查
+                logger.warning("Worker 的父進程已不在（被強制結束？）→ 自行登出並結束，避免變成孤兒佔住券商連線")
+                orphaned = True
+                break
             continue
 
         if cmd is None or cmd.get("type") == "shutdown":
@@ -429,3 +448,5 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
         logger.info("Worker 已登出")
     except Exception:
         pass
+    if orphaned:
+        os._exit(0)             # 沒有父進程會來收我們（正常關閉時由 broker.logout() 在 5 秒後 kill）；shioaji 的執行緒可能擋住正常結束，直接離開
