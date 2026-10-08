@@ -39,6 +39,104 @@ def _extract_quote(quote) -> dict:
     }
 
 
+def to_mapping(x) -> dict:
+    """把 SDK 的 dict-like 物件轉成真正的 dict。
+
+    shioaji 1.5.x 的委託回報是 Rust 實作的 OrderEventDict，**不是 dict 的子類**（isinstance(msg, dict) 為 False），
+    只有 get／keys／items／__getitem__；舊版才是 dict。以前這裡用 `msg if isinstance(msg, dict) else {}`，
+    在 1.5.x 上整個回報被當成空的——trade_id、價格、口數、失敗代碼全部拿不到，策略因此認不出自己的成交與取消，
+    掛單逾時後再進場一次又一次（update.md 發現 21）。"""
+    if isinstance(x, dict):
+        return x
+    if x is None:
+        return {}
+    to_dict = getattr(x, "dict", None)              # MappingMixin.dict()
+    if callable(to_dict):
+        try:
+            d = to_dict()
+            if isinstance(d, dict):
+                return d
+        except Exception:
+            pass
+    keys = getattr(x, "keys", None)
+    if callable(keys):
+        try:
+            return {k: x[k] for k in keys()}
+        except Exception:
+            pass
+    return {}
+
+
+def _field(obj, *keys):
+    """從 dict／dict-like／純屬性物件取第一個非空的欄位，取不到回 None。"""
+    m = to_mapping(obj)
+    for k in keys:
+        v = m.get(k)
+        if (v is None or v == "") and not isinstance(obj, dict):
+            try:
+                v = getattr(obj, k, None)
+            except Exception:
+                v = None
+        if v is not None and v != "":
+            return v
+    return None
+
+
+def extract_order_event(stat, msg) -> dict:
+    """shioaji 委託回報 → 純 Python dict（子進程 → 主進程 IPC 安全）。永遠回傳完整欄位，萃取不到的留空值。
+
+    FuturesDeal 的 trade_id 在最上層；FuturesOrder 的 trade_id 在 status.id，失敗代碼在 operation。"""
+    state_name = getattr(stat, "name", "") or str(stat)
+    ev = {
+        "type": "order_event", "state": state_name,
+        "trade_id": "", "price": 0.0, "quantity": 0,
+        "op_type": "", "op_code": "", "op_msg": "",
+    }
+    if "Deal" in state_name:
+        ev["price"] = float(_field(msg, "price") or 0)
+        ev["quantity"] = int(_field(msg, "quantity") or 0)
+        tid = (_field(msg, "trade_id", "seqno", "ordno")
+               or _field(_field(msg, "status"), "id")
+               or _field(_field(msg, "order"), "id", "ordno", "seqno"))
+        ev["trade_id"] = str(tid or "")
+    else:
+        tid = (_field(_field(msg, "status"), "id")
+               or _field(_field(msg, "order"), "id")
+               or _field(msg, "seqno", "ordno", "trade_id"))
+        ev["trade_id"] = str(tid or "")
+        op = _field(msg, "operation")
+        ev["op_type"] = str(_field(op, "op_type") or "")
+        ev["op_code"] = str(_field(op, "op_code") or "")
+        ev["op_msg"] = str(_field(op, "op_msg") or "")
+    return ev
+
+
+def make_order_callback(event_q):
+    """建立 shioaji 的委託回報 callback。解析失敗不能再靜默吞掉：前幾次會留下警告，才不會又悄悄壞掉好幾天。"""
+    diag = {"seen": 0, "no_id": 0, "err": 0}
+
+    def _on_order(stat, msg):
+        try:
+            ev = extract_order_event(stat, msg)
+            diag["seen"] += 1
+            if not ev["trade_id"]:
+                diag["no_id"] += 1
+                if diag["no_id"] <= 5:
+                    logger.warning("委託回報萃取不到 trade_id（state=%s, msg 型別=%s）：策略會認不出自己的成交與取消",
+                                   ev["state"], type(msg).__name__)
+            elif diag["seen"] <= 3:
+                logger.info("委託回報（前 3 筆，核對解析用）state=%s trade_id=%s price=%s qty=%s op=%s/%s/%s",
+                            ev["state"], ev["trade_id"], ev["price"], ev["quantity"],
+                            ev["op_type"], ev["op_code"], ev["op_msg"])
+            event_q.put_nowait(ev)
+        except Exception:
+            diag["err"] += 1
+            if diag["err"] <= 5:
+                logger.exception("委託回報處理失敗")
+
+    return _on_order
+
+
 def _extract_trade(t) -> dict:
     deals = getattr(t.status, "deals", []) or []
     total_qty = sum(d.quantity for d in deals)
@@ -55,6 +153,8 @@ def _extract_trade(t) -> dict:
         "order_datetime": str(order_dt or ""),
         "deal_ts": deal_ts_raw / 1e9 if isinstance(deal_ts_raw, (int, float)) and deal_ts_raw > 1e12 else 0.0,
         "avg_deal_price": round(avg, 2),
+        "msg": str(getattr(t.status, "msg", "") or ""),      # 委託失敗的原因（Failed 時券商給的說明）
+        "code": str(getattr(getattr(t, "contract", None), "code", "") or ""),
     }
 
 
@@ -183,52 +283,6 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
             except Exception:
                 pass
 
-    def _on_order(stat, msg):
-        """從 shioaji order callback 萃取純 Python dict，子進程 → 主進程 IPC 安全。"""
-        try:
-            state_name = getattr(stat, "name", "") or str(stat)
-            is_deal = "Deal" in state_name
-            msg_d = msg if isinstance(msg, dict) else {}
-
-            def _get(d, *keys):
-                for k in keys:
-                    try:
-                        v = d.get(k) if isinstance(d, dict) else getattr(d, k, None)
-                        if v is not None and v != "":
-                            return v
-                    except Exception:
-                        pass
-                return None
-
-            ev = {
-                "type": "order_event", "state": state_name,
-                "trade_id": "", "price": 0.0, "quantity": 0,
-                "op_type": "", "op_code": "", "op_msg": "",
-            }
-
-            if is_deal:
-                ev["price"]    = float(_get(msg_d, "price") or 0)
-                ev["quantity"] = int(_get(msg_d, "quantity") or 0)
-                tid = _get(msg_d, "trade_id", "seqno", "ordno")
-                if not tid:
-                    tid = _get(_get(msg_d, "status") or {}, "id")
-                if not tid:
-                    tid = _get(_get(msg_d, "order") or {}, "ordno", "seqno")
-                ev["trade_id"] = str(tid or "")
-            else:
-                status_d = _get(msg_d, "status") or {}
-                ev["trade_id"] = str(
-                    _get(status_d, "id") or _get(msg_d, "seqno", "ordno", "trade_id") or ""
-                )
-                op_d = _get(msg_d, "operation") or {}
-                ev["op_type"] = str(_get(op_d, "op_type") or "")
-                ev["op_code"] = str(_get(op_d, "op_code") or "")
-                ev["op_msg"]  = str(_get(op_d, "op_msg")  or "")
-
-            event_q.put_nowait(ev)
-        except Exception:
-            pass
-
     # ── login ─────────────────────────────────────────────────────────
 
     try:
@@ -239,7 +293,7 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
         if ca_path and ca_pass and person_id:
             api.activate_ca(ca_path=ca_path, ca_passwd=ca_pass, person_id=person_id)
             logger.info("Worker CA 啟用成功")
-        api.set_order_callback(_on_order)
+        api.set_order_callback(make_order_callback(event_q))
         api.quote.set_on_quote_fop_v1_callback(_on_quote)
         event_q.put({"type": "connected"})
     except Exception as e:

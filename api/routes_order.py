@@ -307,6 +307,7 @@ def _format_trades(raw: list) -> list[dict[str, Any]]:
             "deal_quantity": t.get("deal_quantity", 0),
             "order_time": order_time,
             "deal_time": deal_time,
+            "msg": t.get("msg", ""),
         })
     result.sort(key=lambda x: x.get("deal_time", "") or x.get("order_time", ""), reverse=True)
     return result
