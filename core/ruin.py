@@ -40,6 +40,12 @@ def breakeven_win_rate(win: float, loss: float, cost: float = 0.0) -> float:
     return (loss + cost) / (win + loss)
 
 
+def baseline_win_rate(win: float, loss: float) -> float:
+    """無技巧基準勝率：沒有趨勢（無漂移）的市場隨機進場，先碰到 +win 才碰 -loss 的機率 ＝ loss / (win + loss)（未計成本）。
+    20/60 就是 75%。實際勝率要高過它，才代表進場真的比擲硬幣有優勢；兩平勝率與它的差距，就是「進場至少要多出的優勢」。"""
+    return loss / (win + loss)
+
+
 def expectancy(p: float, win: float, loss: float, cost: float = 0.0) -> float:
     return p * win - (1.0 - p) * loss - cost
 
@@ -209,6 +215,8 @@ def build_report(capital: float, win_prob: float, win: float, loss: float, *, co
             "win": win, "loss": loss, "cost": cost,
             "payoff": round(win / loss, 3) if loss else None,
             "breakeven_win_rate": round(breakeven_win_rate(win, loss, cost), 4),
+            "baseline_win_rate": round(baseline_win_rate(win, loss), 4),
+            "edge_needed": round(breakeven_win_rate(win, loss, cost) - baseline_win_rate(win, loss), 4),
             "expectancy": round(expectancy(win_prob, win, loss, cost), 1),
             "expectancy_pct_of_capital": round(100 * expectancy(win_prob, win, loss, cost) / capital, 3) if capital else None,
         },

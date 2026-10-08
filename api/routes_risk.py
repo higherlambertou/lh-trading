@@ -14,7 +14,7 @@ MIN_HISTORY_TRADES = 30       # 成交紀錄至少這麼多筆，才允許「用
 @router.get("/ruin")
 async def ruin(
     capital: Optional[float] = Query(None, gt=0, description="本金（元）；不給 = 目前帳戶權益數"),
-    win_rate: float = Query(0.65, gt=0, lt=1, description="勝率 0~1"),
+    win_rate: Optional[float] = Query(None, gt=0, lt=1, description="勝率 0~1；不給 = 無技巧基準勝率（隨機進場）＝停損÷(停利+停損)"),
     tp_pts: float = Query(20, gt=0, description="停利點數"),
     sl_pts: float = Query(60, gt=0, description="停損點數"),
     qty: int = Query(1, ge=1, le=100),
@@ -32,18 +32,19 @@ async def ruin(
     if not cap:
         raise HTTPException(422, "沒有本金：保證金資料尚未就緒，請帶 capital 參數")
     k = point_value * qty
+    wr = win_rate if win_rate is not None else sl_pts / (tp_pts + sl_pts)       # 不給勝率 → 無技巧基準（不是隨便抓個數字）
     trips = trade_log.round_trips(mode=current_mode())["trips"]
     pnls = [t["pnl"] for t in trips]
     use = use_history and len(pnls) >= MIN_HISTORY_TRADES
     report = await asyncio.to_thread(
-        build_report, float(cap), win_rate, tp_pts * k, sl_pts * k, cost=cost_pts * k, n_trades=trades,
+        build_report, float(cap), wr, tp_pts * k, sl_pts * k, cost=cost_pts * k, n_trades=trades,
         n_paths=paths, ruin_level=ruin_level, pnls=pnls if use else None)
     report["history"] = history_stats(pnls)
     report["history_used"] = use
     report["history_note"] = (
         None if use or not use_history
         else f"成交紀錄只有 {len(pnls)} 筆（至少 {MIN_HISTORY_TRADES} 筆才用真實損益分布），改用參數試算")
-    report["defaults"] = {"capital_from_equity": capital is None, "equity": equity}
+    report["defaults"] = {"capital_from_equity": capital is None, "equity": equity, "win_rate_from_baseline": win_rate is None}
     return report
 
 

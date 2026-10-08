@@ -30,19 +30,19 @@ export default function RiskPanel() {
   const [sl, setSl] = useState("60");
   const [qty, setQty] = useState("1");
   const [pv, setPv] = useState("10");
-  const [win, setWin] = useState("65");
+  const [win, setWin] = useState("75");          // 預設＝無技巧基準（20/60 → 75%）；載入後以 API 回傳的基準為準
   const [cost, setCost] = useState("2");
   const [useHistory, setUseHistory] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const run = useCallback(async (override?: { useHistory?: boolean }) => {
+  const run = useCallback(async (override?: { useHistory?: boolean; winRate?: number }) => {
     setBusy(true);
     setErr(null);
     try {
       setReport(await api.risk.ruin({
         ...(capital ? { capital: Number(capital) } : {}),
-        win_rate: Number(win) / 100, tp_pts: Number(tp), sl_pts: Number(sl), qty: Number(qty),
+        win_rate: override?.winRate ?? Number(win) / 100, tp_pts: Number(tp), sl_pts: Number(sl), qty: Number(qty),
         point_value: Number(pv), cost_pts: Number(cost), trades: 1000, paths: 4000,
         use_history: override?.useHistory ?? useHistory,
       }));
@@ -65,11 +65,13 @@ export default function RiskPanel() {
       } catch { /* 用預設 */ }
       setCapital(cap); setTp(t); setSl(s); setQty(q);
       try {
-        setReport(await api.risk.ruin({
+        const r = await api.risk.ruin({                      // 不帶 win_rate → 後端用無技巧基準（停損 ÷ (停利 + 停損)）
           ...(cap ? { capital: Number(cap) } : {}),
-          win_rate: 0.65, tp_pts: Number(t), sl_pts: Number(s), qty: Number(q), point_value: 10,
+          tp_pts: Number(t), sl_pts: Number(s), qty: Number(q), point_value: 10,
           cost_pts: 2, trades: 1000, paths: 4000, use_history: false,
-        }));
+        });
+        setReport(r);
+        setWin(String(+(r.inputs.win_rate * 100).toFixed(1)));
       } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     })();
   }, []);
@@ -107,6 +109,13 @@ export default function RiskPanel() {
           onClick={() => run()} disabled={busy}
           className="px-3 py-1.5 text-xs rounded border border-[#3b82f6]/40 text-[#3b82f6] bg-[#3b82f6]/10 hover:bg-[#3b82f6]/20 transition-colors disabled:opacity-40"
         >{busy ? "計算中…" : "試算"}</button>
+        {pt?.baseline_win_rate != null && (
+          <button
+            onClick={() => { setWin(String(+(pt.baseline_win_rate! * 100).toFixed(1))); run({ winRate: pt.baseline_win_rate }); }}
+            disabled={busy}
+            className="px-2.5 py-1.5 text-[11px] rounded border border-[#1e1e3a] text-[#7070a0] hover:text-[#e0e0f0] transition-colors disabled:opacity-40"
+          >勝率改用基準 {pct(pt.baseline_win_rate, 0)}</button>
+        )}
         {hist && hist.n >= 30 && (
           <label className="flex items-center gap-1.5 text-[11px] text-[#7070a0] cursor-pointer">
             <input type="checkbox" checked={useHistory}
@@ -132,6 +141,12 @@ export default function RiskPanel() {
               <div className="text-[11px] font-mono" style={{ color: wrNow >= pt.breakeven_win_rate ? GREEN : RED }}>
                 損益兩平勝率 {pct(pt.breakeven_win_rate)}
               </div>
+              {pt.baseline_win_rate != null && (
+                <div className="text-[11px] text-[#7070a0] font-mono">
+                  無技巧基準勝率 {pct(pt.baseline_win_rate)}（隨機進場）
+                  {pt.edge_needed != null && ` · 進場要多出 ${(pt.edge_needed * 100).toFixed(1)} 個百分點的優勢才賺錢`}
+                </div>
+              )}
               <div className="text-[11px] font-mono" style={{ color: pt.expectancy >= 0 ? GREEN : RED }}>
                 勝率 {win}% 時每筆期望 {money(pt.expectancy)} 元
               </div>
@@ -196,7 +211,7 @@ export default function RiskPanel() {
 
       <p className="text-[10px] text-[#404060] leading-relaxed">
         理論估算：假設每筆獨立、損益固定，不含跳空與滑價；結果對「勝率」與「賺賠比」的估計非常敏感。
-        成交紀錄不足 30 筆時，勝率是你輸入的假設值，不是實測。
+        成交紀錄不足 30 筆時，勝率是假設值，不是實測——預設用「無技巧基準」（隨機進場的勝率），進場有沒有優勢要看成交紀錄。
       </p>
     </div>
   );

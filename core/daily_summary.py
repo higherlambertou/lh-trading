@@ -30,7 +30,7 @@ from core.hurst_analyzer import (
 from core.iv_monitor import (
     HIGH_PCT, LOOKBACK, LOW_PCT, evaluate_iv, fetch_atm_iv,
 )
-from core.live_state import BIG_MOVE, FLOW_DOWN, FLOW_UP, QUIET, live_state
+from core.live_state import BIG_MOVE, FLOW_DOWN, FLOW_MARGIN, FLOW_UP, QUIET, live_state
 from core.market_store import MarketStore
 from core.trade_log import trade_log
 
@@ -273,7 +273,9 @@ class MarketStateService:
         want, why = self.bias_direction(2)      # 盤前判斷偏向放行的方向：+1 做多／-1 做空／0 今日不偏向任何方向
         s = self._valid_summary()
         share = live["flow"]["100"]["share"]
-        flow_dir = 0 if share is None else 1 if share >= FLOW_UP else -1 if share <= FLOW_DOWN else 0
+        flow_dir = live["flow"]["100"].get("dir")           # 帶遲滯的方向（LiveState 每筆成交更新）
+        if flow_dir is None:                                 # 沒有這個欄位（舊格式）→ 退回硬門檻
+            flow_dir = 0 if share is None else 1 if share >= FLOW_UP else -1 if share <= FLOW_DOWN else 0
         side = {1: "做多", -1: "做空"}
         flow_side = {1: "偏多（外盤主動）", -1: "偏空（內盤主動）", 0: "中性"}
         if want == 0:
@@ -291,7 +293,7 @@ class MarketStateService:
             "pre": {"date": s["date"] if s else None, "state": s["state"] if s else None,
                     "hint": s["hint"] if s else None, "want": want, "want_reason": why},
             "flow_dir": flow_dir, "coherence": coherence, "coherence_text": text,
-            "thresholds": {"flow_up": FLOW_UP, "flow_down": FLOW_DOWN, "big_move": BIG_MOVE, "quiet": QUIET},
+            "thresholds": {"flow_up": FLOW_UP, "flow_down": FLOW_DOWN, "flow_margin": FLOW_MARGIN, "big_move": BIG_MOVE, "quiet": QUIET},
         }
 
     def _valid_summary(self, max_age_days: int = 3) -> dict[str, Any] | None:

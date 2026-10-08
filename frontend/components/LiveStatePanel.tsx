@@ -23,7 +23,9 @@ const pct = (x: number | null) => (x == null ? "—" : `${Math.round(x * 100)}%`
 // 外盤（綠）／內盤（紅）占比條；沒有成交資料時顯示空條
 function FlowRow({ label, w, up, down }: { label: string; w: FlowWindow | undefined; up: number; down: number }) {
   const share = w?.share ?? null;
-  const color = share == null ? MUTED : share >= up ? GREEN : share <= down ? RED : MUTED;
+  // 顏色用後端帶遲滯算好的方向（占比在門檻上下來回時不會一直閃）；舊後端沒有 dir 時退回硬門檻
+  const dir = w?.dir ?? (share == null ? 0 : share >= up ? 1 : share <= down ? -1 : 0);
+  const color = dir > 0 ? GREEN : dir < 0 ? RED : MUTED;
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between text-[11px] font-mono">
@@ -143,7 +145,7 @@ export default function LiveStatePanel() {
       )}
 
       <p className="text-[10px] text-[#404060] leading-relaxed">
-        只顯示、不影響下單。判讀門檻（100 筆外盤占比 ≥{Math.round(th.flow_up * 100)}% 買方主動、≤{Math.round(th.flow_down * 100)}% 賣方主動；
+        只顯示、不影響下單。判讀門檻（100 筆外盤占比 ≥{Math.round(th.flow_up * 100)}% 買方主動、≤{Math.round(th.flow_down * 100)}% 賣方主動{th.flow_margin != null && `，轉向要多超過 ${+(th.flow_margin * 100).toFixed(1)} 個百分點、回到門檻內才解除，避免在門檻上下閃爍`}；
         振幅比 ≥{th.big_move}× 大波動、≤{th.quiet}× 清淡）尚未經過歷史驗證，僅供參考。
       </p>
     </div>

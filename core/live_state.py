@@ -23,6 +23,7 @@ LATE_START_HHMM = 850               # 日盤第一筆資料晚於此時間 → �
 # 顯示用的判讀門檻（⚠️ 未經驗證，僅供參考；視覺化需求文件要求先做回放驗證才能當訊號用）
 FLOW_UP = 0.60                      # 100 筆外盤占比 >= 此值 → 買方主動
 FLOW_DOWN = 0.40                    # <= 此值 → 賣方主動
+FLOW_MARGIN = 0.025                  # 遲滯帶：要超過門檻 2.5 個百分點才轉向、回到門檻內 2.5 個百分點才解除（避免在門檻上下閃爍）
 BIG_MOVE = 1.5                      # 日盤振幅 / 近 20 日均振幅 >= 此值 → 大波動（與 stats 的 big_move 一致）
 QUIET = 0.6                         # <= 此值 → 清淡
 
@@ -46,6 +47,28 @@ class TradeDetector:
         return True
 
 
+def flow_direction(share: float | None, prev: int = 0, up: float = FLOW_UP, down: float = FLOW_DOWN,
+                   margin: float = FLOW_MARGIN) -> int:
+    """外盤占比 → +1 買方主動／-1 賣方主動／0 中性，帶遲滯（Schmitt trigger）。
+    占比在門檻上下來回時不會一直翻：進入要超過門檻 margin、離開要回到門檻內 margin。
+    實測（update.md／THRESHOLDS.md）：100 筆視窗的硬門檻每小時翻 177 次，遲滯帶可省 60%。沒有資料（None）回 0。"""
+    if share is None:
+        return 0
+    if prev == 1:
+        if share >= up - margin:
+            return 1
+        return -1 if share <= down - margin else 0
+    if prev == -1:
+        if share <= down + margin:
+            return -1
+        return 1 if share >= up + margin else 0
+    if share >= up + margin:
+        return 1
+    if share <= down - margin:
+        return -1
+    return 0
+
+
 class LiveState:
     def __init__(self, prefix: str = "TMF") -> None:
         self.prefix = prefix
@@ -58,6 +81,7 @@ class LiveState:
         self._lo: float | None = None
         self._since = 0.0
         self._since_hhmm = 0
+        self._dir: dict[int, int] = {n: 0 for n in FLOW_WINDOWS}      # 各視窗目前的買賣方向（帶遲滯，每筆成交更新）
 
     # ── 餵資料（event loop 執行緒）────────────────────────────────
     def feed(self, code: str, price: float, volume: int, total_volume: int, tick_type: int, ts: float) -> None:
@@ -79,6 +103,22 @@ class LiveState:
             return
         if tick_type in (1, 2):
             self._trades.append((ts, tick_type, int(volume)))
+            self._update_dirs()
+
+    def _update_dirs(self) -> None:
+        """每筆新成交後，依各視窗的外盤占比更新買賣方向。視窗不足 n 筆時用手上全部（與 snapshot 一致）。"""
+        total = len(self._trades)
+        need = {n: min(n, total) for n in FLOW_WINDOWS}
+        marks = set(need.values())
+        buys_at: dict[int, int] = {}
+        buys = seen = 0
+        for _, side, _ in reversed(self._trades):
+            seen += 1
+            buys += side == 1
+            if seen in marks:
+                buys_at[seen] = buys
+        for n, k in need.items():
+            self._dir[n] = flow_direction(buys_at[k] / k, self._dir[n])
 
     # ── 讀取 ──────────────────────────────────────────────────────
     def snapshot(self) -> dict[str, Any]:
@@ -94,6 +134,7 @@ class LiveState:
                 "share": round(buy_n / len(w), 3) if w else None,                     # 外盤筆數占比
                 "vol_share": round(buy_v / (buy_v + sell_v), 3) if buy_v + sell_v else None,   # 外盤口數占比
                 "span_sec": round(w[-1][0] - w[0][0]) if len(w) > 1 else 0,           # 這個視窗涵蓋多久
+                "dir": self._dir[n],                                                  # +1 買方主動／-1 賣方主動／0 中性（帶遲滯）
             }
         now = time.time()
         lt = time.localtime(now)

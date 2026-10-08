@@ -109,3 +109,57 @@ def test_loop_throttles_pnl_queries_even_when_they_fail(monkeypatch):
         asyncio.run(rp.positions_refresh_loop())
     assert calls["pos"] == 5                                        # 每輪都刷新部位
     assert calls["pnl"] == 1                                        # 損益只嘗試一次（失敗也不會每輪重打 worker）
+
+
+def test_next_delay_backs_off_exponentially_and_caps():
+    assert [rp.next_delay(n) for n in (0, 1, 2, 3, 4, 9, 50)] == [5, 10, 20, 40, 60, 60, 60]
+    assert rp.next_delay(-1) == rp.POSITION_REFRESH_SEC             # 不會因為奇怪的輸入跑出負的間隔
+
+
+def run_loop(monkeypatch, pos_results, *, stop_after):
+    """跑 positions_refresh_loop，pos_results 是每次 list_positions 的結果（Exception 代表失敗）；回傳 (sleep 序列, 呼叫次數)。"""
+    calls = {"pos": 0, "pnl": 0}
+    sleeps: list[float] = []
+
+    async def pos():
+        r = pos_results[min(calls["pos"], len(pos_results) - 1)]
+        calls["pos"] += 1
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    async def pnl():
+        calls["pnl"] += 1
+        return []
+
+    async def fake_sleep(sec):
+        sleeps.append(sec)
+        if len(sleeps) >= stop_after:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(broker, "list_positions", pos)
+    monkeypatch.setattr(broker, "list_profit_loss", pnl)
+    monkeypatch.setattr(broker, "_is_connected", True)
+    monkeypatch.setattr(rp, "asyncio", SimpleNamespace(sleep=fake_sleep, wait_for=asyncio.wait_for))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(rp.positions_refresh_loop())
+    return sleeps, calls
+
+
+def test_loop_backs_off_while_the_broker_keeps_failing_and_recovers(monkeypatch, caplog):
+    boom = RuntimeError("500 Internal Server Error")
+    with caplog.at_level("INFO", logger=rp.logger.name):
+        sleeps, calls = run_loop(monkeypatch, [boom, boom, boom, boom, [POS]], stop_after=8)
+    # 啟動前的 3 秒；失敗 1~4 次 → 10/20/40/60；第 5 次成功 → 回到 5 秒
+    assert sleeps[:7] == [3, 10, 20, 40, 60, 5, 5]
+    assert calls["pnl"] == 1                                        # 部位查不到的那幾輪不碰損益查詢，恢復後才查一次
+    text = caplog.text
+    assert "連續失敗 3 次" in text and "RuntimeError" in text and "間隔拉長到 40 秒" in text
+    assert "部位刷新恢復（先前連續失敗 4 次）" in text
+
+
+def test_a_short_blip_does_not_log_a_warning(monkeypatch, caplog):
+    with caplog.at_level("INFO", logger=rp.logger.name):
+        sleeps, _ = run_loop(monkeypatch, [asyncio.TimeoutError(), [POS]], stop_after=5)
+    assert sleeps[:4] == [3, 10, 5, 5]
+    assert "連續失敗" not in caplog.text and "恢復" not in caplog.text    # 偶發的一次失敗不吵

@@ -7,7 +7,7 @@ import pytest
 
 import api.routes_position as routes_position
 from core.ruin import (
-    bootstrap_ruin, breakeven_win_rate, build_report, expectancy, expected_longest_losing_streak,
+    baseline_win_rate, bootstrap_ruin, breakeven_win_rate, build_report, expectancy, expected_longest_losing_streak,
     history_stats, losing_streak, lundberg_bound, simulate_ruin, symmetric_ruin,
 )
 from core.trade_log import TradeLog
@@ -207,3 +207,25 @@ def test_round_trips_ignore_unfilled_orders_and_other_modes(tlog, monkeypatch):
     drain(tlog)
     assert tlog.round_trips(mode="sim")["trips"] == []                          # 沒成交的單、別的 mode 都不算
     assert len(tlog.round_trips(mode="live")["trips"]) == 1
+
+
+def test_baseline_win_rate_is_what_random_entries_win_without_an_edge():
+    assert baseline_win_rate(20, 60) == pytest.approx(0.75)                     # 停利比停損近 3 倍 → 沒技巧也贏 75%
+    assert baseline_win_rate(60, 20) == pytest.approx(0.25)
+    assert baseline_win_rate(100, 100) == pytest.approx(0.5)
+    # 對照蒙地卡羅：不加成本、勝率取基準時期望值≈0（每筆賺 200 賠 600，75% → 0）
+    assert expectancy(baseline_win_rate(200, 600), 200, 600) == pytest.approx(0.0)
+    r = build_report(51482, 0.75, 200, 600, cost=20, n_trades=100, n_paths=500, win_rates=(0.75,))
+    assert r["per_trade"]["baseline_win_rate"] == pytest.approx(0.75)
+    assert r["per_trade"]["edge_needed"] == pytest.approx(0.025)              # 兩平 77.5% − 基準 75%：進場至少要多出 2.5 個百分點
+
+
+def test_api_without_win_rate_uses_the_no_skill_baseline(client):
+    c, _, _ = client
+    r = c.get("/api/risk/ruin?trades=200&paths=500&tp_pts=20&sl_pts=60&cost_pts=2").json()
+    assert r["inputs"]["win_rate"] == pytest.approx(0.75) and r["defaults"]["win_rate_from_baseline"] is True
+    assert r["per_trade"]["expectancy"] == pytest.approx(-20.0)                  # 沒有優勢時，只剩成本
+    r2 = c.get("/api/risk/ruin?trades=200&paths=500&tp_pts=20&sl_pts=60&win_rate=0.65&cost_pts=2").json()
+    assert r2["inputs"]["win_rate"] == 0.65 and r2["defaults"]["win_rate_from_baseline"] is False
+    r3 = c.get("/api/risk/ruin?trades=200&paths=500&tp_pts=30&sl_pts=30").json()
+    assert r3["inputs"]["win_rate"] == pytest.approx(0.5)                        # 賺賠對稱 → 基準 50%

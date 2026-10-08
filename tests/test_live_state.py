@@ -1,11 +1,12 @@
 """盤中即時狀態（core/live_state.py）的單元測試。"""
 from __future__ import annotations
 
+import random
 import time
 
 import pytest
 
-from core.live_state import LiveState
+from core.live_state import FLOW_DOWN, FLOW_MARGIN, FLOW_UP, LiveState, flow_direction
 
 
 def ts(h: int, m: int, s: int = 0, day: int = 7) -> float:
@@ -97,3 +98,48 @@ def test_missing_total_volume_still_counts_by_volume():
     for i in range(3):
         trade(ls, 1, 1, 0, t + i)                  # 沒有 total_volume 欄位時，只用 volume>0 判定
     assert ls.snapshot()["flow"]["100"]["n"] == 3
+
+
+# ── 買賣方向的遲滯（外盤占比在 60%/40% 附近不再閃爍）───────────────
+
+def test_flow_direction_has_a_hysteresis_band():
+    f = flow_direction                               # 門檻 0.60/0.40、遲滯帶 0.025
+    assert (FLOW_UP, FLOW_DOWN, FLOW_MARGIN) == (0.60, 0.40, 0.025) and f(None) == 0
+    assert (f(0.61, 0), f(0.625, 0), f(0.39, 0), f(0.375, 0)) == (0, 1, 0, -1)       # 中性：要超過門檻 2.5 個百分點才轉向
+    assert (f(0.58, 1), f(0.575, 1), f(0.57, 1), f(0.37, 1)) == (1, 1, 0, -1)         # 已偏多：撐到 57.5%；跌破才解除；一口氣掉到 37.5% 以下直接轉空
+    assert (f(0.42, -1), f(0.425, -1), f(0.43, -1), f(0.63, -1)) == (-1, -1, 0, 1)    # 已偏空：對稱
+
+
+def test_empty_state_is_neutral_and_every_window_reports_a_direction():
+    flow = LiveState().snapshot()["flow"]
+    assert {k: v["dir"] for k, v in flow.items()} == {"20": 0, "100": 0, "300": 0}
+
+
+def test_each_window_direction_follows_its_own_share():
+    """各視窗的方向＝逐筆套用 flow_direction（視窗不足 n 筆時用手上全部）；用獨立的串列重算來對。"""
+    rng, ls, t = random.Random(9), LiveState(), ts(10, 0)
+    sides: list[int] = []
+    ref = {20: 0, 100: 0, 300: 0}
+    for i in range(450):
+        side = 1 if rng.random() < 0.58 else 2
+        trade(ls, side, 1, i + 1, t + i)
+        sides.append(side)
+        for n in ref:
+            w = sides[-n:]
+            ref[n] = flow_direction(sum(1 for s in w if s == 1) / len(w), ref[n])
+        snap = ls.snapshot()["flow"]
+        assert {n: snap[str(n)]["dir"] for n in ref} == ref
+
+
+@pytest.mark.parametrize("win,ceiling", [("100", 0.5), ("20", 0.75)])
+def test_direction_is_much_steadier_than_the_hard_threshold_on_a_noisy_series(win, ceiling):
+    """外盤機率 60%（正好在門檻上）的雜訊序列：硬門檻一直翻，帶遲滯的方向翻得少很多。"""
+    rng, ls, t = random.Random(5), LiveState(), ts(10, 0)
+    hard, hyst = [], []
+    for i in range(1500):
+        trade(ls, 1 if rng.random() < 0.6 else 2, 1, i + 1, t + i)
+        f = ls.snapshot()["flow"][win]
+        hard.append(1 if f["share"] >= FLOW_UP else -1 if f["share"] <= FLOW_DOWN else 0)
+        hyst.append(f["dir"])
+    flips = lambda xs: sum(1 for a, b in zip(xs, xs[1:]) if a != b)  # noqa: E731
+    assert flips(hard) > 40 and flips(hyst) < flips(hard) * ceiling

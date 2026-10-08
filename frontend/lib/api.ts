@@ -243,6 +243,7 @@ export interface FlowWindow {
   share: number | null;       // 外盤筆數占比（沒資料為 null，不是 0）
   vol_share: number | null;   // 外盤口數占比
   span_sec: number;           // 這個視窗涵蓋多少秒
+  dir?: number;               // 買賣方向：+1 買方主動 / -1 賣方主動 / 0 中性（後端帶遲滯算好的；舊後端沒有這欄）
 }
 
 export interface LiveState {
@@ -266,7 +267,7 @@ export interface LiveState {
   flow_dir: number;           // +1 買方主動 / -1 賣方主動 / 0 中性
   coherence: number | null;   // +1 協調 / -1 矛盾 / 0 中性 / null 無法比較
   coherence_text: string;
-  thresholds: { flow_up: number; flow_down: number; big_move: number; quiet: number };
+  thresholds: { flow_up: number; flow_down: number; flow_margin?: number; big_move: number; quiet: number };
 }
 
 // 破產機率驗證
@@ -290,6 +291,8 @@ export interface RuinReport {
   per_trade: {
     win: number; loss: number; cost: number; payoff: number | null;
     breakeven_win_rate: number; expectancy: number; expectancy_pct_of_capital: number | null;
+    baseline_win_rate?: number;       // 無技巧基準勝率（隨機進場）＝ 停損 ÷ (停利 + 停損)
+    edge_needed?: number;             // 兩平勝率 − 基準：進場至少要比隨機多出的優勢（0.025 ＝ 2.5 個百分點）
   };
   ruin: Record<string, RuinPoint>;    // "0.5x" | "1x" | "2x"
   capacity: { affordable_losses: number | null; expected_longest_losing_streak: number };
@@ -301,7 +304,7 @@ export interface RuinReport {
   };
   history_used: boolean;
   history_note: string | null;
-  defaults: { capital_from_equity: boolean; equity: number | null };
+  defaults: { capital_from_equity: boolean; equity: number | null; win_rate_from_baseline?: boolean };
 }
 
 // ─── API client ───────────────────────────────────────────────────

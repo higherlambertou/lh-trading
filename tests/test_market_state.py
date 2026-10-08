@@ -759,6 +759,37 @@ def test_live_coherence_with_pre_open_judgement(svc, frozen, monkeypatch, state,
     assert res["pre"]["want"] == want and res["coherence"] == coherence and word in res["coherence_text"]
 
 
+def test_live_direction_waits_for_the_hysteresis_band(svc, frozen, monkeypatch):
+    """外盤占比剛好 60%（硬門檻會算「買方主動」），但是從中性慢慢爬上來、沒超過 62.5%：帶遲滯的方向仍是中性。"""
+    ls = LiveState()
+    t0 = time.mktime((2026, 10, 7, 10, 0, 0, 0, 0, -1))
+    sides = [1 if i % 2 else 2 for i in range(100)] + [1] * 20           # 先 50/50，再連續 20 筆外盤 → 剛好 60/100
+    for i, side in enumerate(sides):
+        ls.feed("TMFJ6", 100.0, 1, i + 1, side, t0 + i)
+    monkeypatch.setattr(ds, "live_state", ls)
+    _summary(svc, "TREND", 1)
+    res = asyncio.run(svc.live_snapshot())
+    assert res["flow"]["100"]["share"] == 0.6 and res["flow"]["100"]["dir"] == 0
+    assert res["flow_dir"] == 0 and res["coherence"] == 0 and "中性" in res["coherence_text"]
+    assert res["thresholds"]["flow_margin"] == 0.025
+
+
+def test_live_direction_falls_back_to_the_hard_threshold_without_the_new_field(svc, frozen, monkeypatch):
+    """舊格式的 snapshot（沒有 dir）：退回硬門檻，不會因為缺欄位壞掉。"""
+    ls = _live_with(monkeypatch, flow="buy")
+    real = ls.snapshot
+
+    def old_format():
+        snap = real()
+        for w in snap["flow"].values():
+            w.pop("dir")
+        return snap
+
+    monkeypatch.setattr(ls, "snapshot", old_format)
+    _summary(svc, "TREND", 1)
+    assert asyncio.run(svc.live_snapshot())["flow_dir"] == 1
+
+
 @pytest.mark.parametrize("prices,ratio,label", [
     ((100.0, 116.0), 1.6, "大波動"),      # 振幅 16 / 近 20 日均 10
     ((100.0, 108.0), 0.8, "正常"),
