@@ -159,8 +159,8 @@ NEXT_PUBLIC_SIM_URL=http://100.127.125.13:8003/api
 - `atr_trail_mult`：ATR 移動停損倍數（0=停用）
 - `stop_loss_pts`：固定停損點數
 - `take_profit_pts`：固定停利點數
-- `daily_max_loss`：當日最大虧損額（元）
-- `max_trades_per_day`：當日最大進場次數
+- `daily_max_loss`：當日最大虧損額（元）。「當日」＝交易日，每天 15:00 換日（夜盤＋隔天日盤算同一天）
+- `max_trades_per_day`：當日最大進場次數（同上）
 - `trade_start_hhmm` / `trade_end_hhmm`：可開倉時段
 
 **停止策略**：

@@ -110,7 +110,7 @@ class VWAPRevertStrategy(BarStrategy):
                     self.state.entry_price = prev_entry
                     self.state.errors.append(f"回歸平倉失敗: {e}")
                     return
-                self.state.realized_pnl += pts * qty * self.point_value
+                self._add_realized(pts * qty * self.point_value)
                 self._event(f"回歸平倉 @ {bar.close:.0f}（{pts:+.0f}點）")
             return
 

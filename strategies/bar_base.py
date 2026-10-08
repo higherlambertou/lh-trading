@@ -144,7 +144,7 @@ class BarStrategy(BaseStrategy):
             self.state.errors.append(f"ATR 停損平倉失敗: {e}")
             return True
         pts = (bar.close - prev_entry) * (1 if prev_pos > 0 else -1)
-        self.state.realized_pnl += pts * qty * self.point_value
+        self._add_realized(pts * qty * self.point_value)
         logger.info("策略 [%s] ATR 移動停損出場 @ %.0f（stop=%.0f, %+.0f點）",
                     self.name, bar.close, stop_px, pts)
         self._event(f"ATR 停損出場 @ {bar.close:.0f}（{pts:+.0f}點）")

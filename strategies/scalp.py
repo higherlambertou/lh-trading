@@ -371,7 +371,7 @@ class ScalpStrategy(BaseStrategy):
             self.state.errors.append(f"停損平倉失敗: {e}")
             return
 
-        self.state.realized_pnl += -self.sl_pts * self.point_value * qty
+        self._add_realized(-self.sl_pts * self.point_value * qty)
         self.state.position = 0
         self.state.entry_price = 0.0
         self._event(f"停損出場 -{self.sl_pts}點 x{qty}口 → 冷卻")
@@ -488,7 +488,7 @@ class ScalpStrategy(BaseStrategy):
             logger.info("[scalp] 停利部分成交 %d/%d", self._tp_filled_qty, self._entry_qty)
             return
 
-        self.state.realized_pnl += self.tp_pts * self.point_value * self._entry_qty
+        self._add_realized(self.tp_pts * self.point_value * self._entry_qty)
         self.state.position    = 0
         self.state.entry_price = 0.0
         self._tp_trade         = None

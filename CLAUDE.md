@@ -120,6 +120,8 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 - **`strategies/base.py`** — 策略基底。`_go()` 進場、`_check_sl_tp()` 停損停利，
   皆有**重入防護**（先改 state 再 await，避免報價重入時重複下單 / OcType.Auto 反向疊單）。
   `start()` 會 `_sync_position_from_broker()` 與券商對帳既有部位。
+  風控的「當日」＝交易日（`RISK_DAY_START`，預設 15:00 換日）：當日損益 = 累計 − 換日基準（`_day_base`），**已實現損益一律走 `_add_realized()`**
+  （它會先換日再記帳；策略裡不要直接 `realized_pnl +=`，`tests/test_risk_day.py` 會檢查）。損益只在記憶體，後端重啟歸零。
 - **`strategies/scalp.py`** — 限價掃單，有自己的 `_phase` 狀態機；
   覆寫 `_on_position_synced()` 在帶倉啟動時把既有部位接管進狀態機（否則會卡在 idle）。
 - 同帳戶同合約**一次只能跑一個策略**（`api/routes_strategy.py` 有 409 守衛）。
