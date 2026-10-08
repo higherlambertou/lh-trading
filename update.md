@@ -16,7 +16,7 @@
 | 市場指標視覺化工具 | ⬜ | 三個指標的資料都已備齊：Hurst、IV 百分位、外/內盤比例（`/api/market/live`，只算真實成交） | 三指標視覺編碼；先做歷史回放版 → 統計驗證（CUSUM）→ 才做即時版 | — |
 | 績效按市場狀態拆分檢查 | 🟡 | 日誌每天標記市場狀態；`/api/market/stats` 依狀態拆 scalp 的勝率、賺賠比、總損益（以「天」為單位）；**成交紀錄每筆委託都帶當時的市場狀態標記** | 逐筆版（8 個策略全做、整體 vs 拆分對照與樣本佔比、辛普森悖論檢查）要等成交紀錄累積 | d0fea62 |
 | 偏差正常化檢查 | ⬜ | 成交紀錄已能記錄訊號價、停損停利設定價、實際成交價（檢查一、二的資料來源） | 資料要累積才有意義；檢查三（各策略虧損重疊）需要逐日逐策略的真實損益 | — |
-| 破產機率驗證 | ✅ 待重啟＋前端重 build | 〈風險〉面板＋`GET /api/risk/ruin`、`python -m core.ruin`：蒙地卡羅破產機率、損益兩平勝率、對稱公式與 Lundberg 上界、預期最長連虧、勝率×本金敏感度；成交紀錄 ≥30 筆時可改用**真實損益分布**（bootstrap） | 成交紀錄目前 0 筆，**勝率是輸入的假設值，不是實測**；手續費／稅需自己填成本（點） | 未 commit |
+| 破產機率驗證 | ✅ 待重啟＋前端重 build | 〈風險〉面板＋`GET /api/risk/ruin`、`python -m core.ruin`：蒙地卡羅破產機率、損益兩平勝率、對稱公式與 Lundberg 上界、預期最長連虧、勝率×本金敏感度；成交紀錄 ≥30 筆時可改用**真實損益分布**（bootstrap） | 成交紀錄目前 0 筆，**勝率是輸入的假設值，不是實測**；手續費／稅需自己填成本（點） | 14e89c0 |
 | 停損機制極端行情驗證 | ⬜ | — | 驗證一（ATR vs 停損幅度）可用 1 分 K 歷史做；驗證二需極端事件樣本；文件前提與程式不符（見「發現」3） | — |
 
 > 〈門檻判斷連續化檢查〉被多份文件引用，但不在 `需求文件/` 內，需補。
@@ -29,10 +29,10 @@
 | 盤中即時狀態 `core/live_state.py` | ✅ 待重啟＋前端重 build | TMF 真實成交的外/內盤比例、日盤振幅比、與盤前判斷是否同向；`/api/market/live`、〈盤中即時〉面板 | 3928997 |
 | 手動停損平倉確認 `core/manual_monitor.py` | ✅ 待重啟＋前端重 build | 送出平倉單後確認成交，沒成交才重送（有冷卻、次數上限、不超過剩餘口數）；委託面板顯示平倉中／失敗 | e1d76e8 |
 | scalp `flow_source` 參數 | ✅ 待重啟（預設 0 不變） | 外/內盤統計可改成只算 TMF 真實成交；共用 `TradeDetector` | e1d76e8 |
-| 部位面板修復 `api/routes_position.py` | ✅ 待重啟＋前端重 build | 後端每 5 秒經 worker 刷新部位（已實現損益 60 秒；策略執行中降為 5 分鐘），面板分辨「從未取得／已過期／確實無持倉」 | 未 commit |
-| Hurst 5 分 K 版 `HURST_FREQ=5m` ＋ `core/hurst_study.py` | ✅ 待重啟（**預設仍是 `D`**，行為不變） | 去季節性＋波動標準化的 5 分 K Hurst（置換檢定校準）；`python -m core.hurst_study fetch\|study` 在真實歷史上比較穩定度；1 分 K 改存 `bars_1m` | 未 commit |
-| 自動備份 `core/backup.py` | ✅ 待重啟 | 每個交易日 14:00 用 SQLite 線上備份 `market_state.db`／`trade_log.db` 到 `data/backup/日期/`，驗證完整性、保留 14 天；`python -m core.backup` | 未 commit |
-| tick 瘦身 `core/tick_store.py` | ✅ 待重啟；**舊資料需手動 compact** | 只存真實成交（砍掉 77% 的報價更新）、新增 `total_volume` 欄位（舊資料庫自動升級）；`python -m core.tick_store compact [--keep-days N] [--apply]` | 未 commit |
+| 部位面板修復 `api/routes_position.py` | ✅ 待重啟＋前端重 build | 後端每 5 秒經 worker 刷新部位（已實現損益 60 秒；策略執行中降為 5 分鐘），面板分辨「從未取得／已過期／確實無持倉」 | 14e89c0 |
+| Hurst 5 分 K 版 `HURST_FREQ=5m` ＋ `core/hurst_study.py` | ✅ 待重啟（**預設仍是 `D`**，行為不變） | 去季節性＋波動標準化的 5 分 K Hurst（置換檢定校準）；`python -m core.hurst_study fetch\|study` 在真實歷史上比較穩定度；1 分 K 改存 `bars_1m` | 14e89c0 |
+| 自動備份 `core/backup.py` | ✅ 待重啟 | 每個交易日 14:00 用 SQLite 線上備份 `market_state.db`／`trade_log.db` 到 `data/backup/日期/`，驗證完整性、保留 14 天；`python -m core.backup` | 14e89c0 |
+| tick 瘦身 `core/tick_store.py` | ✅ 待重啟；**舊資料需手動 compact** | 只存真實成交（砍掉 77% 的報價更新）、新增 `total_volume` 欄位（舊資料庫自動升級）；`python -m core.tick_store compact [--keep-days N] [--apply]` | 14e89c0 |
 
 ---
 
@@ -139,7 +139,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-08（續）— 依建議順序做完四項（未 commit）
+### 2026-10-08（續）— 依建議順序做完四項 — 14e89c0
 - **部位面板**（發現 5）：`api/routes_position.py` 加背景刷新（部位 5 秒、已實現損益 60 秒／策略執行中 300 秒），worker 新增 `list_profit_loss`；
   面板分辨「從未取得／已過期／確實無持倉」。
 - **破產機率驗證**：`core/ruin.py`（蒙地卡羅、對稱公式、Lundberg 上界、bootstrap、最長連虧估計）＋ `api/routes_risk.py`（`/api/risk/ruin`、`/trips`）＋〈風險〉面板；
