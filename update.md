@@ -197,7 +197,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-08（深夜）— 風控「當日」改成交易日（發現 20）— 未 commit
+### 2026-10-08（深夜）— 風控「當日」改成交易日（發現 20）— 7d08bad
 - 你說照建議做：**從 15:00 起算**。`daily_max_loss`（當日最大虧損）原本比後端啟動以來的累計損益，現在比「累計 − 換日基準」；`max_trades_per_day`、停機旗標用同一個換日點。
 - 程式：`strategies/base.py`（`risk_day_key`、`RISK_DAY_START`、`_roll_risk_day`、`_add_realized`、`_day_pnl`、`_now` 供測試注入時鐘；`start()`、`_on_quote_async`、`_risk_ok`、`_check_sl_tp`、`_go` 接上）；
   `scalp.py`（2 處）、`vwap_revert.py`、`bar_base.py` 的已實現損益改走 `_add_realized()`。參數標籤改為「當日最大虧損元（交易日 15:00 起算，0=停用）」。
