@@ -115,15 +115,32 @@ async def start_strategy(name: str, req: StartRequest) -> dict[str, Any]:
 
 
 @router.post("/{name}/stop")
-async def stop_strategy(name: str) -> dict[str, str]:
+async def stop_strategy(name: str, force: bool = False) -> dict[str, str]:
+    """停止策略。**持倉時預設拒絕（409）**：停止會取消報價訂閱（策略不再檢查停損停利）並取消帳戶內所有未成交委託
+    （含 scalp 掛在券商的停利單、使用者手動掛的限價單），部位會立刻失去保護（原本手冊寫「停止後停損停利照常執行」是錯的）。
+    先手動平倉再停止；真的要在持倉時停（例如策略失控）加 ?force=true。
+    系統關機走 strategy_engine.stop_all()，不經過這個端點，不受影響。"""
     s = strategy_engine.strategies.get(name)
     if not s:
         raise HTTPException(404, f"Strategy '{name}' not found")
     if not s.state.is_running:
         raise HTTPException(400, "Strategy not running")
+    pos = s.state.position
+    if pos != 0:
+        held = f"{'多' if pos > 0 else '空'} {abs(pos)} 口（進場價 {s.state.entry_price:.0f}）"
+        if not force:
+            raise HTTPException(
+                409,
+                f"策略 {name} 目前持有{held}。停止會取消報價訂閱（之後不再檢查停損停利），並取消帳戶內所有未成交委託"
+                "（含券商端的停利單與手動掛的限價單），部位會失去保護。請先到〈手動下單〉平倉；"
+                "確定要這樣停止請加 ?force=true。")
+        logger.warning("策略 [%s] 在持倉中被強制停止（%s）：停損停利不再檢查、未成交委託將被取消", name, held)
     await s.stop()
     await _sample_pnl()
-    return {"status": "stopped", "name": name}
+    out = {"status": "stopped", "name": name}
+    if pos != 0:
+        out["warning"] = f"{name} 是在持倉中被強制停止的，目前持有{held}，已沒有任何停損停利保護，請立刻自行處理"
+    return out
 
 
 @router.get("/{name}/state", response_model=None)

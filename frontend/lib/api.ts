@@ -379,8 +379,9 @@ export const api = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ params }),
       }),
-    stop: (name: string) =>
-      req(`/strategy/${name}/stop`, { method: "POST" }),
+    // 持倉時後端預設回 409；force=true 才會停（停止＝不再檢查停損停利＋取消帳戶內所有未成交委託）
+    stop: (name: string, force = false) =>
+      req<{ status: string; name: string; warning?: string }>(`/strategy/${name}/stop${force ? "?force=true" : ""}`, { method: "POST" }),
   },
   health: () =>
     req<{ status: string; broker_connected: string }>("/health"),

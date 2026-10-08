@@ -9,6 +9,7 @@ export default function StrategyPanel() {
   const [selected, setSelected] = useState<string | null>(null);
   const [editParams, setEditParams] = useState<Record<string, Record<string, number>>>({});
   const [busy, setBusy] = useState(false);
+  const [confirmStop, setConfirmStop] = useState<string | null>(null);   // 持倉中想停止的策略名：等使用者確認強制停止
   const [msg, setMsg] = useState<{ ok: boolean; text: string; warn?: boolean } | null>(null);
 
   const loadData = useCallback(async () => {
@@ -51,13 +52,22 @@ export default function StrategyPanel() {
     }
   };
 
-  const handleStop = async (s: StrategyInfo) => {
+  // 持倉時停止＝不再檢查停損停利＋取消帳戶內所有未成交委託，所以先攔下來確認（後端也會擋：409，除非 force）。
+  // 畫面上的部位最多晚 2 秒，所以點下去時以為空手、實際剛進場的情況由後端 409 接住，一樣轉成確認框。
+  const handleStop = async (s: StrategyInfo, force = false) => {
+    if (!force && s.position !== 0) {
+      setConfirmStop(s.name);
+      return;
+    }
     setBusy(true);
     try {
-      await api.strategy.stop(s.name);
-      flash(true, `${s.name} 已停止`);
+      const res = await api.strategy.stop(s.name, force);
+      setConfirmStop(null);
+      if (res.warning) flash(true, res.warning, true);
+      else flash(true, `${s.name} 已停止`);
     } catch (e: unknown) {
-      flash(false, e instanceof Error ? e.message : String(e));
+      if (!force && e instanceof Error && e.message.startsWith("409")) setConfirmStop(s.name);
+      else flash(false, e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
       loadData();
@@ -66,6 +76,10 @@ export default function StrategyPanel() {
 
   const running = strategies.find((s) => s.is_running);
   const anyRunning = !!running;
+  // 已平倉（停損停利成交）或策略已不在跑，就收起確認框；之後再次進場也不會自己跳出來
+  useEffect(() => {
+    if (!running || running.position === 0) setConfirmStop(null);
+  }, [running?.name, running?.position]);       // eslint-disable-line react-hooks/exhaustive-deps
   const sel = strategies.find((s) => s.name === selected);
 
   return (
@@ -105,6 +119,30 @@ export default function StrategyPanel() {
               <Square size={11} /> 停止
             </button>
           </div>
+
+          {confirmStop === running.name && running.position !== 0 && (
+            <div className="rounded border border-[#ffc107]/30 bg-[#ffc107]/10 p-3 space-y-2 text-xs text-[#ffc107]">
+              <div className="font-semibold">
+                目前持有{running.position > 0 ? "多" : "空"} {Math.abs(running.position)} 口（進場價 {running.entry_price.toLocaleString()}），確定要停止？
+              </div>
+              <ul className="list-disc pl-4 space-y-0.5 text-[#e0c060]">
+                <li>停止後策略<b>不再檢查停損停利</b>，部位沒有任何保護</li>
+                <li>帳戶內<b>所有未成交委託</b>會被取消（含券商端的停利單、你手動掛的限價單）</li>
+              </ul>
+              <div className="text-[#e0c060]">建議先用〈手動下單〉把部位平掉，再停止策略。</div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleStop(running, true)}
+                  disabled={busy}
+                  className="px-3 py-1.5 rounded border border-[#ff1744]/50 text-[#ff1744] bg-[#ff1744]/10 hover:bg-[#ff1744]/20 transition-colors disabled:opacity-40"
+                >仍要強制停止</button>
+                <button
+                  onClick={() => setConfirmStop(null)}
+                  className="px-3 py-1.5 rounded border border-[#2a2a4a] text-[#e0e0f0] hover:bg-[#1e1e3a] transition-colors"
+                >取消</button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-3 gap-2 text-center">
             {([
