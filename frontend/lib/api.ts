@@ -270,6 +270,42 @@ export interface LiveState {
   thresholds: { flow_up: number; flow_down: number; flow_margin?: number; big_move: number; quiet: number };
 }
 
+// 市場指標回放（歷史）＋統計驗證
+export interface ReplayColor {
+  kind: "trend" | "revert" | "neutral" | "none"; hue: number; sat: number; light: number; strength: number;
+  iv_known: boolean; css: string;
+}
+export interface ReplayCell {
+  i: number; start: string; trades: number; share: number | null;
+  dir: number;                                   // +1 買方主動 / -1 賣方主動 / 0 中性（該格結束那一刻，帶遲滯）
+  shape: "up" | "down" | "flat";
+  coherence: number | null;                      // +1 協調 / -1 矛盾 / 0 力道中性 / null 沒有預期方向或資料不足
+  up_min: number; down_min: number; close: number | null;
+  fwd: number | null;                            // 之後到下一格結束的價格變動（點）
+}
+export interface ReplayDay {
+  date: string; asof: string | null; hurst: number | null; hurst_z: number | null; hurst_state: string | null;
+  direction: number | null; iv_pct: number | null; iv_state: string | null;
+  want: number;                                  // 盤前預期方向 +1 / -1 / 0
+  color: ReplayColor; open: number | null; close: number | null; move: number | null; cells: ReplayCell[];
+}
+export interface ReplayGroup { n: number; hit_rate: number | null; mean_move: number | null }
+export interface ReplayValidation {
+  eligible_cells: number; days_with_want: number; n_perm: number; min_group: number;
+  coherent: ReplayGroup; contradictory: ReplayGroup; neutral: ReplayGroup;
+  diff: number | null; p_value: number | null;
+  cusum: null | { observed: (number | null)[]; lo: (number | null)[]; hi: (number | null)[]; end_outside: boolean };
+  day_level: null | { days: number; hit_rate: number | null; null_mean: number | null; p_value: number | null };
+  verdict: { level: "insufficient" | "none" | "significant" | "wrong_way"; text: string };
+}
+export interface Replay {
+  params: Record<string, number>;
+  blocks: { i: number; start: string }[];
+  days: ReplayDay[];
+  coverage: { days: number; with_hurst: number; with_iv: number; with_want: number };
+  validation?: ReplayValidation;
+}
+
 // 破產機率驗證
 export interface RuinPoint {
   capital: number;
@@ -319,6 +355,8 @@ export const api = {
   market: {
     state: () => req<MarketState>("/market/state"),
     live: () => req<LiveState>("/market/live"),
+    replay: (q: Record<string, string | number | boolean>) =>
+      req<Replay>(`/market/replay?${new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))}`),
     // POST 的回應刻意標成 unknown：呼叫端送出後要重抓 state()，不可把回應直接當 MarketState 用
     refresh: (force = false) =>
       req<unknown>(`/market/refresh${force ? "?force=true" : ""}`, { method: "POST" }),

@@ -10,6 +10,7 @@ import QuoteBar from "@/components/QuoteBar";
 import MarketStatePanel from "@/components/MarketStatePanel";
 import LiveStatePanel from "@/components/LiveStatePanel";
 import RiskPanel from "@/components/RiskPanel";
+import IndicatorReplayPanel from "@/components/IndicatorReplayPanel";
 
 export default function Page() {
   return (
@@ -36,6 +37,7 @@ export default function Page() {
         <OrderPanel />
         <TradesPanel />
         <RiskPanel />
+        <IndicatorReplayPanel />
       </main>
     </div>
   );

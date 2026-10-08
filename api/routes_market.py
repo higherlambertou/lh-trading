@@ -3,12 +3,14 @@ import logging
 from datetime import date
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.routes_strategy import strategy_engine
 from core.broker import broker
 from core.daily_summary import TICK_SEC, market_state
+from core.live_state import FLOW_DOWN, FLOW_MARGIN, FLOW_UP
+from core.viz_replay import build_replay, validate as validate_replay
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -101,3 +103,33 @@ def patch_journal(day: str, req: NoteRequest) -> dict[str, str]:
 def get_stats(strategy: str = "scalp") -> dict[str, Any]:
     """驗證統計：各市場狀態下該策略的勝率/賺賠比；各 IV 狀態下的大波動比例。"""
     return market_state.store.stats(market_state.mode, strategy)
+
+
+@router.get("/replay")
+async def get_replay(
+    days: int = Query(40, ge=5, le=250, description="最近幾個日盤資料完整的交易日"),
+    block_min: int = Query(15, ge=5, le=60, description="每格幾分鐘（也是預期報酬的期間）"),
+    flow_window: int = Query(100, ge=20, le=500, description="買賣力道看最近幾筆成交（即時面板是 100）"),
+    flow_up: float = Query(FLOW_UP, gt=0.5, lt=1, description="外盤占比 ≥ 此值 → 買方主動"),
+    flow_down: float = Query(FLOW_DOWN, gt=0, lt=0.5, description="外盤占比 ≤ 此值 → 賣方主動"),
+    flow_margin: float = Query(FLOW_MARGIN, ge=0, lt=0.2, description="遲滯帶寬度"),
+    neutral_band: float = Query(0.05, ge=0, lt=0.45, description="|H−0.5| 在此範圍內是灰色（中性）"),
+    full_at: float = Query(0.10, gt=0, le=0.5, description="|H−0.5| 到此值顏色全開"),
+    check: bool = Query(True, alias="validate", description="同時做統計驗證（排列檢定＋CUSUM）"),
+    perms: int = Query(2000, ge=200, le=10000, description="排列檢定的次數"),
+) -> dict[str, Any]:
+    """市場指標視覺化的歷史回放（Hurst 色相、IV 飽和度、外/內盤形狀）＋統計驗證。純讀本機歷史資料，不連券商。
+    需求文件規定：這個驗證沒通過之前，不能當交易訊號、也不做即時版。"""
+    if full_at <= neutral_band:
+        raise HTTPException(422, "full_at 必須大於 neutral_band")
+    if flow_down >= flow_up:
+        raise HTTPException(422, "flow_down 必須小於 flow_up")
+
+    def work() -> dict[str, Any]:
+        rep = build_replay(market_state.store, days=days, block_min=block_min, flow_window=flow_window, flow_up=flow_up,
+                           flow_down=flow_down, flow_margin=flow_margin, neutral_band=neutral_band, full_at=full_at)
+        if check:
+            rep["validation"] = validate_replay(rep, n_perm=perms)
+        return rep
+
+    return await asyncio.to_thread(work)                     # 檢定是 CPU 運算，別卡住 event loop
