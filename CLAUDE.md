@@ -151,6 +151,7 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 - **`core/live_state.py`** — 盤中即時狀態（純記憶體、僅顯示）：TMF 最近 20/100/300 筆**真實成交**的外/內盤比例、日盤振幅
   （vs 近 20 日均）、與盤前判斷是否同向。`QuoteHub._inject_quote` 餵入（包 try/except，絕不影響報價派發）；
   `GET /api/market/live`；前端〈盤中即時〉。判定真實成交：`volume>0` 且 `total_volume` 增加——實測 TMF 行情事件只有 ~27% 是成交，其餘是報價更新。
+  買賣方向（`flow_direction`）帶遲滯：外盤占比要超過門檻 2.5 個百分點才轉向、回到門檻內才解除，避免在 60%/40% 上下閃爍（`FLOW_MARGIN`）。
 - **`core/trade_log.py`** — 成交紀錄（`data/trade_log.db`，**無法回補，請備份**）：每筆委託（策略、原因 entry/tp/sl/trail、
   訊號價、停損停利設定價、當時的市場狀態標記）+ 券商成交回報，讀取時以 trade_id join 出實際成交價與滑價。
   掛在 `broker.place_order/place_option_order`（唯一出口）與 `_dispatch`（成交回報）；策略/手動單用 `trade_log.context(...)` 補脈絡
@@ -161,12 +162,14 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。
 - **scalp `flow_source`**：0（預設）= 所有行情事件（舊算法）；1 = 只算 TMF 真實成交（`core/live_state.py` 的 `TradeDetector`）。
 - **部位快取**（`api/routes_position.py`）：`_cache["positions"]`／`["pnl"]` 由 `positions_refresh_loop` 寫入（部位 5s、已實現損益 60s／策略執行中 300s，
-  都走 worker）。**不要把 `list_profit_loss` 之類的帳務查詢調得更頻繁**——worker 單執行緒，查詢期間下單指令會排隊。
+  都走 worker；部位連續失敗會退避 5→10→20→40→60 秒）。**不要把 `list_profit_loss` 之類的帳務查詢調得更頻繁**——worker 單執行緒，查詢期間下單指令會排隊。
   `/api/position/meta` 的 `*_age_sec`（-1 = 從未取得）讓前端分辨「沒資料」與「沒持倉」。
-- **破產機率驗證**（`core/ruin.py`、`api/routes_risk.py`、前端〈風險〉面板）：蒙地卡羅＋對稱公式＋Lundberg 上界＋bootstrap；
+- **破產機率驗證**（`core/ruin.py`、`api/routes_risk.py`、前端〈風險〉面板）：蒙地卡羅＋對稱公式＋Lundberg 上界＋bootstrap；不給勝率就用「無技巧基準勝率」＝停損÷(停利+停損)（20/60 → 75%）；
   `TradeLog.round_trips()` 把成交 FIFO 配對成來回，成交紀錄 ≥30 筆才允許用真實損益分布。純計算、不碰交易路徑。
   CLI：`python -m core.ruin --capital 51482 --tp 20 --sl 60 --win 0.65 --cost-pts 2`。
-- **硬門檻盤點與震盪量測**（`THRESHOLDS.md`、`core/threshold_study.py`）：只讀本機資料，量測各指標在硬門檻附近的切換／來回／遲滯可省多少；門檻與指標算式直接讀程式常數與策略自己的方法，不另抄。`python -m core.threshold_study`。⚠ 開盤前 08:30~08:45 的試算行情三合約價差可達數百點，會污染 `vwap_revert` 等指標（update.md 發現 10）；SDK 的 `simtrade` 旗標 worker 尚未帶出。
+- **硬門檻盤點與震盪量測**（`THRESHOLDS.md`、`core/threshold_study.py`）：只讀本機資料，量測各指標在硬門檻附近的切換／來回／遲滯可省多少；門檻與指標算式直接讀程式常數與策略自己的方法，不另抄。`python -m core.threshold_study`。
+- **報價進入點的盤前試算隔離**（`core/quote_hub.py` 的 `PREOPEN_WINDOWS`）：08:30~08:45、14:50~15:00 的行情是試算價（三合約價差平均 189 點、最大 270 點），只讓畫面（WebSocket）看到，**不更新日高日低、不餵策略／K 棒／即時狀態／tick 落地**。靠**時段**隔離，不靠 `simtrade` 旗標——旗標若誤判，丟掉真實行情會讓策略變瞎子、停損失效；旗標（worker 已帶出）只用來記 log 核對。`FILTER_PREOPEN_QUOTES=false` 恢復舊行為。測試的報價時間常是 `time.time()`，所以 `tests/conftest.py` 預設關閉它，要測的測試自己打開。
+- **逐 tick 策略只吃 TMF**（`strategies/base.py` 的 `quote_prefix`）：ma_cross／breakout／rsi／bollinger／momentum 設 `"TMF"`，價格序列、未實現損益、**停損停利檢查**都只看 TMF；scalp 與 K 棒策略維持 `None`（所有合約）。`TICK_STRATEGIES_TMF_ONLY=false` 恢復舊行為。新增逐 tick 策略時記得設 `quote_prefix`。
 - **備份**（`core/backup.py`）：交易日 `BACKUP_TIME`（14:00）由 `daily_summary` 排程，用 SQLite 線上備份把 `market_state.db`／`trade_log.db` 存到
   `data/backup/日期/`（`BACKUP_DIR` 可改）；副本轉成單一獨立檔、驗證完整性、保留 `BACKUP_KEEP_DAYS` 天，只清日期命名的資料夾。手動：`python -m core.backup`。
 - **tick 落地**（`core/tick_store.py`）：預設只存真實成交（約 23%）並帶 `total_volume`；`RECORD_QUOTE_UPDATES=true` 恢復全存。
