@@ -43,6 +43,17 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** 把 req() 丟出的 `409 — {"detail":"…"}` 還原成後端給的那句說明（FastAPI 的錯誤主體是 JSON），不是 JSON 就原樣回傳。 */
+export function apiErrorDetail(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  const body = raw.replace(/^\d+ — /, "");
+  try {
+    const j = JSON.parse(body);
+    if (j && typeof j.detail === "string") return j.detail;
+  } catch { /* 不是 JSON */ }
+  return body;
+}
+
 // ─── Types ────────────────────────────────────────────────────────
 
 export interface ParamSchema {

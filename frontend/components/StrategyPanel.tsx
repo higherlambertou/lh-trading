@@ -2,14 +2,26 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Play, Square, AlertCircle } from "lucide-react";
-import { api, StrategyInfo } from "@/lib/api";
+import { api, apiErrorDetail, StrategyInfo } from "@/lib/api";
+
+// 想停止、等使用者確認的策略。detail＝後端 409 的說明（策略沒記錄但券商帳上有部位、查不到券商…）；沒有 detail 的是前端依畫面上的部位推算的。
+type StopConfirm = { name: string; detail?: string } | null;
+
+/** 輪詢到新的執行狀態或部位後，確認框要不要保留：策略停了／換了一個就收起；前端推算的確認框在空手後收起；
+ *  後端說明的那種（部位在券商帳上、策略自己是空手）要留到使用者按取消或停止。 */
+export function reconcileStopConfirm(c: StopConfirm, running: { name: string; position: number } | undefined): StopConfirm {
+  if (!c) return c;
+  if (!running || c.name !== running.name) return null;
+  if (running.position === 0 && !c.detail) return null;
+  return c;
+}
 
 export default function StrategyPanel() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [editParams, setEditParams] = useState<Record<string, Record<string, number>>>({});
   const [busy, setBusy] = useState(false);
-  const [confirmStop, setConfirmStop] = useState<string | null>(null);   // 持倉中想停止的策略名：等使用者確認強制停止
+  const [confirmStop, setConfirmStop] = useState<StopConfirm>(null);   // 有持倉（策略自己的或券商帳上的）時想停止：等使用者確認強制停止
   const [msg, setMsg] = useState<{ ok: boolean; text: string; warn?: boolean } | null>(null);
 
   const loadData = useCallback(async () => {
@@ -53,10 +65,11 @@ export default function StrategyPanel() {
   };
 
   // 持倉時停止＝不再檢查停損停利＋取消帳戶內所有未成交委託，所以先攔下來確認（後端也會擋：409，除非 force）。
-  // 畫面上的部位最多晚 2 秒，所以點下去時以為空手、實際剛進場的情況由後端 409 接住，一樣轉成確認框。
+  // 後端還會看券商帳上的實際持倉：畫面上空手、但券商有部位（策略沒認出自己的成交、手動單）或畫面部位晚到（最多 2 秒）時，
+  // 由後端 409 接住，把後端的說明放進確認框。
   const handleStop = async (s: StrategyInfo, force = false) => {
     if (!force && s.position !== 0) {
-      setConfirmStop(s.name);
+      setConfirmStop({ name: s.name });
       return;
     }
     setBusy(true);
@@ -66,7 +79,7 @@ export default function StrategyPanel() {
       if (res.warning) flash(true, res.warning, true);
       else flash(true, `${s.name} 已停止`);
     } catch (e: unknown) {
-      if (!force && e instanceof Error && e.message.startsWith("409")) setConfirmStop(s.name);
+      if (!force && e instanceof Error && e.message.startsWith("409")) setConfirmStop({ name: s.name, detail: apiErrorDetail(e) });
       else flash(false, e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -78,7 +91,7 @@ export default function StrategyPanel() {
   const anyRunning = !!running;
   // 已平倉（停損停利成交）或策略已不在跑，就收起確認框；之後再次進場也不會自己跳出來
   useEffect(() => {
-    if (!running || running.position === 0) setConfirmStop(null);
+    setConfirmStop((c) => reconcileStopConfirm(c, running));
   }, [running?.name, running?.position]);       // eslint-disable-line react-hooks/exhaustive-deps
   const sel = strategies.find((s) => s.name === selected);
 
@@ -120,16 +133,25 @@ export default function StrategyPanel() {
             </button>
           </div>
 
-          {confirmStop === running.name && running.position !== 0 && (
+          {confirmStop?.name === running.name && (confirmStop.detail || running.position !== 0) && (
             <div className="rounded border border-[#ffc107]/30 bg-[#ffc107]/10 p-3 space-y-2 text-xs text-[#ffc107]">
-              <div className="font-semibold">
-                目前持有{running.position > 0 ? "多" : "空"} {Math.abs(running.position)} 口（進場價 {running.entry_price.toLocaleString()}），確定要停止？
-              </div>
-              <ul className="list-disc pl-4 space-y-0.5 text-[#e0c060]">
-                <li>停止後策略<b>不再檢查停損停利</b>，部位沒有任何保護</li>
-                <li>帳戶內<b>所有未成交委託</b>會被取消（含券商端的停利單、你手動掛的限價單）</li>
-              </ul>
-              <div className="text-[#e0c060]">建議先用〈手動下單〉把部位平掉，再停止策略。</div>
+              {confirmStop.detail ? (
+                <>
+                  <div className="font-semibold">確定要停止？</div>
+                  <div className="text-[#e0c060] leading-relaxed">{confirmStop.detail}</div>
+                </>
+              ) : (
+                <>
+                  <div className="font-semibold">
+                    目前持有{running.position > 0 ? "多" : "空"} {Math.abs(running.position)} 口（進場價 {running.entry_price.toLocaleString()}），確定要停止？
+                  </div>
+                  <ul className="list-disc pl-4 space-y-0.5 text-[#e0c060]">
+                    <li>停止後策略<b>不再檢查停損停利</b>，部位沒有任何保護</li>
+                    <li>帳戶內<b>所有未成交委託</b>會被取消（含券商端的停利單、你手動掛的限價單）</li>
+                  </ul>
+                  <div className="text-[#e0c060]">建議先用〈手動下單〉把部位平掉，再停止策略。</div>
+                </>
+              )}
               <div className="flex gap-2">
                 <button
                   onClick={() => handleStop(running, true)}
