@@ -19,6 +19,7 @@ class RSIStrategy(BaseStrategy):
     """
 
     name = "rsi"
+    quote_prefix = "TMF"        # 只吃 TMF：三合約交錯會讓訊號一直被誤觸（見 strategies/base.py）
 
     def __init__(
         self,

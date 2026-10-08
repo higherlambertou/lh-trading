@@ -33,6 +33,7 @@ def _extract_quote(quote) -> dict:
         "total_volume": int(getattr(quote, "total_volume", 0) or 0),
         "change_price": float(getattr(quote, "change_price", 0) or 0),
         "tick_type": int(getattr(quote, "tick_type", 0) or 0),
+        "simtrade": bool(getattr(quote, "simtrade", False)),     # 試算（開盤前試撮）行情；目前只用來記錄與核對，隔離靠時段（見 quote_hub）
         "ts": ts,
     }
 

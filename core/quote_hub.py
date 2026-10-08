@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -10,6 +11,20 @@ from core.live_state import live_state
 from core.tick_store import tick_recorder
 
 logger = logging.getLogger(__name__)
+
+# 開盤前試算時段（HHMM，含起點、不含終點）：日盤 08:30~08:45、夜盤 14:50~15:00（夜盤這段是依交易所規則推測，尚未在資料上驗證）。
+# 這段時間的行情是「試算價」不是真實成交：實測同一分鐘內 TMF/MXF/TXF 的價差平均 189 點、最大 270 點（正常盤最大約 17 點），
+# 會污染策略的指標、K 棒（vwap_revert 會在 08:45 第一根就被誤導做空）與買賣力道——見 THRESHOLDS.md、update.md 發現 10。
+# 處理方式：只讓畫面（WebSocket）看到，不餵給策略／K 棒／即時狀態／tick 落地。FILTER_PREOPEN_QUOTES=false 可恢復舊行為。
+PREOPEN_WINDOWS = ((830, 845), (1450, 1500))
+FILTER_PREOPEN = os.getenv("FILTER_PREOPEN_QUOTES", "true").lower() == "true"
+
+
+def in_preopen(ts: float) -> bool:
+    lt = time.localtime(ts)
+    hhmm = lt.tm_hour * 100 + lt.tm_min
+    return any(a <= hhmm < b for a, b in PREOPEN_WINDOWS)
+
 
 QuoteCallback = Callable[[dict], Awaitable[None]]
 BarCallback = Callable[[Bar], Awaitable[None]]
@@ -35,6 +50,10 @@ class QuoteHub:
         self._daily_low: dict[str, float] = {}
         self._daily_date: dict[str, str] = {}
         self.bars = BarBuilder(interval_sec=60)
+        self._in_preopen = False                  # 目前是否在試算時段（用來記進入／離開的 log）
+        self._pre_skipped = 0                     # 這一段試算時段略過了幾筆
+        self._pre_flagged = 0                     # 其中帶 simtrade 旗標的幾筆（核對旗標與時段是否一致）
+        self._simtrade_outside = 0                # 試算時段以外收到 simtrade 旗標的次數（最多記 5 次 warning）
 
     def get_last_price(self, code: str) -> float | None:
         return self._last_price.get(code)
@@ -100,7 +119,15 @@ class QuoteHub:
                 code, price, len(self._strategies),
             )
 
+        ts = snapshot.get("ts", time.time())
+        preopen = self._check_preopen(code, ts, snapshot)
+
         self._last_price[code] = price
+        if preopen:
+            # 試算行情只讓畫面看到（維持原本的顯示），不更新日高日低、不餵策略／K 棒／即時狀態／落地
+            if self._ws_queues:
+                self._dispatch_on_loop(snapshot, strategies=False)
+            return
 
         # 日高日低（日期變換自動重置）
         today = datetime.now().strftime("%Y-%m-%d")
@@ -115,7 +142,6 @@ class QuoteHub:
                 self._daily_low[code] = price
 
         # tick 落地 + 1 分 K 聚合
-        ts  = snapshot.get("ts", time.time())
         vol = snapshot.get("volume", 0)
         # 盤中即時狀態（只給儀表板顯示）：任何例外都不可影響下面的報價派發
         try:
@@ -135,8 +161,31 @@ class QuoteHub:
 
     # ── internal dispatch ─────────────────────────────────────────────
 
-    def _dispatch_on_loop(self, snapshot: dict) -> None:
-        if self._strategies:
+    def _check_preopen(self, code: str, ts: float, snapshot: dict) -> bool:
+        """這筆行情是不是開盤前的試算行情（PREOPEN_WINDOWS 內）；順便記下進入／離開時段與略過的筆數。"""
+        if not FILTER_PREOPEN:
+            return False
+        if in_preopen(ts):
+            if not self._in_preopen:
+                self._in_preopen = True
+                self._pre_skipped = self._pre_flagged = 0
+                logger.info("進入開盤前試算時段（%s）：試算行情只顯示在畫面，不餵給策略／K 棒／即時狀態／落地",
+                            time.strftime("%H:%M", time.localtime(ts)))
+            self._pre_skipped += 1
+            if snapshot.get("simtrade"):
+                self._pre_flagged += 1
+            return True
+        if self._in_preopen:
+            self._in_preopen = False
+            logger.info("開盤前試算時段結束：略過 %d 筆試算行情（其中帶 simtrade 旗標 %d 筆）", self._pre_skipped, self._pre_flagged)
+        elif snapshot.get("simtrade") and self._simtrade_outside < 5:
+            self._simtrade_outside += 1
+            logger.warning("試算時段以外收到 simtrade 旗標的行情（%s %s）：目前不會被擋；若是新的試算時段請回報",
+                           code, time.strftime("%H:%M:%S", time.localtime(ts)))
+        return False
+
+    def _dispatch_on_loop(self, snapshot: dict, strategies: bool = True) -> None:
+        if strategies and self._strategies:
             for cb in list(self._strategies.values()):
                 self._loop.create_task(self._run_cb(cb, snapshot))
 

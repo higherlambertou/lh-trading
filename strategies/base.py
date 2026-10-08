@@ -16,6 +16,11 @@ POINT_VALUE_TXF = 200
 POINT_VALUE_MXF = 50
 POINT_VALUE_TMF = 10
 
+# 逐 tick 策略只吃 TMF 的行情（各策略的 quote_prefix 決定）。行情事件是 TMF/MXF/TXF 三個合約交錯進來的（約一半的相鄰兩筆是不同合約，
+# 換合約時平均差 2.8 點、對照同合約 1.1 點），均線、突破、RSI、布林一直被誤觸，停損停利與未實現損益也在合約之間跳動——見 THRESHOLDS.md。
+# TICK_STRATEGIES_TMF_ONLY=false 可恢復舊行為（所有合約都吃）。
+QUOTE_PREFIX_FILTER = os.getenv("TICK_STRATEGIES_TMF_ONLY", "true").lower() == "true"
+
 
 @dataclass
 class StrategyState:
@@ -32,6 +37,7 @@ class StrategyState:
 class BaseStrategy(ABC):
     name: str = "base"
     point_value: int = POINT_VALUE_TMF
+    quote_prefix: Optional[str] = None      # 只處理這個前綴的合約行情（如 "TMF"）；None = 所有合約（舊行為）
 
     def __init__(self) -> None:
         self.state = StrategyState()
@@ -243,6 +249,8 @@ class BaseStrategy(ABC):
         pass
 
     async def _on_quote_async(self, quote: dict) -> None:
+        if QUOTE_PREFIX_FILTER and self.quote_prefix and not str(quote.get("code", "")).startswith(self.quote_prefix):
+            return          # 其他合約的行情：不更新價格序列、不算未實現損益、也不拿來檢查停損停利
         price = float(quote["close"])
         self.state.last_price = price
 

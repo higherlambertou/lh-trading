@@ -31,6 +31,7 @@ from core.hurst_study import CODE, rolling_daily
 from core.iv_monitor import HIGH_PCT, LOOKBACK, LOW_PCT, iv_percentile
 from core.live_state import BIG_MOVE, FLOW_DOWN, FLOW_UP, FLOW_WINDOWS, QUIET
 from core.market_store import MarketStore
+from core.quote_hub import PREOPEN_WINDOWS as PREOPEN       # 開盤前試算時段：行情不是真實成交（與報價隔離共用同一份定義）
 from core.tick_store import DB_PATH as TICKS_DB
 from strategies.bollinger import BollingerStrategy
 from strategies.breakout import BreakoutStrategy
@@ -48,7 +49,6 @@ WHIP_DAILY = 3              # 日級：3 個交易日內切回去算「來回」
 WHIP_BAR = 5                # 1 分 K：5 根內
 WHIP_TICK = 20              # 逐筆：20 筆成交內（約幾秒）
 SESSION_GAP = 1800.0        # 逐筆資料間隔超過 30 分鐘 ＝ 不同盤別，指標視窗各自重算（等於每個盤別重新啟動策略）
-PREOPEN = ((830, 845), (1450, 1500))     # 開盤前試算時段（日盤 08:30~08:45、夜盤 14:50~15:00）：行情不是真實成交
 
 
 # ── 核心：分類、遲滯、震盪統計 ────────────────────────────────────
