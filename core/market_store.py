@@ -46,6 +46,16 @@ CREATE TABLE IF NOT EXISTS strategy_day(
   date TEXT NOT NULL, mode TEXT NOT NULL, strategy TEXT NOT NULL,
   trades INTEGER DEFAULT 0, pnl REAL DEFAULT 0,
   PRIMARY KEY(date, mode, strategy));
+CREATE TABLE IF NOT EXISTS flow_1m(
+  code TEXT NOT NULL, ts INTEGER NOT NULL,
+  buy_n INTEGER NOT NULL, sell_n INTEGER NOT NULL, unk_n INTEGER NOT NULL,
+  buy_vol INTEGER NOT NULL, sell_vol INTEGER NOT NULL, unk_vol INTEGER NOT NULL,
+  open REAL, high REAL, low REAL, close REAL, source TEXT DEFAULT 'live',
+  PRIMARY KEY(code, ts));
+CREATE TABLE IF NOT EXISTS indicator_daily(
+  date TEXT PRIMARY KEY,
+  hurst REAL, hurst_z REAL, hurst_state TEXT, direction INTEGER,
+  iv REAL, iv_pct REAL, iv_state TEXT, updated_at REAL);
 """
 
 _MARKET_COLS = ("phase", "computed_at", "hurst", "hurst_z", "hurst_state", "iv", "iv_pct",
@@ -127,6 +137,77 @@ class MarketStore:
             args.append(since)
         with closing(self._conn()) as c:
             return [dict(r) for r in c.execute(sql + " ORDER BY date, hhmm", args).fetchall()]
+
+    # ── 逐分鐘外/內盤成交統計（flow_store 即時寫入、indicator_history 回補）────────────
+    def upsert_flow_1m(self, code: str, rows: list[dict[str, Any]], source: str = "live") -> None:
+        """每列＝這個合約這一分鐘（ts＝分鐘起點的真實 epoch 秒）的買/賣/不明 筆數與口數、成交價 OHLC。
+        同一分鐘已有資料時，只在新資料的成交筆數較多（較完整）時才覆蓋——live 與回補、sim 與 live 兩個進程互相寫，
+        也不會把完整的一分鐘蓋成殘缺的（例如進程在那分鐘中途才啟動）。"""
+        if not rows:
+            return
+        data = [(code, int(r["ts"]), r["buy_n"], r["sell_n"], r["unk_n"], r["buy_vol"], r["sell_vol"], r["unk_vol"],
+                 r["open"], r["high"], r["low"], r["close"], r.get("source", source)) for r in rows]
+        with closing(self._conn()) as c:
+            c.executemany(
+                """INSERT INTO flow_1m (code, ts, buy_n, sell_n, unk_n, buy_vol, sell_vol, unk_vol, open, high, low, close, source)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(code, ts) DO UPDATE SET
+                     buy_n=excluded.buy_n, sell_n=excluded.sell_n, unk_n=excluded.unk_n,
+                     buy_vol=excluded.buy_vol, sell_vol=excluded.sell_vol, unk_vol=excluded.unk_vol,
+                     open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, source=excluded.source
+                   WHERE excluded.buy_n + excluded.sell_n + excluded.unk_n
+                         > flow_1m.buy_n + flow_1m.sell_n + flow_1m.unk_n""", data)
+            c.commit()
+
+    def flow_1m(self, code: str, since_ts: float | None = None, until_ts: float | None = None) -> list[dict[str, Any]]:
+        sql, args = "SELECT * FROM flow_1m WHERE code=?", [code]
+        if since_ts is not None:
+            sql += " AND ts >= ?"
+            args.append(int(since_ts))
+        if until_ts is not None:
+            sql += " AND ts < ?"
+            args.append(int(until_ts))
+        with closing(self._conn()) as c:
+            return [dict(r) for r in c.execute(sql + " ORDER BY ts", args).fetchall()]
+
+    def flow_1m_span(self, code: str) -> dict[str, Any]:
+        with closing(self._conn()) as c:
+            n, lo, hi = c.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM flow_1m WHERE code=?", (code,)).fetchone()
+        return {"n": n, "first_ts": lo, "last_ts": hi}
+
+    def flow_days(self, code: str, min_minutes: int = 200) -> set[str]:
+        """日盤（08:45~13:44）至少有 min_minutes 分鐘資料的日期（台灣當地日期）。回補時用來跳過已經抓過的日子。"""
+        with closing(self._conn()) as c:
+            rows = c.execute(
+                """SELECT date(ts,'unixepoch','localtime') d, COUNT(*) n FROM flow_1m
+                   WHERE code=? AND strftime('%H%M', ts,'unixepoch','localtime') BETWEEN '0845' AND '1344'
+                   GROUP BY d""", (code,)).fetchall()
+        return {r["d"] for r in rows if r["n"] >= min_minutes}
+
+    # ── 每日指標歷史（Hurst／日K方向／IV 百分位；indicator_history 建立）──────────────
+    def upsert_indicator_daily(self, rows: list[dict[str, Any]]) -> None:
+        """date ＝「用到這天收盤為止的資料」算出來的判斷（as-of）。T 日盤前能用的是 date < T 的最後一列——回放時別用到未來。"""
+        if not rows:
+            return
+        now = time.time()
+        data = [(r["date"], r.get("hurst"), r.get("hurst_z"), r.get("hurst_state"), r.get("direction"),
+                 r.get("iv"), r.get("iv_pct"), r.get("iv_state"), now) for r in rows]
+        with closing(self._conn()) as c:
+            c.executemany("INSERT OR REPLACE INTO indicator_daily VALUES (?,?,?,?,?,?,?,?,?)", data)
+            c.commit()
+
+    def indicator_daily(self, since: str | None = None) -> list[dict[str, Any]]:
+        sql, args = "SELECT * FROM indicator_daily", []
+        if since:
+            sql += " WHERE date >= ?"
+            args.append(since)
+        with closing(self._conn()) as c:
+            return [dict(r) for r in c.execute(sql + " ORDER BY date", args).fetchall()]
+
+    def iv_series(self) -> list[tuple[str, float]]:
+        """全部 IV 歷史，舊 → 新（date, iv%）。"""
+        with closing(self._conn()) as c:
+            return [(r["date"], r["iv"]) for r in c.execute("SELECT date, iv FROM iv_history ORDER BY date").fetchall()]
 
     # ── IV 歷史（單位：%）─────────────────────────────────────────
     def upsert_iv(self, date: str, iv: float, source: str, detail: str = "") -> bool:

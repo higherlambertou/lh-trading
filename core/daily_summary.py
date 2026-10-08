@@ -30,6 +30,7 @@ from core.hurst_analyzer import (
 from core.iv_monitor import (
     HIGH_PCT, LOOKBACK, LOW_PCT, evaluate_iv, fetch_atm_iv,
 )
+from core.flow_store import flow_recorder
 from core.live_state import BIG_MOVE, FLOW_DOWN, FLOW_MARGIN, FLOW_UP, QUIET, live_state
 from core.market_store import MarketStore
 from core.trade_log import trade_log
@@ -475,6 +476,10 @@ class MarketStateService:
             await self.sample_strategies(strategies)
         except Exception as e:
             logger.warning("策略日績效取樣失敗: %r", e)
+        try:
+            flow_recorder.flush_stale()                  # 收盤／午休後最後一分鐘沒有下一筆成交來關閉它，這裡補送（假日也要，週五夜盤跨到週六）
+        except Exception as e:
+            logger.debug("flow_recorder.flush_stale 失敗（已忽略）: %r", e)
 
         now = datetime.now()
         ds, hhmm = now.date().isoformat(), now.hour * 100 + now.minute

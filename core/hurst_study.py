@@ -161,6 +161,11 @@ def study(store: MarketStore | None = None, *, seed: int = 11, quiet: bool = Fal
 def fetch_history(days: int = 130, code: str = CODE, store: MarketStore | None = None) -> tuple[int, int]:
     """向券商抓日盤 1 分 K（分段，每段 25 天），存進 bars_1m 與 bars_daily。回傳 (日 K 根數, 1 分 K 筆數)。
     用 simulation=True 登入（只讀歷史行情、不下單、不動到正式盤連線），結束一定 logout。"""
+    from core.broker_guard import room_for_login
+    ok, why = room_for_login()                    # 登入「之前」先問後端有幾條券商連線，太多就不登入（見 core/broker_guard.py）
+    if not ok:
+        raise RuntimeError(why)
+    print(why)
     import shioaji as sj
     from dotenv import load_dotenv
     load_dotenv()
@@ -213,7 +218,10 @@ def _main() -> None:  # pragma: no cover
     if cmd == "fetch":
         n = int(sys.argv[2]) if len(sys.argv) > 2 else 130
         t0 = time.time()
-        bars, mins = fetch_history(n)
+        try:
+            bars, mins = fetch_history(n)
+        except RuntimeError as e:                    # 連線數保護：不登入
+            raise SystemExit(f'不登入：{e}')
         print(f"完成：日 K {bars} 根、日盤 1 分 K {mins} 筆（{time.time() - t0:.0f} 秒）")
     else:
         study()

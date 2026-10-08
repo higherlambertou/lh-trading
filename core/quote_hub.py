@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Awaitable, Callable
 
 from core.bar_builder import Bar, BarBuilder
+from core.flow_store import flow_recorder
 from core.live_state import live_state
 from core.tick_store import tick_recorder
 
@@ -150,6 +151,11 @@ class QuoteHub:
         except Exception:
             logger.debug("live_state.feed 失敗（已忽略）", exc_info=True)
         tick_recorder.record(code, ts, price, vol, snapshot.get("tick_type", 0), snapshot.get("total_volume", 0))
+        # 逐分鐘外/內盤統計（市場指標視覺化的歷史資料基礎）：同樣只是記錄，任何例外都不可影響報價派發
+        try:
+            flow_recorder.feed(code, price, vol, snapshot.get("total_volume", 0), snapshot.get("tick_type", 0), ts)
+        except Exception:
+            logger.debug("flow_recorder.feed 失敗（已忽略）", exc_info=True)
         done_bar = self.bars.feed(code, price, vol, ts)
         if done_bar and self._bar_subs and self._loop and self._loop.is_running():
             self._dispatch_bar_on_loop(done_bar)

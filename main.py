@@ -27,6 +27,7 @@ from api.routes_tradelog import router as tradelog_router
 from api.routes_risk import router as risk_router
 from core.manual_monitor import manual_monitor
 from core.tick_store import tick_recorder
+from core.flow_store import flow_recorder
 from core.trade_log import trade_log
 
 logging.basicConfig(
@@ -65,6 +66,7 @@ async def lifespan(app: FastAPI):
     manual_monitor.setup(loop)
 
     tick_recorder.start()
+    flow_recorder.start()
     trade_log.start()
     startup_task   = loop.create_task(_startup_bg())
     cache_task     = loop.create_task(cache_refresh_loop())
@@ -79,6 +81,7 @@ async def lifespan(app: FastAPI):
     trades_task.cancel()
     market_task.cancel()
     tick_recorder.stop()
+    flow_recorder.stop()
     await strategy_engine.stop_all()
     await manual_monitor.shutdown()
     broker.logout()
