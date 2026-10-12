@@ -78,8 +78,10 @@ const base = (over = {}) => ({
 {
   const t = html(e(Cards.BookCard, { st: base() }));
   check("掛單卡：價差、平均、買賣量、失衡、第一檔", t.includes("3 點") && t.includes("近 30 秒平均 2.4") && t.includes("買 30 口") && t.includes("賣 52 口")
-    && t.includes("賣方較厚 27%") && t.includes("近 30 秒 賣方較厚 10%") && t.includes("買一 49,290 × 5") && t.includes("賣一 49,293 × 7"), t);
+    && t.includes("五檔失衡：賣方較厚 27%") && t.includes("（近 30 秒平均：賣方較厚 10%）") && t.includes("買一 49,290 × 5") && t.includes("賣一 49,293 × 7"), t);
   check("掛單卡：交易所累計內外盤", t.includes("日盤累計（交易所）") && t.includes("外盤 51% · 內盤 49%") && t.includes("外盤 8,374 口 / 內盤 8,198 口"), t);
+  const rawBook = raw(e(Cards.BookCard, { st: base() }));
+  check("掛單卡：買／賣口數不換行（窄螢幕會把「口」折到下一行）", /whitespace-nowrap[^>]*><span[^>]*>買 30 口<\/span><span[^>]*>賣 52 口<\/span>/.test(rawBook), rawBook.slice(0, 600));
   check("掛單卡：新鮮資料不淡化", !raw(e(Cards.BookCard, { st: base() })).includes("opacity-50"));
   const old = html(e(Cards.BookCard, { st: base({ book: { ...base().book, age: 42 } }) }));
   check("掛單卡：資料超過 10 秒標示幾秒前並淡化", old.includes("42 秒前") && raw(e(Cards.BookCard, { st: base({ book: { ...base().book, age: 42 } }) })).includes("opacity-50"));
@@ -119,6 +121,7 @@ const base = (over = {}) => ({
   const bars = (raw(e(Cards.ContextCard, { st: base() })).match(/flex-1 rounded-sm/g) || []).length;
   const lit = (raw(e(Cards.ContextCard, { st: base() })).match(/background:#00e676/g) || []).length;
   check("脈絡卡：20 格直條、只有現在那格亮", bars === 20 && lit === 1, `${bars} ${lit}`);
+  check("脈絡卡：直條標出 08:45 與 13:45", t.includes("08:45") && t.includes("13:45"));
   const c30 = html(e(Cards.ContextCard, { st: base({ ctx: { ...base().ctx, proj: { ...base().ctx.proj, c: 30 } } }) }));
   check("脈絡卡：30 分模型標 09:15", c30.includes("開盤後 30 分振幅") && c30.includes("09:15 後已走"));
   const settle = html(e(Cards.ContextCard, { st: base({ ctx: { ...base().ctx, settle_day: true, close_hhmm: "13:30", mins_to_close: 150 } }) }));

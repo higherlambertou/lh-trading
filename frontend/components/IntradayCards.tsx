@@ -29,12 +29,8 @@ export function BookCard({ st }: { st: LiveState }) {
               價差{b.spread_avg != null && ` · 近 ${b.window_sec} 秒平均 ${b.spread_avg}`}
             </span>
           </div>
-          <div className="flex items-baseline justify-between text-[11px] font-mono">
+          <div className="flex items-baseline justify-between text-[11px] font-mono whitespace-nowrap">
             <span style={{ color: GREEN }}>買 {b.bv5} 口</span>
-            <span className="text-[#7070a0]">
-              {imbalanceText(b.imb5)}
-              {b.imb5_avg != null && `（近 ${b.window_sec} 秒 ${imbalanceText(b.imb5_avg)}）`}
-            </span>
             <span style={{ color: RED }}>賣 {b.av5} 口</span>
           </div>
           <div className="h-1.5 rounded bg-[#0d0d14] overflow-hidden flex">
@@ -44,6 +40,10 @@ export function BookCard({ st }: { st: LiveState }) {
                 <div style={{ width: `${(1 - share) * 100}%`, background: RED, opacity: 0.8 }} />
               </>
             )}
+          </div>
+          <div className="text-[11px] text-[#7070a0] font-mono">
+            五檔失衡：{imbalanceText(b.imb5)}
+            {b.imb5_avg != null && `（近 ${b.window_sec} 秒平均：${imbalanceText(b.imb5_avg)}）`}
           </div>
           <div className="text-[10px] text-[#404060] font-mono">
             買一 {price(b.bid1)} × {b.bv1} · 賣一 {price(b.ask1)} × {b.av1}
@@ -131,6 +131,7 @@ export function ContextCard({ st }: { st: LiveState }) {
                     style={{ height: `${Math.round(h * 100)}%`, background: i === cur ? GREEN : "#2a2a4a" }} />
                 ))}
               </div>
+              <div className="flex justify-between text-[9px] text-[#404060] font-mono"><span>08:45</span><span>13:45</span></div>
             </>
           ) : (
             <div className={EMPTY}>{c.ready ? "時段倍數資料不足" : "時段脈絡計算中（背景，約數秒）…"}</div>
