@@ -202,7 +202,7 @@ class BaseStrategy(ABC):
         self.state.entry_price = 0.0
         self.state.unrealized_pnl = 0.0
         try:
-            await self.place_order(action, qty, kind=kind, ref_price=ref)
+            await self.place_order(action, qty, kind=kind, ref_price=ref, reduce_only=True)
         except Exception as e:
             self.state.position = prev_pos
             self.state.entry_price = prev_entry
@@ -224,17 +224,27 @@ class BaseStrategy(ABC):
         self.state.position = direction
         self.state.entry_price = price
         self.state.unrealized_pnl = 0.0
+        closed_old = prev_pos == 0          # 舊部位是否已經平掉（本來就空手＝不用平）
         try:
             if prev_pos != 0:
                 close_qty = abs(prev_pos)
-                await self.place_order(action, close_qty, kind="reverse_close")
+                # 反手的平倉腿是減倉單，不受風控限制（風控只擋新進場）
+                await self.place_order(action, close_qty, kind="reverse_close", reduce_only=True)
+                closed_old = True
                 pts = (price - prev_entry) * (1 if prev_pos > 0 else -1)
                 self._add_realized(pts * close_qty * self.point_value)
             await self.place_order(action, 1, kind="entry")
         except Exception as e:
-            self.state.position = prev_pos
-            self.state.entry_price = prev_entry
-            logger.error("策略 [%s] 進場下單失敗，還原部位: %s", self.name, e)
+            if closed_old:
+                # 舊部位已經平了，只有新進場被擋（風控或下單失敗）：回到空手。不能還原成舊部位——
+                # 那會變成帳上沒有、策略卻以為有的幽靈部位，之後的「平倉」單會在券商端開出反向部位
+                self.state.position = 0
+                self.state.entry_price = 0.0
+                logger.error("策略 [%s] 進場下單失敗，維持空手: %s", self.name, e)
+            else:
+                self.state.position = prev_pos
+                self.state.entry_price = prev_entry
+                logger.error("策略 [%s] 反手平倉失敗，還原部位: %s", self.name, e)
             self.state.errors.append(f"進場下單失敗: {e}")
             return
         self._event(f"{'多' if direction > 0 else '空'}單進場 @ {price:.0f}")
@@ -402,11 +412,15 @@ class BaseStrategy(ABC):
         order_type: str = "IOC",
         kind: str = "",
         ref_price: Optional[float] = None,
+        reduce_only: bool = False,
     ):
         # action is "Buy" or "Sell"
         # kind / ref_price 只給成交紀錄用（原因 entry/tp/sl/trail…、停損停利設定價），不影響下單。
         # 參數不叫 reason：下面風控檢查的區域變數 reason 會把它蓋掉
-        is_reducing = (
+        # reduce_only：呼叫端明講「這是平倉單」（停損停利、移動停損、回歸平倉、反手的平倉腿）→ 不受風控限制。
+        # 不能只靠下面用部位方向推算：這些呼叫都是先把 state.position 歸零（擋重入）才下單，推算出來是「進場單」，
+        # 結果過了可開倉時段、當日虧損上限觸發、進場次數已滿時，停損停利反而送不出去（update.md 發現 24）。
+        is_reducing = reduce_only or (
             (action == "Buy"  and self.state.position < 0) or
             (action == "Sell" and self.state.position > 0)
         )

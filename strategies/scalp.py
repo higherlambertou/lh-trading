@@ -453,7 +453,7 @@ class ScalpStrategy(BaseStrategy):
 
         close_action = "Sell" if direction == 1 else "Buy"
         try:
-            await self.place_order(close_action, qty, kind="sl",
+            await self.place_order(close_action, qty, kind="sl", reduce_only=True,
                                    ref_price=self._last_entry_price - direction * self.sl_pts)
         except Exception as e:
             logger.error("[scalp] 停損平倉失敗: %s", e)
