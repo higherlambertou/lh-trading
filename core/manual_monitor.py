@@ -366,7 +366,7 @@ class ManualOrderMonitor:
         try:
             # kind / ref_price / signal_price 只給成交紀錄用，不影響下單
             with trade_log.context(strategy="manual_monitor", reason=kind,
-                                   signal_price=signal_price, ref_price=ref_price):
+                                   signal_price=signal_price, ref_price=ref_price, attempt=watch.close_attempts):
                 if watch.is_option and watch.delivery_month:
                     last = quote_hub.get_last_price(watch.match_code) or watch.entry_price
                     # 選擇權平倉是限價 IOC：沒成交時重送會逐次放寬緩衝（每次再讓 ~1% 權利金），提高成交機會

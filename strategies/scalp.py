@@ -246,10 +246,12 @@ class ScalpStrategy(BaseStrategy):
     # ── 下單輔助 ────────────────────────────────────────────────
 
     async def _lmt(self, action: str, price: float, qty: int = 1, kind: str = "",
-                   signal_price: float | None = None, ref_price: float | None = None) -> dict:
+                   signal_price: float | None = None, ref_price: float | None = None,
+                   stop_price: float | None = None) -> dict:
         """掛 ROD 限價單，回傳 {"trade_id": ..., "status": ...}
-        kind / signal_price / ref_price 只給成交紀錄用，不影響下單。"""
-        with trade_log.context(strategy=self.name, reason=kind, signal_price=signal_price, ref_price=ref_price):
+        kind / signal_price / ref_price / stop_price 只給成交紀錄用，不影響下單。"""
+        extra = {"stop_price": stop_price, "strategy_params": dict(self.params)} if kind == "entry" else {}
+        with trade_log.context(strategy=self.name, reason=kind, signal_price=signal_price, ref_price=ref_price, **extra):
             return await broker.place_order(
                 contract_code="TMF",
                 action=action,
@@ -304,7 +306,8 @@ class ScalpStrategy(BaseStrategy):
             entry_price, price, self.entry_offset, self.signal_mode, self.max_qty,
         )
         try:
-            trade = await self._lmt(action, entry_price, qty=self.max_qty, kind="entry", signal_price=price)
+            trade = await self._lmt(action, entry_price, qty=self.max_qty, kind="entry", signal_price=price,
+                                    stop_price=(entry_price - direction * self.sl_pts) if self.sl_pts > 0 else None)
         except Exception as e:
             logger.error("[scalp] 掛單失敗: %s", e)
             self.state.errors.append(f"掛單失敗: {e}")

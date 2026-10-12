@@ -72,8 +72,10 @@ class ManualOrderRequest(BaseModel):
 @router.post("/place")
 async def place_order(req: ManualOrderRequest) -> dict[str, Any]:
     try:
-        with trade_log.context(strategy="manual", reason="manual",
-                               signal_price=quote_hub.last_price_by_prefix(req.contract)):
+        last = quote_hub.last_price_by_prefix(req.contract)
+        basis = req.price or last
+        stop = (basis - (1 if req.action == "Buy" else -1) * req.stop_loss_pts) if (basis and req.stop_loss_pts > 0) else None
+        with trade_log.context(strategy="manual", reason="manual", signal_price=last, stop_price=stop):
             trade = await broker.place_order(
                 contract_code=req.contract,
                 action=req.action,

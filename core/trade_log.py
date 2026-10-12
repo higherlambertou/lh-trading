@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 import math
 import os
@@ -28,6 +29,8 @@ from collections import deque
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+
+from core import entry_log
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +54,14 @@ CREATE TABLE IF NOT EXISTS orders(
   price_type TEXT, order_type TEXT, limit_price REAL, octype TEXT,
   signal_price REAL, ref_price REAL,
   market_state TEXT, hurst_state TEXT, iv_state TEXT, direction INTEGER, tag_date TEXT,
-  status TEXT, error TEXT, latency_ms REAL);
+  status TEXT, error TEXT, latency_ms REAL, state_json TEXT);
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts REAL NOT NULL, mode TEXT NOT NULL,
   kind TEXT NOT NULL,
   trade_id TEXT NOT NULL DEFAULT '',
   price REAL, qty INTEGER,
-  op_type TEXT, op_code TEXT, op_msg TEXT, raw_state TEXT);
+  op_type TEXT, op_code TEXT, op_msg TEXT, raw_state TEXT, deal_ts REAL, deal_seq TEXT);
 CREATE INDEX IF NOT EXISTS idx_orders_trade ON orders(trade_id);
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 CREATE INDEX IF NOT EXISTS idx_events_trade ON events(trade_id);
@@ -66,8 +69,8 @@ CREATE INDEX IF NOT EXISTS idx_events_trade ON events(trade_id);
 
 _ORDER_COLS = ("ts", "mode", "trade_id", "strategy", "reason", "contract", "action", "qty", "price_type",
                "order_type", "limit_price", "octype", "signal_price", "ref_price", "market_state",
-               "hurst_state", "iv_state", "direction", "tag_date", "status", "error", "latency_ms")
-_EVENT_COLS = ("ts", "mode", "kind", "trade_id", "price", "qty", "op_type", "op_code", "op_msg", "raw_state")
+               "hurst_state", "iv_state", "direction", "tag_date", "status", "error", "latency_ms", "state_json")
+_EVENT_COLS = ("ts", "mode", "kind", "trade_id", "price", "qty", "op_type", "op_code", "op_msg", "raw_state", "deal_ts", "deal_seq")
 
 
 def current_mode() -> str:
@@ -93,6 +96,7 @@ class TradeLog:
         self._stop = threading.Event()
         self._dropped = 0
         self._tag: dict[str, Any] = {}
+        self._entry: entry_log.EntrySync | None = None
 
     # ── 脈絡（呼叫端在下單前設定）────────────────────────────────
     @contextmanager
@@ -118,12 +122,17 @@ class TradeLog:
             return
         try:
             ctx, tag = _CTX.get() or {}, self._tag
+            try:
+                state_json = json.dumps(entry_log.capture(tag, ctx), ensure_ascii=False, default=str)
+            except Exception as e:                      # noqa: BLE001  進場快照的擷取失敗不能擋下單，但不能靜默
+                state_json = None
+                entry_log.alerts.fire("capture", f"{type(e).__name__}: {e}", str(trade_id or ""))
             self._put("order", (
                 ts or time.time(), current_mode(), str(trade_id or ""), str(ctx.get("strategy", "")),
                 str(ctx.get("reason", "")), str(contract), str(action), int(qty), str(price_type),
                 str(order_type), float(limit_price or 0), str(octype), ctx.get("signal_price"),
                 ctx.get("ref_price"), tag.get("market_state"), tag.get("hurst_state"), tag.get("iv_state"),
-                tag.get("direction"), tag.get("as_of"), str(status), str(error)[:300], float(latency_ms or 0),
+                tag.get("direction"), tag.get("as_of"), str(status), str(error)[:300], float(latency_ms or 0), state_json,
             ))
         except Exception:
             logger.exception("TradeLog.record_order 失敗（已忽略，不影響下單）")
@@ -139,9 +148,19 @@ class TradeLog:
                 float(ev.get("price") or 0), int(ev.get("quantity") or 0),
                 str(ev.get("op_type") or ""), str(ev.get("op_code") or ""),
                 str(ev.get("op_msg") or "")[:300], str(ev.get("state") or ""),
+                float(ev.get("deal_ts") or 0) or None, str(ev.get("deal_seq") or "") or None,
             ))
         except Exception:
             logger.exception("TradeLog.record_event 失敗（已忽略）")
+
+    def record_positions(self, positions: list[dict[str, Any]]) -> None:
+        """啟動時把券商目前的持倉交給進場紀錄對帳（功能啟用前就存在的部位，被平倉時才不會被誤判成新進場）。"""
+        if not self.enabled:
+            return
+        try:
+            self._put("reconcile", (current_mode(), [dict(p) for p in positions or []]))
+        except Exception:
+            logger.exception("TradeLog.record_positions 失敗（已忽略）")
 
     def _put(self, kind: str, row: tuple) -> None:
         try:
@@ -177,16 +196,31 @@ class TradeLog:
             conn = sqlite3.connect(self.path, timeout=10)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
             conn.commit()
         except Exception:
             logger.exception("TradeLog 無法開啟資料庫，成交紀錄停用")
             return
+        self._entry = None
+        try:
+            self._entry = entry_log.EntrySync(conn, current_mode())
+            self._entry.init()
+        except Exception as e:                          # noqa: BLE001
+            entry_log.alerts.fire("init", f"{type(e).__name__}: {e}")      # 進場紀錄起不來也不能影響成交紀錄本身
+            self._entry = None
         buf: list[tuple[str, tuple]] = []
-        last = time.monotonic()
+        last = last_entry = time.monotonic()
         while True:
             stopping = self._stop.is_set()
             try:
-                buf.append(self._q.get(timeout=0.0 if stopping else 0.3))
+                item = self._q.get(timeout=0.0 if stopping else 0.3)
+                if item[0] == "reconcile":
+                    if buf and self._flush(conn, buf):          # 對帳要看到最新的成交：先把佇列裡的寫進去、處理完，再比對
+                        buf.clear()
+                    self._entry_call(self._entry.step if self._entry else None)
+                    self._entry_call(lambda it=item: self._entry.reconcile(*it[1]))
+                else:
+                    buf.append(item)
             except queue.Empty:
                 if stopping:
                     break
@@ -194,13 +228,50 @@ class TradeLog:
             if buf and (len(buf) >= FLUSH_BATCH or now - last >= FLUSH_INTERVAL):
                 if self._flush(conn, buf):
                     buf.clear()
+                    self._entry_call(self._entry.step if self._entry else None)
+                    last_entry = now
                 elif len(buf) > RETRY_CAP:
                     logger.error("TradeLog 寫入持續失敗，丟棄 %d 筆", len(buf))
                     buf.clear()
                 last = now
+            elif now - last_entry >= FLUSH_INTERVAL:     # 沒有新資料時也定期處理（重試失敗的成交、等委託紀錄的成交）
+                self._entry_call(self._entry.step if self._entry else None)
+                last_entry = now
         if buf:
             self._flush(conn, buf)
+        self._entry_call(self._entry.step if self._entry else None)
         conn.close()
+
+    def _entry_call(self, fn: Any) -> None:
+        if fn is None or self._entry is None:
+            return
+        try:
+            fn()
+        except Exception as e:                          # noqa: BLE001
+            entry_log.alerts.fire("sync", f"{type(e).__name__}: {e}")
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """舊資料庫補欄位（CREATE TABLE IF NOT EXISTS 不會改既有的表）。
+        sim、live 兩個行程共用這個檔案，可能同時啟動、同時補欄位——後到的會遇到「欄位已存在」，那不是錯誤，不能讓成交紀錄因此停用。"""
+        def cols(t: str) -> set[str]:
+            return {r[1] for r in conn.execute(f"PRAGMA table_info({t})")}
+
+        def add(table: str, col: str, ddl: str) -> None:
+            if col in cols(table):
+                return
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+
+        add("orders", "state_json", "TEXT")
+        add("events", "deal_ts", "REAL")
+        add("events", "deal_seq", "TEXT")
+
+    def entry_status(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, **entry_log.status(self.path, current_mode())}
 
     @staticmethod
     def _flush(conn: sqlite3.Connection, buf: list[tuple[str, tuple]]) -> bool:

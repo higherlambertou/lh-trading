@@ -242,9 +242,18 @@ class MarketStateService:
         """設定目前的今日判斷，並把市場狀態標記同步給成交紀錄（之後的委託會標上這組狀態）。"""
         self.summary = s
         try:
+            h, iv = s["hurst"], s["iv"]
             trade_log.set_market_tag({
-                "market_state": s.get("state"), "hurst_state": s["hurst"]["state"],
-                "iv_state": s["iv"]["state"], "direction": s.get("direction"), "as_of": s.get("date"),
+                "market_state": s.get("state"), "hurst_state": h["state"],
+                "iv_state": iv["state"], "direction": s.get("direction"), "as_of": s.get("date"),
+                # 進場市場狀態紀錄用（只被寫入成交紀錄，沒有任何策略或風控讀取）：這個判斷「算出來的時間」與各欄位的原值
+                "snapshot": {
+                    "hurst_value": h.get("value"), "hurst_z": h.get("z"), "hurst_window": h.get("window"),
+                    "hurst_bar_period": "5 分K" if self.cfg.hurst_freq == "5m" else "日K", "hurst_noise": h.get("se"),
+                    "hurst_note": h.get("note"), "iv_value": iv.get("value"), "iv_percentile": iv.get("percentile"),
+                    "iv_history_n": iv.get("history_n"), "iv_min_history": iv.get("min_history"), "iv_note": iv.get("note"),
+                    "state_timestamp": time.time(), "state_date": s.get("date"), "market_state": s.get("state"),
+                },
             })
         except Exception:
             logger.debug("set_market_tag 失敗（已忽略）", exc_info=True)

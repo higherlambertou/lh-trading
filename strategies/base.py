@@ -403,6 +403,18 @@ class BaseStrategy(ABC):
             logger.warning("策略 [%s] 無法取得保證金資訊，略過檢查: %s", self.name, e)
             return True
 
+    def _entry_ctx(self, action: str, is_reducing: bool) -> dict[str, Any]:
+        """進場快照要記的脈絡（停損價、策略參數）。只給成交紀錄用，不影響下單；任何問題都不能擋下單。"""
+        if is_reducing:
+            return {}
+        try:
+            px = self.state.last_price
+            sign = 1 if action == "Buy" else -1
+            stop = px - sign * self.stop_loss_pts if (px and self.stop_loss_pts > 0) else None
+            return {"stop_price": stop, "strategy_params": dict(self.params)}
+        except Exception:                                  # noqa: BLE001
+            return {}
+
     async def place_order(
         self,
         action: str,
@@ -436,7 +448,8 @@ class BaseStrategy(ABC):
 
         try:
             with trade_log.context(strategy=self.name, reason=kind or ("exit" if is_reducing else "entry"),
-                                   signal_price=self.state.last_price or None, ref_price=ref_price):
+                                   signal_price=self.state.last_price or None, ref_price=ref_price,
+                                   **self._entry_ctx(action, is_reducing)):
                 trade = await broker.place_order(
                     contract_code="TMF",
                     action=action,

@@ -56,6 +56,11 @@ async def _startup_bg() -> None:
         except Exception as e:
             logger.warning("啟動訂閱期貨 %s 失敗: %s", code, e)
 
+    try:        # 進場市場狀態紀錄：開始記錄前就存在的部位，被平倉時才不會被誤判成新進場
+        trade_log.record_positions(await broker.list_positions())
+    except Exception as e:
+        logger.warning("進場紀錄對帳：取得券商持倉失敗（略過）: %s", e)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

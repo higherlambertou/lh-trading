@@ -90,7 +90,7 @@ def extract_order_event(stat, msg) -> dict:
     ev = {
         "type": "order_event", "state": state_name,
         "trade_id": "", "price": 0.0, "quantity": 0,
-        "op_type": "", "op_code": "", "op_msg": "",
+        "op_type": "", "op_code": "", "op_msg": "", "deal_ts": 0.0, "deal_seq": "",
     }
     if "Deal" in state_name:
         ev["price"] = float(_field(msg, "price") or 0)
@@ -99,6 +99,8 @@ def extract_order_event(stat, msg) -> dict:
                or _field(_field(msg, "status"), "id")
                or _field(_field(msg, "order"), "id", "ordno", "seqno"))
         ev["trade_id"] = str(tid or "")
+        ev["deal_ts"] = float(_field(msg, "ts") or 0)                      # 券商給的成交時間／交易所序號：辨識重複送達的同一筆成交
+        ev["deal_seq"] = str(_field(msg, "exchange_seq") or "")
     else:
         tid = (_field(_field(msg, "status"), "id")
                or _field(_field(msg, "order"), "id")
