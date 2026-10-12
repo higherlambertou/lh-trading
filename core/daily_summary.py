@@ -31,6 +31,7 @@ from core.iv_monitor import (
     HIGH_PCT, LOOKBACK, LOW_PCT, evaluate_iv, fetch_atm_iv,
 )
 from core.flow_store import flow_recorder
+from core.intraday_context import describe as describe_context, intraday_context
 from core.live_state import BIG_MOVE, FLOW_DOWN, FLOW_MARGIN, FLOW_UP, QUIET, live_state
 from core.market_store import MarketStore
 from core.trade_log import trade_log
@@ -297,9 +298,15 @@ class MarketStateService:
         else:
             coherence = 1 if flow_dir == want else -1
             text = f"{'協調' if coherence == 1 else '矛盾'}：盤前偏向{side[want]}，現在買賣力道{flow_side[flow_dir]}"
+        ctx = None
+        try:                                              # 時段脈絡（背景算好的快取；沒好就 None，下一次輪詢就有）。壞了不影響其他欄位
+            data = await intraday_context.get(self.store, self.cfg.code, today)
+            ctx = describe_context(data, datetime.now(), live.get("cp"), live.get("session", "other"))
+        except Exception:
+            logger.debug("intraday_context 失敗（已忽略）", exc_info=True)
         return {
             **live, "ready": live["last"] is not None, "as_of": time.time(),
-            "range": rng, "avg_range": avg, "range_ratio": ratio, "range_label": range_label,
+            "range": rng, "avg_range": avg, "range_ratio": ratio, "range_label": range_label, "ctx": ctx,
             "pre": {"date": s["date"] if s else None, "state": s["state"] if s else None,
                     "hint": s["hint"] if s else None, "want": want, "want_reason": why},
             "flow_dir": flow_dir, "coherence": coherence, "coherence_text": text,

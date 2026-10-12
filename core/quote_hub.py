@@ -9,7 +9,7 @@ from typing import Awaitable, Callable
 from core.bar_builder import Bar, BarBuilder
 from core.flow_store import flow_recorder
 from core.live_state import live_state
-from core.tick_store import tick_recorder
+from core.tick_store import book_row, tick_recorder
 
 logger = logging.getLogger(__name__)
 
@@ -147,10 +147,14 @@ class QuoteHub:
         # 盤中即時狀態（只給儀表板顯示）：任何例外都不可影響下面的報價派發
         try:
             live_state.feed(code, price, vol, snapshot.get("total_volume", 0),
-                            snapshot.get("tick_type", 0), ts)
+                            snapshot.get("tick_type", 0), ts, quote=snapshot)
         except Exception:
             logger.debug("live_state.feed 失敗（已忽略）", exc_info=True)
-        tick_recorder.record(code, ts, price, vol, snapshot.get("tick_type", 0), snapshot.get("total_volume", 0))
+        try:
+            book = book_row(snapshot)                     # 成交列另存「成交之後」的盤口與交易所累計（只是記錄，壞了就不存盤口）
+        except Exception:
+            book = None
+        tick_recorder.record(code, ts, price, vol, snapshot.get("tick_type", 0), snapshot.get("total_volume", 0), book=book)
         # 逐分鐘外/內盤統計（市場指標視覺化的歷史資料基礎）：同樣只是記錄，任何例外都不可影響報價派發
         try:
             flow_recorder.feed(code, price, vol, snapshot.get("total_volume", 0), snapshot.get("tick_type", 0), ts)
@@ -202,7 +206,7 @@ class QuoteHub:
         if self._ws_last_close.get(code) == close:
             return
         self._ws_last_close[code] = close
-        msg = json.dumps(snapshot)
+        msg = json.dumps({k: v for k, v in snapshot.items() if k != "book"})      # 五檔只有即時面板用（走 /api/market/live），不塞進每則推播
         for q in list(self._ws_queues):
             try:
                 q.put_nowait(msg)

@@ -16,6 +16,61 @@ logger = logging.getLogger(__name__)
 
 # ── 序列化 helpers ───────────────────────────────────────────────────
 
+def _num(v, cast=float):
+    """安全轉型：None／空字串／轉不動 → None（呼叫端決定要不要放進結果）。"""
+    try:
+        if v is None or v == "":
+            return None
+        return cast(v)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+
+def _first(quote, *names):
+    """依序取第一個存在且非 None 的屬性；SDK 的 Rust 包裝物件取屬性可能丟任何例外，一律當作沒有。"""
+    for n in names:
+        try:
+            v = getattr(quote, n, None)
+        except Exception:
+            continue
+        if v is not None:
+            return v
+    return None
+
+
+def _levels(quote, name, cast, n: int = 5) -> list:
+    """五檔的某一欄（價或量）→ 最多 n 個。任何一個元素轉不動就整欄放棄（寧可沒有，也不要錯位的五檔）。"""
+    try:
+        raw = getattr(quote, name, None)
+        if raw is None:
+            return []
+        return [cast(x) for x in list(raw)[:n]]
+    except Exception:
+        return []
+
+
+def _extract_book(quote) -> dict:
+    """報價事件本來就帶、以前被丟掉的欄位（實測 2026-10-12：TMF 的 Quote 事件每筆都有五檔與交易所累計內外盤）。
+    全部是附加資料：取不到就不放，絕不影響核心欄位（價格、量、時間）。
+    book＝五檔（bp/ap 價、bv/av 量，由最佳價往外）加上第一檔量的變化（dbv/dav；成交事件裡是被吃掉的量）。"""
+    out: dict = {}
+    for key, names in (("avg_price", ("avg_price",)), ("underlying_price", ("underlying_price",))):
+        v = _num(_first(quote, *names))
+        if v:
+            out[key] = v
+    for key in ("bid_side_total_vol", "ask_side_total_vol"):            # 交易所的時段累計內盤／外盤口數
+        v = _num(_first(quote, key), int)
+        if v is not None:
+            out[key] = v
+    bp, ap = _levels(quote, "bid_price", float), _levels(quote, "ask_price", float)
+    bv, av = _levels(quote, "bid_volume", int), _levels(quote, "ask_volume", int)
+    if bp and ap and bv and av:
+        dbv, dav = _levels(quote, "diff_bid_vol", int, 1), _levels(quote, "diff_ask_vol", int, 1)
+        out["book"] = {"bp": bp, "ap": ap, "bv": bv, "av": av,
+                       "dbv": dbv[0] if dbv else None, "dav": dav[0] if dav else None}
+    return out
+
+
 def _extract_quote(quote) -> dict:
     ts_ns = getattr(quote, "ts", None)
     ts = ts_ns / 1e9 if ts_ns else time.time()
@@ -24,7 +79,7 @@ def _extract_quote(quote) -> dict:
         code  = str(quote.code)
     except (TypeError, ValueError):
         return {}
-    return {
+    out = {
         "code": code,
         "close": price,
         "open": float(getattr(quote, "open", 0) or 0),
@@ -32,11 +87,17 @@ def _extract_quote(quote) -> dict:
         "low": float(getattr(quote, "low", 0) or 0),
         "volume": int(getattr(quote, "volume", 0) or 0),
         "total_volume": int(getattr(quote, "total_volume", 0) or 0),
-        "change_price": float(getattr(quote, "change_price", 0) or 0),
+        # 漲跌：shioaji 1.5.x 的欄位叫 price_chg（沒有 change_price——以前讀不到，畫面的漲跌永遠是 0）
+        "change_price": _num(_first(quote, "price_chg", "diff_price", "change_price")) or 0.0,
         "tick_type": int(getattr(quote, "tick_type", 0) or 0),
         "simtrade": bool(getattr(quote, "simtrade", False)),     # 試算（開盤前試撮）行情；目前只用來記錄與核對，隔離靠時段（見 quote_hub）
         "ts": ts,
     }
+    try:
+        out.update(_extract_book(quote))
+    except Exception:                                            # 附加欄位出任何事都不能讓行情掉
+        logger.debug("五檔／累計欄位萃取失敗（已忽略）", exc_info=True)
+    return out
 
 
 def to_mapping(x) -> dict:

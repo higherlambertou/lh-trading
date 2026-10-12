@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Radio } from "lucide-react";
 import { api, LiveState, FlowWindow } from "@/lib/api";
+import IntradayCards from "./IntradayCards";
 
 const GREEN = "#00e676";
 const RED = "#ff1744";
@@ -123,6 +124,11 @@ export default function LiveStatePanel({ compact = false }: { compact?: boolean 
                     資料自 {st.since} 起（重啟後重新累計，可能少算開盤段）
                   </div>
                 )}
+                {st.range_source === "exchange" && (
+                  <div className="text-[11px] text-[#7070a0]">
+                    高低取自交易所（後端在開盤後才啟動，自己累計的不完整）
+                  </div>
+                )}
               </>
             ) : (
               <div className="text-[11px] text-[#404060]">
@@ -145,11 +151,13 @@ export default function LiveStatePanel({ compact = false }: { compact?: boolean 
         </div>
       )}
 
+      {st?.ready && <IntradayCards st={st} />}
+
       {compact ? (
         <p className="text-[10px] text-[#404060]">只顯示、不影響下單；判讀門檻尚未經過歷史驗證，僅供參考（完整說明在「市場」分頁）。</p>
       ) : (
       <p className="text-[10px] text-[#404060] leading-relaxed">
-        只顯示、不影響下單。判讀門檻（100 筆外盤占比 ≥{Math.round(th.flow_up * 100)}% 買方主動、≤{Math.round(th.flow_down * 100)}% 賣方主動{th.flow_margin != null && `，轉向要多超過 ${+(th.flow_margin * 100).toFixed(1)} 個百分點、回到門檻內才解除，避免在門檻上下閃爍`}；
+        只顯示、不影響下單。五檔、均價、基差與時段脈絡是報價事件本來就帶的資料，同樣未驗證能不能當進出場訊號（預期振幅的歷史檢驗見 update.md 發現 28）。判讀門檻（100 筆外盤占比 ≥{Math.round(th.flow_up * 100)}% 買方主動、≤{Math.round(th.flow_down * 100)}% 賣方主動{th.flow_margin != null && `，轉向要多超過 ${+(th.flow_margin * 100).toFixed(1)} 個百分點、回到門檻內才解除，避免在門檻上下閃爍`}；
         振幅比 ≥{th.big_move}× 大波動、≤{th.quiet}× 清淡）尚未經過歷史驗證，僅供參考。
       </p>
       )}

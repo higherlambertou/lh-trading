@@ -259,6 +259,31 @@ export interface FlowWindow {
   dir?: number;               // 買賣方向：+1 買方主動 / -1 賣方主動 / 0 中性（後端帶遲滯算好的；舊後端沒有這欄）
 }
 
+// 以下幾個是報價事件本來就帶、後端新近才轉發的欄位（舊後端沒有 → 全部可省略，畫面要能容忍）
+export interface BookView {
+  bid1: number; ask1: number; bv1: number; av1: number;   // 第一檔買／賣價與量
+  bv5: number; av5: number;                               // 五檔買／賣總量
+  spread: number | null;                                  // 價差（點）；單邊沒掛、鎖單時為 null
+  imb5: number | null;                                    // (買量−賣量)/(買量+賣量)，正＝買方掛得比較厚
+  spread_avg: number | null; imb5_avg: number | null;     // 近 window_sec 秒的平均（單筆五檔每 0.1 秒就變）
+  n: number; window_sec: number; age: number;             // 視窗內幾筆、視窗秒數、最新一筆是幾秒前
+}
+export interface SessionFlow { inside: number; outside: number; share: number | null; session: string }   // 交易所的時段累計內盤／外盤
+export interface VwapView { price: number; diff: number; session: string }                                // 交易所均價；diff＝最新價−均價
+export interface BasisView { spot: number; value: number; valid: boolean }                                // 基差＝期貨−現貨；valid＝現貨有在更新
+export interface ContextProj {
+  c: number;                                              // 用開盤後 c 分鐘的早盤振幅（30 或 60）
+  early: number; done: number; done_ratio: number | null; n: number;
+  expect: { lo: number; mid: number; hi: number };        // c 分鐘之後的預期振幅（點）：中位數與 68% 區間
+}
+export interface IntradayCtx {
+  session: string; ready: boolean;
+  elapsed?: number; settle_day?: boolean; mins_to_close?: number; close_hhmm?: string;
+  r20?: number | null; n_days?: number;
+  bucket?: { label: string; mult: number; idx: number }; profile?: number[];
+  proj?: ContextProj; proj_note?: string;
+}
+
 export interface LiveState {
   ready: boolean;
   as_of: number;
@@ -281,6 +306,14 @@ export interface LiveState {
   coherence: number | null;   // +1 協調 / -1 矛盾 / 0 中性 / null 無法比較
   coherence_text: string;
   thresholds: { flow_up: number; flow_down: number; flow_margin?: number; big_move: number; quiet: number };
+  range_source?: "own" | "exchange";   // 日盤高低的來源：自己累計／交易所（重啟後自己累計不完整時改用）
+  session?: "day" | "night" | "other";
+  book?: BookView | null;
+  session_flow?: SessionFlow | null;
+  vwap?: VwapView | null;
+  basis?: BasisView | null;
+  ex_range?: { high: number; low: number; mismatch: number } | null;   // mismatch＝和自己累計的對不上的次數（今天）
+  ctx?: IntradayCtx | null;
 }
 
 // 市場指標回放（歷史）＋統計驗證

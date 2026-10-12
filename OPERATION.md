@@ -145,6 +145,28 @@ curl 'http://100.127.125.13:8002/api/tradelog/summary?days=7' | python3 -m json.
 python -m core.trade_log 7
 ```
 
+### 盤中指標擴充（五檔、交易所累計內外盤、均價、基差、時段脈絡；update.md 發現 28）
+
+重啟後端（空手時）＋前端重 build 才生效。**重啟後檢查**：
+
+```bash
+# 1. 即時面板新欄位（book／session_flow／vwap／basis／ex_range／cp／ctx）；夜盤時 basis.valid=false、ctx 只有倒數
+curl -s http://100.127.125.13:8002/api/market/live | python3 -c "import sys,json; d=json.load(sys.stdin); print({k: d.get(k) for k in ('book','session_flow','vwap','basis','ex_range','cp','ctx')})"
+
+# 2. 頁面最上方行情條的漲跌（▲／▼ 與點數）不再永遠是「—」
+curl -s http://100.127.125.13:8002/api/quote/last | head -c 300     # 或直接看畫面
+
+# 3. ticks.db 的盤口欄位有在記（重啟後的成交列 bid1 不是 NULL；舊列是 NULL）
+sqlite3 data/ticks.db "select count(*), count(bid1), round(avg(ask1-bid1),2) from ticks where ts > strftime('%s','now','-1 hour')"
+
+# 4. 交易所的日盤高低有沒有混進試算價：開盤（08:45 之後）第一次檢查這個 log，應該是空的
+grep "日盤高低與交易所不一致" /tmp/lh_live.log | tail
+```
+
+- 第 4 項如果出現，代表交易所的日盤高低和我們從成交價累計的不一樣（最可能是混進了開盤前的試算價）。**重啟後自己累計不完整時改用交易所高低的那個功能，就不該信了**——回報給我，把它關掉。
+- `python -m core.intraday_context show` 印今天的時段脈絡（模型係數、各時段倍數）；`screen` 重現發現 28 的 5 個檢定（只讀 `market_state.db`，不連券商）。時段脈絡每天第一次被讀到時在背景算（約 1~2 秒），那之前卡片顯示「計算中」。
+- 盤口欄位 `RECORD_BOOK=false` 可關（欄位留空）。只記成交列、是成交「之後」的盤口；容量約增 50%（估每天 +3 MB），舊資料仍是 NULL。累積 2~3 個月後，用事先登記的流程檢驗「五檔失衡預測下一筆方向／價格」「價差與深度當成本指標」「交易所內外盤 vs 自己的統計」，尤其是 scalp 的限價掃單。
+
 ### 進場市場狀態紀錄（每筆進場當下的 Hurst／IV，與之後的損益）
 
 需求文件《進場市場狀態紀錄》v1：**只多記欄位，不改任何交易行為**，為日後驗證「Hurst／IV 判斷到底有沒有用」累積資料（補不回來，所以現在先記）。沒有分析、沒有統計；沒有任何策略或風控會讀這些欄位。

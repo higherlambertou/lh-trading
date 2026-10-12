@@ -14,6 +14,11 @@
 沒有新資訊），預設不存（RECORD_QUOTE_UPDATES=true 可恢復）；價格路徑只由成交決定，所以不損失任何資訊。
 同時新增 total_volume 欄位（日累計成交量，可用來去除重複回報與核對漏筆）。
 資料庫：data/ticks.db（已加入 .gitignore）。舊資料可用 python -m core.tick_store compact 預覽/清掉報價更新列。
+
+盤口欄位（BOOK_COLS）：成交列另外帶「該筆成交之後」的第一檔買賣價量、五檔總量、第一檔量的變化、交易所的時段累計內外盤、
+交易所均價、現貨指數——報價事件本來就帶這些，不用多訂閱；歷史補不回來，所以先記，累積夠了再用事先登記的流程檢驗
+（update.md 發現 28）。只記成交列（約 25% 的事件），非成交的五檔更新不記；RECORD_BOOK=false 關閉（欄位留 NULL）。
+注意是成交「之後」的盤口：買進成交會吃掉賣一，之後的賣方深度因此變薄——拿它預測「這一筆」會有偏誤，預測「下一筆以後」才沒有。
 """
 from __future__ import annotations
 
@@ -33,7 +38,28 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "ticks.db"
 FLUSH_INTERVAL = 1.0     # 秒
 FLUSH_BATCH = 500        # 筆
 QUEUE_MAX = 50_000       # 佇列上限（writer 卡住時的緩衝，約幾分鐘量）
-INSERT_SQL = "INSERT INTO ticks (code, ts, price, volume, tick_type, total_volume) VALUES (?,?,?,?,?,?)"
+# 盤口欄位（順序即 book_row 的順序）：第一檔買／賣價、買／賣量；五檔買／賣總量；第一檔買／賣量的變化（成交事件裡是被吃掉的量）；
+# 交易所的時段累計內盤／外盤口數；交易所均價；現貨指數
+BOOK_COLS = (("bid1", "REAL"), ("ask1", "REAL"), ("bv1", "INTEGER"), ("av1", "INTEGER"), ("bv5", "INTEGER"), ("av5", "INTEGER"),
+             ("dbv1", "INTEGER"), ("dav1", "INTEGER"), ("bid_side", "INTEGER"), ("ask_side", "INTEGER"),
+             ("avg_price", "REAL"), ("underlying", "REAL"))
+BASE_COLS = ("code", "ts", "price", "volume", "tick_type", "total_volume")
+INSERT_SQL = ("INSERT INTO ticks (" + ", ".join(BASE_COLS + tuple(c for c, _ in BOOK_COLS)) + ") VALUES ("
+              + ",".join("?" * (len(BASE_COLS) + len(BOOK_COLS))) + ")")
+NO_BOOK = (None,) * len(BOOK_COLS)
+
+
+def book_row(snapshot: dict) -> tuple | None:
+    """行情 dict（QuoteHub 收到的）→ 與 BOOK_COLS 同順序的值；沒有五檔（舊 worker、取不到）回 None。"""
+    b = snapshot.get("book")
+    if not b:
+        return None
+    try:
+        return (float(b["bp"][0]), float(b["ap"][0]), int(b["bv"][0]), int(b["av"][0]), int(sum(b["bv"])), int(sum(b["av"])),
+                b.get("dbv"), b.get("dav"), snapshot.get("bid_side_total_vol"), snapshot.get("ask_side_total_vol"),
+                snapshot.get("avg_price"), snapshot.get("underlying_price"))
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
 
 
 class TickRecorder:
@@ -44,17 +70,20 @@ class TickRecorder:
         self._dropped = 0
         self.enabled = os.getenv("RECORD_TICKS", "true").lower() == "true"
         self.keep_quote_updates = os.getenv("RECORD_QUOTE_UPDATES", "false").lower() == "true"
+        self.record_book = os.getenv("RECORD_BOOK", "true").lower() == "true"
         self._detector = TradeDetector()                  # 只在 event loop 執行緒呼叫，不需要鎖
 
     # ── 報價進入點呼叫（QuoteHub._inject_quote）──────────────────
     def record(self, code: str, ts: float, price: float, volume: int, tick_type: int,
-               total_volume: int = 0) -> None:
+               total_volume: int = 0, book: tuple | None = None) -> None:
         if not self.enabled or self._thread is None:
             return
         if not self.keep_quote_updates and not self._detector.is_trade(code, volume, total_volume):
             return                                        # 報價更新／重複回報：沒有新資訊，不存
+        if not (book and self.record_book and len(book) == len(BOOK_COLS)):
+            book = NO_BOOK                                # 關閉、沒有、或長度不對（會讓整批 executemany 失敗）→ 盤口欄位留 NULL
         try:
-            self._q.put_nowait((code, ts, price, volume, tick_type, total_volume))
+            self._q.put_nowait((code, ts, price, volume, tick_type, total_volume) + tuple(book))
         except queue.Full:
             self._dropped += 1
             if self._dropped % 10_000 == 1:
@@ -93,8 +122,12 @@ class TickRecorder:
                 total_volume INTEGER NOT NULL DEFAULT 0
             )"""
         )
-        if "total_volume" not in [r[1] for r in conn.execute("PRAGMA table_info(ticks)")]:
+        have = [r[1] for r in conn.execute("PRAGMA table_info(ticks)")]
+        if "total_volume" not in have:
             conn.execute("ALTER TABLE ticks ADD COLUMN total_volume INTEGER NOT NULL DEFAULT 0")   # 舊資料庫升級
+        for col, typ in BOOK_COLS:
+            if col not in have:
+                conn.execute(f"ALTER TABLE ticks ADD COLUMN {col} {typ}")                           # 盤口欄位：舊列留 NULL（SQLite 加欄位不重寫資料表）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ticks_code_ts ON ticks(code, ts)")
         # WAL：寫入不擋讀（回測腳本可同時讀同一個 db）
         conn.execute("PRAGMA journal_mode=WAL")

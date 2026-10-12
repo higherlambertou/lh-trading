@@ -21,3 +21,12 @@ def _preopen_filter_off_by_default(monkeypatch):
     不能因為剛好在 08:30~08:45 或 14:50~15:00 執行就失敗；要測隔離的測試自己打開 qh.FILTER_PREOPEN。"""
     import core.quote_hub as qh
     monkeypatch.setattr(qh, "FILTER_PREOPEN", False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_intraday_context(monkeypatch):
+    """盤中時段脈絡（core/intraday_context.py）是模組層級的單例，會把算好的資料與背景工作留到下一個測試；每個測試換一個新的。"""
+    import core.daily_summary as ds
+    import core.intraday_context as ic
+    monkeypatch.setattr(ic, "intraday_context", ic.IntradayContext())
+    monkeypatch.setattr(ds, "intraday_context", ic.intraday_context)

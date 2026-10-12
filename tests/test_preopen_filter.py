@@ -36,7 +36,7 @@ class Rig:
         self.done_bars: list = []
         self.ls = LiveState()
         monkeypatch.setattr(qh, "live_state", self.ls)
-        monkeypatch.setattr(qh, "tick_recorder", SimpleNamespace(record=lambda *a: self.recorded.append(a)))
+        monkeypatch.setattr(qh, "tick_recorder", SimpleNamespace(record=lambda *a, **k: self.recorded.append(a)))
         self.hub = qh.QuoteHub()
         if not real_bars:
             self.hub.bars = SimpleNamespace(feed=lambda *a: self.fed_bars.append(a) or None)

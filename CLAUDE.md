@@ -173,6 +173,12 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   （vs 近 20 日均）、與盤前判斷是否同向。`QuoteHub._inject_quote` 餵入（包 try/except，絕不影響報價派發）；
   `GET /api/market/live`；前端〈盤中即時〉。判定真實成交：`volume>0` 且 `total_volume` 增加——實測 TMF 行情事件只有 ~27% 是成交，其餘是報價更新。
   買賣方向（`flow_direction`）帶遲滯：外盤占比要超過門檻 2.5 個百分點才轉向、回到門檻內才解除，避免在 60%/40% 上下閃爍（`FLOW_MARGIN`）。
+  **報價事件本來就帶、worker 以前丟掉的欄位**（2026-10-12 實測，update.md 發現 28）：五檔價量、交易所時段累計內外盤（`bid_side_total_vol`＝內盤）、`avg_price`（交易所 VWAP）、`underlying_price`（現貨指數，夜盤凍結）、
+  交易所的時段 `high/low`；`_extract_quote` 現在轉發（五檔放在 `book`，全部附加、任何一個欄位壞掉都不能讓行情掉）。**漲跌的欄位叫 `price_chg`，沒有 `change_price`**（以前讀 `change_price` 永遠是 0，畫面漲跌永遠「—」）。
+  `live_state.feed(..., quote=)` 吃這些：五檔價差／失衡（近 30 秒平均）、VWAP、基差（只在 09:00~13:30 有效）、交易所累計內外盤、開盤後 30／60 分的早盤與之後振幅（`cp`）；
+  日盤高低在「後端開盤後才啟動」時改用交易所的值（自己從開盤就在跑則自己的優先，兩邊不一致會寫 warning）。WebSocket 推播**不含 `book`**（只走 `/api/market/live`）。
+- **`core/intraday_context.py`** — 盤中時段脈絡（只顯示）：各 15 分鐘時段的典型波動倍數、開盤後 30／60 分振幅 → 之後振幅的預期範圍（迴歸，用 TXF 1 分 K 估計）、距收盤倒數、結算日提醒。
+  在背景執行緒每天算一次（`IntradayContext.get` 只回快取，第一次回 None），**R20 只用當天以前**；`python -m core.intraday_context screen|show`。相對成交量與結算日效應的檢驗沒過，不做。
 - **`core/trade_log.py`** — 成交紀錄（`data/trade_log.db`，**無法回補，請備份**）：每筆委託（策略、原因 entry/tp/sl/trail、
   訊號價、停損停利設定價、當時的市場狀態標記）+ 券商成交回報，讀取時以 trade_id join 出實際成交價與滑價。
   掛在 `broker.place_order/place_option_order`（唯一出口）與 `_dispatch`（成交回報）；策略/手動單用 `trade_log.context(...)` 補脈絡
@@ -208,6 +214,7 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   `data/backup/日期/`（`BACKUP_DIR` 可改）；副本轉成單一獨立檔、驗證完整性、保留 `BACKUP_KEEP_DAYS` 天，只清日期命名的資料夾。手動：`python -m core.backup`。
 - **tick 落地**（`core/tick_store.py`）：預設只存真實成交（約 23%）並帶 `total_volume`；`RECORD_QUOTE_UPDATES=true` 恢復全存。
   舊資料用 `python -m core.tick_store compact [--keep-days N] [--apply]` 瘦身（預設只預覽；VACUUM 要獨佔鎖，**先停服務**）。
+  成交列另帶 12 個盤口欄位（`BOOK_COLS`：第一檔買賣價量、五檔總量、第一檔量變化、交易所累計內外盤、均價、現貨），是成交**之後**的盤口；`RECORD_BOOK=false` 關閉，舊資料庫自動補欄位、舊列為 NULL。
 - 測試：`python -m pytest tests -q`（需 numpy、fastapi、httpx；用裝了 shioaji 的 Python 環境）。
 
 > `broker.kbars()` 會佔住 worker（單執行緒）、下單指令排隊，所以只在盤前/盤後用；
