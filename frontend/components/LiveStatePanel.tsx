@@ -51,7 +51,8 @@ function FlowRow({ label, w, up, down }: { label: string; w: FlowWindow | undefi
   );
 }
 
-export default function LiveStatePanel() {
+// compact：放在「交易」分頁時用——版面緊，免責說明縮成一行（完整說明在「市場」分頁的同一個面板）
+export default function LiveStatePanel({ compact = false }: { compact?: boolean }) {
   const [st, setSt] = useState<LiveState | null>(null);
   const [err, setErr] = useState(false);
 
@@ -144,10 +145,14 @@ export default function LiveStatePanel() {
         </div>
       )}
 
+      {compact ? (
+        <p className="text-[10px] text-[#404060]">只顯示、不影響下單；判讀門檻尚未經過歷史驗證，僅供參考（完整說明在「市場」分頁）。</p>
+      ) : (
       <p className="text-[10px] text-[#404060] leading-relaxed">
         只顯示、不影響下單。判讀門檻（100 筆外盤占比 ≥{Math.round(th.flow_up * 100)}% 買方主動、≤{Math.round(th.flow_down * 100)}% 賣方主動{th.flow_margin != null && `，轉向要多超過 ${+(th.flow_margin * 100).toFixed(1)} 個百分點、回到門檻內才解除，避免在門檻上下閃爍`}；
         振幅比 ≥{th.big_move}× 大波動、≤{th.quiet}× 清淡）尚未經過歷史驗證，僅供參考。
       </p>
+      )}
     </div>
   );
 }

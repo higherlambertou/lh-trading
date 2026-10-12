@@ -14,7 +14,7 @@ import IndicatorReplayPanel from "./IndicatorReplayPanel";
 type Tab = "trade" | "market" | "analysis";
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: "trade", label: "交易", hint: "部位、策略、委託、成交" },
+  { id: "trade", label: "交易", hint: "部位、策略、盤中即時、委託、成交" },
   { id: "market", label: "市場", hint: "盤前判斷、盤中買賣力道" },
   { id: "analysis", label: "分析", hint: "破產機率驗證、市場指標回放（只讀歷史資料，不影響交易）" },
 ];
@@ -27,7 +27,8 @@ const GRID = "grid grid-cols-1 lg:grid-cols-2 gap-4";
  *
  * 掛載策略（為什麼不是三頁都直接掛著）：
  *  - 交易：永遠掛著，只用 CSS 隱藏。委託面板有表單輸入與「3 秒內再點一次」的確認狀態，切分頁不能把它洗掉。
- *  - 市場：只在目前這一頁時掛載。兩個面板各自在輪詢（3 秒／15 秒），看不到時沒必要打後端。
+ *    〈盤中即時〉也放在這裡（compact 版），所以它在別的分頁時仍每 3 秒輪詢一次；後端是純記憶體讀取，不碰券商。
+ *  - 市場：只在目前這一頁時掛載。兩個面板各自在輪詢（3 秒／15 秒），看不到時沒必要打後端。〈盤中即時〉在這裡是完整版。
  *  - 分析：第一次點進去才掛載，之後保留（隱藏）。風險與回放載入時會讓後端算一次蒙地卡羅／排列檢定，
  *    沒在看就不該算；而且它們不輪詢，保留下來可以留住你填的參數與結果。
  */
@@ -76,6 +77,7 @@ export default function DashboardTabs() {
               <div className={GRID}>
                 <PositionPanel />
                 <StrategyPanel />
+                <LiveStatePanel compact />
                 <OrderPanel />
                 <TradesPanel />
               </div>
