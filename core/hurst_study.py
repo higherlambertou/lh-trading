@@ -158,9 +158,12 @@ def study(store: MarketStore | None = None, *, seed: int = 11, quiet: bool = Fal
 
 # ── 歷史資料抓取（獨立登入，只讀行情）─────────────────────────────
 
-def fetch_history(days: int = 130, code: str = CODE, store: MarketStore | None = None) -> tuple[int, int]:
+def fetch_history(days: int = 130, code: str = CODE, store: MarketStore | None = None, until: date | None = None,
+                  pause: float = 0.0) -> tuple[int, int]:
     """向券商抓日盤 1 分 K（分段，每段 25 天），存進 bars_1m 與 bars_daily。回傳 (日 K 根數, 1 分 K 筆數)。
-    用 simulation=True 登入（只讀歷史行情、不下單、不動到正式盤連線），結束一定 logout。"""
+    用 simulation=True 登入（只讀歷史行情、不下單、不動到正式盤連線），結束一定 logout。
+    days：從今天往前抓幾天；until：只抓到這一天為止（含；不給＝抓到今天）。券商期貨 1 分 K 最早到 2020-03-02。
+    pause：每段之間停幾秒（抓很多段時對券商客氣一點）。"""
     from core.broker_guard import room_for_login
     ok, why = room_for_login()                    # 登入「之前」先問後端有幾條券商連線，太多就不登入（見 core/broker_guard.py）
     if not ok:
@@ -177,7 +180,7 @@ def fetch_history(days: int = 130, code: str = CODE, store: MarketStore | None =
         now = datetime.now()
         complete_today = now.hour * 100 + now.minute >= 1346
         today = date.today()
-        cursor, end = today - timedelta(days=days), today + timedelta(days=1)
+        cursor, end = today - timedelta(days=days), (until or today) + timedelta(days=1)
         daily: dict[str, dict[str, Any]] = {}
         minutes: list[dict[str, Any]] = []
         while cursor <= end:
@@ -197,6 +200,8 @@ def fetch_history(days: int = 130, code: str = CODE, store: MarketStore | None =
                 minutes += day_session_minutes(raw)
                 print(f"  {cursor} ~ {chunk_end}: 累計日 K {len(daily)} 根")
             cursor = chunk_end + timedelta(days=1)
+            if pause:
+                time.sleep(pause)
         ds = today.isoformat()
         bars = [b for b in daily.values() if b["nbars"] >= 30 and (b["date"] < ds or complete_today)]
         ok = {b["date"] for b in bars}
@@ -217,9 +222,10 @@ def _main() -> None:  # pragma: no cover
     cmd = sys.argv[1] if len(sys.argv) > 1 else "study"
     if cmd == "fetch":
         n = int(sys.argv[2]) if len(sys.argv) > 2 else 130
+        until = date.fromisoformat(sys.argv[3]) if len(sys.argv) > 3 else None          # 例：fetch 2415 2025-09-02（只抓到那一天）
         t0 = time.time()
         try:
-            bars, mins = fetch_history(n)
+            bars, mins = fetch_history(n, until=until, pause=1.0 if n > 200 else 0.0)
         except RuntimeError as e:                    # 連線數保護：不登入
             raise SystemExit(f'不登入：{e}')
         print(f"完成：日 K {bars} 根、日盤 1 分 K {mins} 筆（{time.time() - t0:.0f} 秒）")
