@@ -208,6 +208,29 @@ def test_shutdown_stops_a_running_job(client, monkeypatch):
     assert wait(client, jid, timeout=10)["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("how", ["shutdown", "cancel"])
+def test_a_cancel_that_arrives_before_the_subprocess_exists_still_stops_it(client, monkeypatch, how):
+    """取消發生在背景執行緒把子行程建起來之前（_kill 當時看不到行程就跳過）：行程建好後要補殺，不能讓它把 30 秒（真實是最長 30 分鐘）的回測跑完。
+    用慢速的 Popen 讓這個順序每次都發生，不靠碰運氣。"""
+    use_script(monkeypatch, SLOW_SCRIPT)
+    real_popen = rb.subprocess.Popen
+
+    def slow_popen(*a, **k):
+        time.sleep(0.5)
+        return real_popen(*a, **k)
+
+    monkeypatch.setattr(rb.subprocess, "Popen", slow_popen)
+    jid = client.post("/api/backtest/run", json={}).json()["id"]
+    assert rb.manager.get(jid).proc is None                              # 確認真的在子行程出現之前
+    if how == "shutdown":
+        rb.manager.shutdown()
+    else:
+        assert client.post(f"/api/backtest/jobs/{jid}/cancel").json() == {"cancelled": True}
+    t0 = time.time()
+    assert wait(client, jid, timeout=10)["status"] == "cancelled"
+    assert time.time() - t0 < 8                                          # 沒等到 30 秒的腳本自己結束
+
+
 # ── 資料範圍與端到端 ──────────────────────────────────────────────
 
 def make_store(tmp_path, n_days=40):

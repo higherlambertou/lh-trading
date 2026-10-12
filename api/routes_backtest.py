@@ -186,6 +186,8 @@ class BacktestManager:
             argv = build_argv(job.req, out_path)
             job.proc = subprocess.Popen(argv, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                         bufsize=1, start_new_session=True)
+            if job.cancelled:           # 取消／關機發生在子行程建好之前：那時 _kill 看到 proc 還沒有就跳過了，這裡補殺，否則會把整個回測跑完
+                self._kill(job)
             timer = threading.Timer(JOB_TIMEOUT_SEC, self._on_timeout, args=(job,))
             timer.daemon = True
             timer.start()
