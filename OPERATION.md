@@ -304,6 +304,31 @@ python -m core.backtest --strategy ma_cross --source flow --session night       
   所以不會拖慢下單與報價。`BACKTEST_API=false` 關掉；`BACKTEST_WORKERS`、`BACKTEST_TIMEOUT_SEC` 調整。工作狀態只在後端記憶體，重啟後端就沒了。
   API：`GET /api/backtest/info`（本機有多少資料）、`POST /api/backtest/run`、`GET /api/backtest/jobs[/{id}]`、`POST /api/backtest/jobs/{id}/cancel`。
 
+### 策略構想的檢驗（缺口、前日高低、外資未平倉、波動度標準化）
+
+2026-10-12 對四個策略構想做了檢驗，結果都沒找到優勢（update.md 發現 27）。工具留著，之後新資料累積了可以重跑：
+
+```bash
+python -m core.structure_study                      # 缺口＋前日高低（只讀本機 bars_1m；8 個事先固定的檢定）
+python -m core.structure_study levels               # 只跑前日高低（新資料累積後驗證「突破後失敗」就用這個）
+python -m core.oi_study fetch                       # 下載期交所公開資料到 data/taifex/（補缺的季／月，每次請求間隔 1 秒）
+python -m core.oi_study run                         # 外資期貨未平倉 vs 隔天日盤報酬（3 個事先固定的檢定）
+python -m core.backtest --strategy all --warmup 20 --walk-forward 120,20 --null 6            # 固定點數版（前 20 天只用來算參考振幅）
+python -m core.backtest --strategy all --scaled --walk-forward 120,20 --null 6               # 波動度標準化版：點數型參數改成近 20 日平均日內振幅的倍數
+python -m core.structure_study confirm --start 2020-03-02 --end 2025-09-02    # 前日高低「突破後失敗」的獨立驗證（單一事先固定的單尾檢定）
+python -m core.oi_study fetch --only tx --start-year 2003                     # 期交所 TX 日行情（2003 起，約 280 個檔、7.8 MB）
+python -m core.trend_study                                                    # 慢速順勢（TSMOM120／MA200／Donchian55）對買進持有的 α
+python -m core.vrp_study fetch                                                # 選擇權歷史 ATM IV（2016 起，每月下載一次、只留每天一筆，共約 0.5 MB）
+python -m core.vrp_study run                                                  # IV 與之後實際波動 RV：波動風險溢酬、低／高 IV 的條件檢驗
+python -m core.hurst_study fetch 2415 2025-09-02                              # 券商 1 分 K 補到 2020-03-02（一次模擬盤唯讀登入、登入前先看連線數；2026-10-12 做過了）
+```
+
+- **判定標準在看結果之前就固定**（檢定數量、Bonferroni 門檻、怎麼讀）：換分組、換定義再找，找到的「顯著」就不可信。想測新想法時照同樣做法：先寫下假設與門檻，再跑一次。
+- `data/taifex/` 是下載的公開資料（`oi/`、`tx/`、`vrp/`），只當資料讀（程式會拒絕錯誤頁）；三大法人期貨資料網站只開放最近約 3 年；TX 日行情到 2003 年；選擇權行情到 2001 年。
+- **獨立驗證**：從一份資料看到的現象，要用從沒看過的資料驗證（券商期貨 1 分 K 最早到 2020-03-02，`structure_study confirm` 就是這樣做的）；單一事先固定的檢定，不是再挑一次。
+- **券商歷史資料**：`hurst_study fetch` 是獨立登入（模擬盤、唯讀），一次做完；登入前會問後端目前的連線數（> 3 就不登入），歷史查詢吃流量（約 400 MB／5 年）、盤中不要反覆輪詢。
+- 偵測力有限：每個報告都寫了「看得出多大的效果」；**沒過關不等於沒有效果**，只是這份資料看不出來。
+
 ### 破產機率驗證
 
 ```bash

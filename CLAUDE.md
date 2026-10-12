@@ -132,6 +132,11 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   **前端〈分析〉分頁的〈策略回測〉面板**（`frontend/components/BacktestPanel.tsx`、`frontend/lib/backtest.ts`）走 `api/routes_backtest.py`（`/api/backtest/{info,run,jobs,jobs/{id},jobs/{id}/cancel}`）：
   把 `python -m core.backtest` 放在**獨立子行程**跑（`nice -n 10`、自己的行程群組、同時只跑一個、預設 2 個平行行程、逾時 30 分鐘），**不要改成在交易行程裡跑**（CPU 密集會跟下單、報價搶 GIL）。
   工作狀態只在記憶體；`BACKTEST_API=false`／`BACKTEST_WORKERS`／`BACKTEST_TIMEOUT_SEC`。測試 `tests/test_routes_backtest.py`、`tests/test_frontend_backtest.py`（node 腳本 `tests/frontend/backtest_check.js`）。
+- **策略構想的檢驗**（`core/structure_study.py`、`core/oi_study.py`、`core.backtest --scaled`，update.md 發現 27）：離線分析，不碰交易路徑。**判定標準（檢定數量、Bonferroni 門檻）在跑之前寫進 update.md，每項只跑一次**，
+  不依結果回頭改設計——這是這套檢驗可信的前提。參考振幅 R＝前 20 個時段（高－低）的平均，只用當天以前的資料（`ref_ranges`）；`--scaled` 把點數型參數改成 R 的倍數，固定版與標準化版都要用同樣的 `--warmup`。
+  `core/oi_study.py`、`core/trend_study.py`（TX 日行情 2003 起，連續報酬用「兩天都有成交的最近月合約」避免展期假報酬；**第 k 期的部位只能用第 k−1 日收盤的訊號**）、`core/vrp_study.py`（選擇權歷史 ATM IV，定義重用 `core/iv_monitor`；
+  標準誤以到期月為群組）的資料都是期交所公開下載（`data/taifex/`，只當資料讀、拒絕錯誤頁、請求間隔 1 秒）。`structure_study confirm` 是獨立驗證（單一單尾檢定）。**`bars_1m` 現在是 2020-03-02 起（1,611 天）**：回測與 `structure_study` 預設用全部，要重現舊報告加 `--start 2025-09-03`。
+  測試用「植入已知現象＋隨機漫步上的假陽性率＋與逐筆暴力算法一致＋偷看的金絲雀」，不要只測能跑；合成資料的價格水準與雜訊結構要接近真實（否則成本占比與標準誤會失真）。
 - **`strategies/scalp.py`** — 限價掃單，有自己的 `_phase` 狀態機；
   覆寫 `_on_position_synced()` 在帶倉啟動時把既有部位接管進狀態機（否則會卡在 idle）。
   `max_qty` 是**持倉上限**：進場前 `_entry_gate()` 向券商查 TMF 部位與未成交委託，已有就不進場（查不到也不進；`ENTRY_POSITION_CHECK=false` 關閉）。
