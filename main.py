@@ -25,6 +25,7 @@ from api.routes_quote import router as quote_router
 from api.routes_market import router as market_router, market_state_loop
 from api.routes_tradelog import router as tradelog_router
 from api.routes_risk import router as risk_router
+from api.routes_backtest import router as backtest_router, manager as backtest_manager
 from core.manual_monitor import manual_monitor
 from core.tick_store import tick_recorder
 from core.flow_store import flow_recorder
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
     market_task.cancel()
     tick_recorder.stop()
     flow_recorder.stop()
+    backtest_manager.shutdown()          # 回測子行程不能變成孤兒繼續吃 CPU
     await strategy_engine.stop_all()
     await manual_monitor.shutdown()
     broker.logout()
@@ -118,6 +120,7 @@ app.include_router(quote_router,    prefix="/api/quote",    tags=["quote"])
 app.include_router(market_router,   prefix="/api/market",   tags=["market"])
 app.include_router(tradelog_router, prefix="/api/tradelog", tags=["tradelog"])
 app.include_router(risk_router,     prefix="/api/risk",     tags=["risk"])
+app.include_router(backtest_router, prefix="/api/backtest", tags=["backtest"])
 
 
 @app.get("/api/health")

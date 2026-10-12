@@ -43,6 +43,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+import type { BacktestInfo, BacktestJob, BacktestRequest } from "./backtest";
+
 /** 把 req() 丟出的 `409 — {"detail":"…"}` 還原成後端給的那句說明（FastAPI 的錯誤主體是 JSON），不是 JSON 就原樣回傳。 */
 export function apiErrorDetail(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
@@ -359,6 +361,14 @@ export interface RuinReport {
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
 export const api = {
+  backtest: {
+    info: () => req<BacktestInfo>("/backtest/info"),
+    run: (r: BacktestRequest) =>
+      req<{ id: string }>("/backtest/run", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(r) }),
+    jobs: () => req<BacktestJob[]>("/backtest/jobs"),
+    job: (id: string) => req<BacktestJob>(`/backtest/jobs/${id}`),
+    cancel: (id: string) => req<{ cancelled: boolean }>(`/backtest/jobs/${id}/cancel`, { method: "POST" }),
+  },
   risk: {
     ruin: (q: Record<string, string | number | boolean>) =>
       req<RuinReport>(`/risk/ruin?${new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))}`),
