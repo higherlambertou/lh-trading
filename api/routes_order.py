@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from core.broker import broker
+from core.daytrade import OCTYPES, check_octype
 from core.manual_monitor import manual_monitor, _txo_round_tick
 from core.quote_hub import quote_hub
 from core.trade_log import trade_log
@@ -68,9 +69,19 @@ class ManualOrderRequest(BaseModel):
             raise ValueError("contract 必須是 'TMF', 'MXF' 或 'TXF'")
         return v
 
+    @field_validator("octype")
+    @classmethod
+    def validate_octype(cls, v: str) -> str:
+        if v not in OCTYPES:
+            raise ValueError(f"octype 必須是 {'、'.join(OCTYPES)} 其中之一")
+        return v
+
 
 @router.post("/place")
 async def place_order(req: ManualOrderRequest) -> dict[str, Any]:
+    err = check_octype(req.octype, req.contract)          # 當沖：只有小台／大台、只有日盤（TMF 不適用保證金減半）
+    if err:
+        raise HTTPException(400, err)
     try:
         last = quote_hub.last_price_by_prefix(req.contract)
         basis = req.price or last
@@ -102,6 +113,7 @@ async def place_order(req: ManualOrderRequest) -> dict[str, Any]:
             stop_loss_pts=req.stop_loss_pts,
             take_profit_pts=req.take_profit_pts,
             order_id=str(trade.get("trade_id", "") or ""),
+            octype="DayTrade" if req.octype == "DayTrade" else "Auto",     # 停損停利的平倉單沿用當沖倉別
         )
 
     return {

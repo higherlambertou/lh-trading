@@ -16,6 +16,9 @@ const CONTRACT_OPTIONS: { value: Contract; label: string; sub: string }[] = [
   { value: "TXF", label: "大台 TXFR1", sub: "200元/點" },
 ];
 
+// 期交所「當日沖銷保證金減半」只給小台、大台的日盤（微台不適用）；規則與下單檢查在後端 core/daytrade.py
+const DAYTRADE_CONTRACTS: Contract[] = ["MXF", "TXF"];
+
 function fmtMonth(m: string): string {
   // "202606" → "2026/06"，週選代碼維持原樣
   return /^\d{6}$/.test(m) ? `${m.slice(0, 4)}/${m.slice(4)}` : m;
@@ -48,6 +51,7 @@ export default function OrderPanel() {
   const [contract, setContract] = useState<Contract>("TMF");
   const [priceType, setPriceType] = useState<PriceType>("MKT");
   const [futPrice, setFutPrice] = useState<number | null>(null);
+  const [dayTrade, setDayTrade] = useState(false); // 當沖（倉別 DayTrade）：日盤保證金減半，只有小台／大台
 
   // 選擇權專用
   const [right, setRight] = useState<Right>("C");
@@ -192,6 +196,9 @@ export default function OrderPanel() {
     return true;
   };
 
+  // 微台不適用當沖：換到微台、或切到選擇權時，即使 dayTrade 還是 true 也不送當沖
+  const dayTradeOn = mode === "future" && dayTrade && DAYTRADE_CONTRACTS.includes(contract);
+
   const submitFuture = async () => {
     if (needsArm()) return;
     setBusy(true);
@@ -202,7 +209,7 @@ export default function OrderPanel() {
         price: priceType === "LMT" ? Number(limitPrice) : undefined,
         price_type: priceType,
         order_type: orderType as "ROD" | "IOC" | "FOK",
-        octype: "Auto",
+        octype: dayTradeOn ? "DayTrade" : "Auto",
         contract,
         stop_loss_pts: stopLoss ? Number(stopLoss) : undefined,
         take_profit_pts: takeProfit ? Number(takeProfit) : undefined,
@@ -304,7 +311,10 @@ export default function OrderPanel() {
             return (
               <button
                 key={c.value}
-                onClick={() => setContract(c.value)}
+                onClick={() => {
+                  setContract(c.value);
+                  if (!DAYTRADE_CONTRACTS.includes(c.value)) setDayTrade(false); // 微台沒有當沖優惠，不帶著勾選過去
+                }}
                 className="flex-1 flex flex-col items-center py-2 rounded-lg border text-xs transition-colors"
                 style={{
                   borderColor: active ? "#3b82f680" : "#1e1e3a",
@@ -341,6 +351,31 @@ export default function OrderPanel() {
             帶入限價
           </button>
         </div>
+      )}
+
+      {/* 當沖：期交所保證金減半只給小台、大台的日盤 */}
+      {!isOption && DAYTRADE_CONTRACTS.includes(contract) && (
+        <div className="mb-4 text-xs bg-[#0d0d14] border border-[#1e1e3a] rounded px-3 py-2">
+          <label className="flex items-center gap-2 text-[#e0e0f0] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={dayTrade}
+              onChange={(e) => setDayTrade(e.target.checked)}
+            />
+            當沖（日盤保證金減半）
+          </label>
+          {dayTrade && (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-[#ffb74d]">
+              只限日盤 08:45–13:45；開倉和平倉都要勾（停損停利監控會自動用當沖平倉）；收盤前約 15
+              分鐘須沖掉，否則期貨商強制沖銷；需已向永豐申請當沖資格。
+            </p>
+          )}
+        </div>
+      )}
+      {!isOption && !DAYTRADE_CONTRACTS.includes(contract) && (
+        <p className="mb-4 text-[10px] text-[#404060]">
+          微台沒有當沖保證金減半（期交所只給小台、大台的日盤）
+        </p>
       )}
 
       {/* ── 選擇權：買權/賣權 + 月份 + 履約價 ── */}
@@ -634,7 +669,7 @@ export default function OrderPanel() {
             } ${quantity}口 @ ${limitPrice || "?"}`
           : `確認${isBuy ? "買多" : "賣空"} ${quantity} 口${
               priceType === "LMT" ? ` @ ${limitPrice}` : "（市價）"
-            }`}
+            }${dayTradeOn ? "【當沖】" : ""}`}
       </button>
 
       {result && (

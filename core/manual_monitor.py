@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from core.broker import broker
+from core.daytrade import close_octype
 from core.quote_hub import quote_hub
 from core.trade_log import trade_log
 
@@ -61,6 +62,7 @@ class ManualWatch:
     close_attempts: int = 0        # 已送出幾次平倉單（重送時選擇權限價會逐次放寬）
     retry_after: float = 0.0       # 在此（monotonic）時間之前不可再送平倉單
     close_gave_up: bool = False    # 超過 MAX_CLOSE_ATTEMPTS 仍未平倉：不再自動重送，需人工處理
+    octype: str = "Auto"           # 期貨平倉單的倉別：開倉勾了當沖（DayTrade）就沿用（見 core/daytrade.py）；選擇權固定 Auto
 
 
 class ManualOrderMonitor:
@@ -99,6 +101,7 @@ class ManualOrderMonitor:
         strike_price: int = 0,
         option_right: str = "",
         option_category: str = "TXO",
+        octype: str = "Auto",
     ) -> str:
         watch_id = str(uuid.uuid4())[:8]
         self._watches[watch_id] = ManualWatch(
@@ -118,6 +121,7 @@ class ManualOrderMonitor:
             strike_price=strike_price,
             option_right=option_right,
             option_category=option_category,
+            octype=octype,
         )
         # 選擇權：立刻訂閱報價（fire-and-forget，不阻塞）
         if is_option and delivery_month and strike_price and option_right:
@@ -166,6 +170,7 @@ class ManualOrderMonitor:
                 "match_code": w.match_code,
                 "close_attempts": w.close_attempts,
                 "close_gave_up": w.close_gave_up,
+                "octype": w.octype,
             }
             for w in self._watches.values()
         ]
@@ -391,7 +396,7 @@ class ManualOrderMonitor:
                         price=0,
                         price_type="MKT",
                         order_type="IOC",
-                        octype="Auto",
+                        octype=close_octype(watch.octype),     # 預設 Auto（不變）；開倉是當沖就用當沖平倉，日盤以外退回 Auto
                     )
             trade_id = str(res.get("trade_id", "") or "") if isinstance(res, dict) else ""
             watch.close_order_id, watch.close_qty, watch.close_sent_at = trade_id, qty, now
