@@ -122,8 +122,16 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 - **`strategies/base.py`** — 策略基底。`_go()` 進場、`_check_sl_tp()` 停損停利，
   皆有**重入防護**（先改 state 再 await，避免報價重入時重複下單 / OcType.Auto 反向疊單）。
   `start()` 會 `_sync_position_from_broker()` 與券商對帳既有部位。
+  **平倉單一律明講 `reduce_only=True`**（停損停利、ATR 移動停損、回歸平倉、反手的平倉腿、scalp 停損）：這些呼叫都是先把 `state.position` 歸零再下單，
+  不能靠部位方向推算「是不是平倉」，否則會被風控當成進場單擋掉（update.md 發現 24）；`tests/test_exit_not_blocked.py` 用 AST 檢查。反手時新進場被擋 → 回到空手，不還原成舊部位。
   風控的「當日」＝交易日（`RISK_DAY_START`，預設 15:00 換日）：當日損益 = 累計 − 換日基準（`_day_base`），**已實現損益一律走 `_add_realized()`**
   （它會先換日再記帳；策略裡不要直接 `realized_pnl +=`，`tests/test_risk_day.py` 會檢查）。損益只在記憶體，後端重啟歸零。
+- **`core/backtest.py`** — 回測工具（`python -m core.backtest`，見 OPERATION.md〈回測〉）：驅動**真實的策略類別**（含真的 `place_order` 風控，只把送單換成空操作），
+  樣本內／外、滾動式驗證、打亂資料對照、偵測力。參數網格內建在 `preset_grid()`；`validate_combo()` 擋參數名稱打錯（`_apply_params` 會靜默忽略未知的鍵）。
+  修策略邏輯後可以重跑，看樣本外有沒有變。測試 `tests/test_backtest.py`（手算得出答案的合成資料）。
+  **前端〈分析〉分頁的〈策略回測〉面板**（`frontend/components/BacktestPanel.tsx`、`frontend/lib/backtest.ts`）走 `api/routes_backtest.py`（`/api/backtest/{info,run,jobs,jobs/{id},jobs/{id}/cancel}`）：
+  把 `python -m core.backtest` 放在**獨立子行程**跑（`nice -n 10`、自己的行程群組、同時只跑一個、預設 2 個平行行程、逾時 30 分鐘），**不要改成在交易行程裡跑**（CPU 密集會跟下單、報價搶 GIL）。
+  工作狀態只在記憶體；`BACKTEST_API=false`／`BACKTEST_WORKERS`／`BACKTEST_TIMEOUT_SEC`。測試 `tests/test_routes_backtest.py`、`tests/test_frontend_backtest.py`（node 腳本 `tests/frontend/backtest_check.js`）。
 - **`strategies/scalp.py`** — 限價掃單，有自己的 `_phase` 狀態機；
   覆寫 `_on_position_synced()` 在帶倉啟動時把既有部位接管進狀態機（否則會卡在 idle）。
   `max_qty` 是**持倉上限**：進場前 `_entry_gate()` 向券商查 TMF 部位與未成交委託，已有就不進場（查不到也不進；`ENTRY_POSITION_CHECK=false` 關閉）。
@@ -165,6 +173,17 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   掛在 `broker.place_order/place_option_order`（唯一出口）與 `_dispatch`（成交回報）；策略/手動單用 `trade_log.context(...)` 補脈絡
   （參數叫 `kind`，不要叫 `reason`——`BaseStrategy.place_order` 內有同名區域變數）。純加法：所有 record 吞例外、走獨立 writer thread、
   佇列滿就丟棄；`TRADE_LOG=false` 整個關掉。`GET /api/tradelog/{orders,summary}`、`python -m core.trade_log [天數]`。
+- **進場市場狀態紀錄**（`core/entry_log.py`，需求文件《進場市場狀態紀錄》v1，update.md 發現 25）：**只多記欄位，不改任何交易行為**，為日後驗證 Hurst／IV 有沒有用累積資料。
+  委託送出時 `TradeLog.record_order` 把「當下已有的最新市場狀態」（`daily_summary._set_summary` 掛進 `set_market_tag` 的 `snapshot`）＋停損價＋策略參數存成 `orders.state_json`
+  （取不到記 null＋`missing_reason`，不補 0）；成交回報進來後 `EntrySync`（只在 trade_log 的 writer thread 裡跑）以 **FIFO 淨額**把每筆成交判成進場（寫 `entry_snapshots`）
+  或出場（寫 `exit_fills`，帶損益與出場原因）。冪等：全部 `INSERT OR IGNORE`，重啟時從 `start_event_id:<mode>` 重放；重複送達的同一筆成交用券商的 `deal_ts`／`exchange_seq` 辨識。
+  sim／live 是兩個行程共用 `trade_log.db`，**各自只處理自己模式的成交**。`reconcile` 在啟動時依券商持倉補「功能啟用前就存在的部位」（存在 `entry_log_meta` 的 `legacy:*`，重放時放回同一個位置）。
+  失敗不擋下單：`ENTRYLOG ALERT` ERROR log＋`entry_log.alerts` 計數＋`entry_log_errors`＋`GET /api/tradelog/entries/status`。
+  策略類型 `STRATEGY_TYPES` 是人工定義的表，新增策略要記得補。**沒有任何策略或風控模組可以讀這些欄位**（`tests/test_entry_log.py` 靜態檢查）。
+  `GET /api/tradelog/entries`、`entries.csv`（UTF-8 含 BOM）、`entries/status`。
+- **手動下單的當沖**（`core/daytrade.py`、`api/routes_order.py`、`OrderPanel`，update.md 發現 26）：期交所保證金減半只給 TX／TE／TF／MTX 的日盤，**微台 TMF 不在內**；所以只有手動下單的小台 MXF、大台 TXF 能勾當沖（倉別 `DayTrade`），
+  後端擋 TMF 勾當沖與日盤（週一～五 08:45~13:45）以外勾當沖；`manual_monitor` 的平倉單沿用當沖（日盤以外退回 `Auto`）。**策略一律 `Auto`**（`tests/test_daytrade_order.py` 掃 `strategies/` 不得出現 `DayTrade`）。
+  永豐沒寫當沖單的開平倉怎麼標，「兩邊都標」是常見做法、未實測，第一次先用 1 口小台確認。
 - **手動停損確認**（`core/manual_monitor.py`）：觸發後送出平倉單**不立刻移除監看**，用委託狀態確認——全數成交才移除、沒成交才重送
   （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
   動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。
