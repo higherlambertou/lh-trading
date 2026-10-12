@@ -384,3 +384,208 @@ def test_cli_with_a_custom_grid_and_cost(db, tmp_path, capsys):
 def test_cli_errors_exit_with_2_and_say_why(db, capsys, argv, message):
     assert main(["--db", db, "--workers", "1", *argv]) == 2
     assert message in capsys.readouterr().err
+
+
+# ── 波動度標準化（--scaled）：點數型參數改成「近 N 日平均日內振幅 R 的倍數」──────────────────
+
+def ranged_days(ranges, bars_per_day=8):
+    """每天一個指定的日內振幅（高－低）：第一根 K 棒的高低點撐出振幅，其餘貼著收盤。"""
+    days = {}
+    for k, r in enumerate(ranges):
+        d = (date(2026, 1, 5) + timedelta(days=k)).isoformat()
+        ohlc = [(100, 100 + r, 100, 100)] + [(100, 100, 100, 100)] * (bars_per_day - 1)
+        days[d] = mk(d, ohlc)
+    return days
+
+
+def sim_day(combo, bars, ref=None):
+    import asyncio
+    with bt.patched():
+        return asyncio.run(bt.simulate_day(combo, bars, ref))
+
+
+def test_reference_range_is_the_mean_of_the_previous_sessions_only():
+    days = ranged_days([10, 20, 30, 40, 50])
+    assert bt.ref_ranges(days, 3) == [None, None, None, 20.0, 30.0]            # 第 4 天＝前 3 天（10,20,30）的平均，不含自己
+    # 沒有偷看未來／自己：把最後一天的振幅改得很大，它自己和前面所有天的參考振幅都不變
+    changed = ranged_days([10, 20, 30, 40, 5000])
+    assert bt.ref_ranges(changed, 3) == bt.ref_ranges(days, 3)
+    # 前面的天改了，後面的才會跟著變
+    assert bt.ref_ranges(ranged_days([10, 20, 31, 40, 50]), 3)[3] != 20.0
+
+
+def test_scaled_points_rounds_keeps_zero_as_off_and_never_rounds_a_real_stop_to_zero():
+    assert bt.scaled_points(0, 500) == 0
+    assert bt.scaled_points(0.2, 500) == 100 and bt.scaled_points(0.161, 620) == 100
+    assert bt.scaled_points(0.001, 100) == 1                                  # 0.1 點四捨五入成 0 就等於沒有停損，這比設定錯誤還糟
+
+
+def test_build_strategy_resolves_multiples_for_attributes_and_strategy_params():
+    c = Combo("orb", {"or_minutes": 15}, {"take_profit_pts": 0}, {"stop_loss_pts": 0.2, "buffer_pts": 0.01})
+    s = build_strategy(c, 500.0)
+    assert s.stop_loss_pts == 100 and s.params["buffer_pts"] == 5 and s.params["or_minutes"] == 15 and s.take_profit_pts == 0
+    s2 = build_strategy(c, 250.0)
+    assert s2.stop_loss_pts == 50 and s2.params["buffer_pts"] == 2           # 振幅小一半 → 停損與緩衝跟著小一半（2.5 四捨五入成 2）
+    with pytest.raises(ValueError, match="warmup"):
+        build_strategy(c, None)
+    assert build_strategy(Combo("orb", {"or_minutes": 15}, {"stop_loss_pts": 80})).stop_loss_pts == 80      # 沒有倍數的組合完全不受影響
+
+
+def test_a_scaled_stop_follows_the_reference_range_in_a_simulated_day():
+    # 做多 @120；下一根最低 80、收 105（收在開盤區間 100~110 裡面，不會觸發 orb 的反向進場）
+    bars = mk("2026-01-05", RANGE + [(115, 121, 114, 120)] + [(118, 119, 80, 105)] + flat([105, 105]))
+    combo = Combo("orb", {"or_minutes": 5, "buffer_pts": 0}, {"take_profit_pts": 0}, {"stop_loss_pts": 0.1})
+    assert sim_day(combo, bars, 100.0) == [-10.0]                             # R=100 → 停損 10 點（110）
+    assert sim_day(combo, bars, 200.0) == [-20.0]                             # R=200 → 停損 20 點（100）
+    assert sim_day(combo, bars, 600.0) == [-15.0]                             # R=600 → 停損 60 點（60）碰不到 → 收盤 105 平倉
+    with pytest.raises(ValueError):
+        sim_day(combo, bars, None)
+
+
+def test_scaled_grids_have_the_same_shape_as_the_fixed_grids_and_agree_at_the_median():
+    ref = 500.0
+    for name in bt.STRATEGIES:
+        fixed, scaled = preset_grid(name), preset_grid(name, scaled_ref=ref)
+        assert len(fixed) == len(scaled)
+        keys = bt.POINT_KEYS.get(name, bt.DEFAULT_POINT_KEYS)
+        for f, c in zip(fixed, scaled):
+            at_median = build_strategy(c, ref)
+            baseline = build_strategy(f)
+            for k in keys:
+                fv = {**f.params, **f.base}.get(k)
+                if fv is None:
+                    continue
+                got = getattr(at_median, k) if hasattr(at_median, k) and k in bt.BASE_KEYS else at_median.params[k]
+                assert got == fv, (name, k, fv, got)                                     # 在 R 的中位數那一天，標準化版＝固定版
+                assert (fv == 0) == (k not in c.scaled)                                  # 0（停用）維持 0，不會被換成倍數
+            for k in set({**f.params, **f.base}) - set(keys):
+                assert {**c.params, **c.base}[k] == {**f.params, **f.base}[k]          # 週期、比例、atr_trail_mult 不動
+            assert at_median.params == baseline.params and at_median.stop_loss_pts == baseline.stop_loss_pts
+    assert any(c.scaled for c in preset_grid("orb", scaled_ref=ref)) and not any(c.scaled for c in preset_grid("orb"))
+    with pytest.raises(ValueError):
+        preset_grid("orb", scaled_ref=0)
+
+
+def test_warmup_drops_the_same_days_for_every_combo_and_leaves_fixed_results_unchanged():
+    days = make_days(n=8, bars=30)
+    fixed = Combo("ma_cross", {"short_period": 2, "long_period": 6}, {"stop_loss_pts": 20})
+    full = run1(fixed, days)
+    cut = run_grid([fixed], days, 4.0, workers=1, warmup=3)[0]
+    assert cut.days == list(days)[3:] and len(cut.net) == 5
+    assert list(cut.net) == list(full.net[3:]) and list(cut.n) == list(full.n[3:])      # 每天用全新的策略物件，所以固定版的成績只是少了前幾天
+    for w in (-1, 8, 99):
+        with pytest.raises(ValueError, match="warmup"):
+            run_grid([fixed], days, 4.0, workers=1, warmup=w)
+
+
+def test_a_scaled_combo_without_enough_history_is_refused_with_the_fix_in_the_message():
+    days = ranged_days([100] * 6)
+    c = Combo("breakout", {"lookback": 5}, {}, {"stop_loss_pts": 0.2})
+    with pytest.raises(ValueError, match="--warmup 3"):
+        bt._run_combo(c, days, 4.0, warmup=0, scale_days=3)
+    r = bt._run_combo(c, days, 4.0, warmup=3, scale_days=3)                             # 夠了就能跑
+    assert len(r.days) == 3
+
+
+def test_each_day_is_resolved_with_the_range_of_the_days_before_it(monkeypatch):
+    ranges = [100] * 20 + [200, 400, 800, 100000]
+    days = ranged_days(ranges)
+    seen = []
+    real = bt.build_strategy
+    monkeypatch.setattr(bt, "build_strategy", lambda combo, ref=None: seen.append(ref) or real(combo, ref))
+    c = Combo("breakout", {"lookback": 5}, {}, {"stop_loss_pts": 0.5})
+    with bt.patched():
+        bt._run_combo(c, days, 4.0, warmup=20, scale_days=20)
+    # 第 21~24 天：前 20 天的平均（每一天往前滑一格）；最後一天那個 100000 的大振幅不能影響它自己
+    expect = [float(np.mean(ranges[i - 20:i])) for i in range(20, 24)]
+    assert seen == expect and seen[-1] < 1000
+
+
+def test_analyze_reports_the_trimmed_days_and_says_when_the_grid_is_scaled():
+    days = make_days(n=12, bars=30)
+    fixed = [Combo("ma_cross", {"short_period": 2, "long_period": 6}, {"stop_loss_pts": 20})]
+    scaled = [Combo("ma_cross", {"short_period": 2, "long_period": 6}, {}, {"stop_loss_pts": 0.2})]
+    a = bt.analyze("ma_cross", fixed, days, 4.0, 0.6, 0, None, 1, 3, 3)
+    b = bt.analyze("ma_cross", scaled, days, 4.0, 0.6, 0, None, 1, 3, 3)
+    keys = list(days)
+    assert (a["days"], a["first"], a["warmup"], a["scaled"]) == (9, keys[3], 3, False)
+    assert (b["days"], b["first"], b["warmup"], b["scaled"]) == (9, keys[3], 3, True)
+    assert "前 3 天只用來算參考振幅" in bt.format_report(b) and "振幅倍數" in bt.format_report(b) and "振幅倍數" not in bt.format_report(a)
+    assert "0.2R" in b["rows"][0]["label"]
+
+
+@pytest.mark.parametrize("scaled,message", [
+    ({"nope": 0.1}, "沒有可以用振幅倍數設定的參數"), ({"stop_loss_pts": -1}, "0 以上"), ({"stop_loss_pts": True}, "0 以上"),
+    ({"stop_loss_pts": float("nan")}, "0 以上"), ({"stop_loss_pts": "0.1"}, "0 以上")])
+def test_bad_scaled_parameters_are_refused(scaled, message):
+    with pytest.raises(ValueError, match=message):
+        bt.validate_combo(Combo("breakout", {}, {}, scaled))
+
+
+def test_the_same_parameter_cannot_be_both_fixed_and_scaled():
+    with pytest.raises(ValueError, match="只留一個"):
+        bt.validate_combo(Combo("breakout", {}, {"stop_loss_pts": 100}, {"stop_loss_pts": 0.2}))
+
+
+def test_a_grid_file_can_use_multiples(tmp_path):
+    g = tmp_path / "g.json"
+    g.write_text(json.dumps({"strategy": "orb", "params": {"or_minutes": [15]}, "base": {"take_profit_pts": [0]},
+                             "scaled": {"stop_loss_pts": [0.1, 0.2], "buffer_pts": [0.01]}}), encoding="utf-8")
+    combos = load_grid_file(str(g))
+    assert [c.scaled for c in combos] == [{"stop_loss_pts": 0.1, "buffer_pts": 0.01}, {"stop_loss_pts": 0.2, "buffer_pts": 0.01}]
+
+
+def test_cli_scaled_uses_a_warmup_prints_the_reference_and_runs_the_scaled_grid(db, capsys):
+    assert main(["--db", db, "--strategy", "breakout", "--scaled", "--workers", "1", "--scale-days", "5"]) == 0
+    text = capsys.readouterr().out
+    assert "標準化：參考振幅 R" in text and "前 5 天不納入成績" in text
+    assert "breakout（點數型參數＝振幅倍數）：10 組參數，35 天" in text         # 40 天 − 5 天 warmup
+    assert main(["--db", db, "--strategy", "breakout", "--workers", "1", "--warmup", "5"]) == 0
+    text = capsys.readouterr().out
+    assert "振幅倍數" not in text and "breakout：10 組參數，35 天" in text           # 固定版用同樣的天數
+
+
+def test_which_parameters_get_scaled_is_pinned_down_per_strategy():
+    """哪些參數被當成「點數型」是這項檢驗的核心設計（寫進 update.md 發現 27），不能被悄悄改掉。"""
+    expect = {"orb": {"buffer_pts", "stop_loss_pts"}, "vwap_revert": {"dev_pts", "stop_loss_pts"}}
+    for name in bt.STRATEGIES:
+        got = {k for c in preset_grid(name, scaled_ref=500.0) for k in c.scaled}
+        assert got == expect.get(name, {"stop_loss_pts"}), name
+    # 沒有被換成倍數的軸：週期、比例、atr_trail_mult（本來就是 ATR 的倍數）
+    orb = preset_grid("orb", scaled_ref=500.0)
+    assert {c.base["atr_trail_mult"] for c in orb} == {0.0, 3.0} and {c.params["or_minutes"] for c in orb} == {15, 30, 60}
+    assert {c.scaled["stop_loss_pts"] for c in orb} == {0.1, 0.2, 0.4} and {c.scaled["buffer_pts"] for c in orb} == {0.01, 0.04}
+    assert {c.params["exit_ratio"] for c in preset_grid("vwap_revert", scaled_ref=500.0)} == {0.25, 0.5}
+    # 沒有停損的組合（stop_loss_pts=0）保持沒有停損
+    ma = preset_grid("ma_cross", scaled_ref=500.0)
+    assert sum(1 for c in ma if c.base.get("stop_loss_pts") == 0 and not c.scaled) == 6 and sum(1 for c in ma if c.scaled == {"stop_loss_pts": 0.2}) == 6
+    assert all("stop_loss_pts" not in c.base for c in ma if c.scaled)                  # 換成倍數的那一軸，不會同時留著固定值
+
+
+def test_a_scaled_attribute_that_is_not_a_strategy_parameter_is_set_on_the_object_not_silently_dropped():
+    s = build_strategy(Combo("breakout", {}, {}, {"point_value": 0.01}), 500.0)           # 不是 BASE_KEYS、也不是策略參數的屬性
+    assert s.point_value == 5
+
+
+def test_parallel_workers_give_the_same_answer_as_serial_with_warmup_and_multiples():
+    days = make_days(n=14, bars=30)
+    combos = [Combo("breakout", {"lookback": lb}, {}, {"stop_loss_pts": m}) for lb in (5, 10) for m in (0.5, 1.0)]
+    serial = run_grid(combos, days, 4.0, workers=1, warmup=5, scale_days=5)
+    para = run_grid(combos, days, 4.0, workers=2, warmup=5, scale_days=5)
+    assert [r.days for r in para] == [r.days for r in serial] and all(len(r.days) == 9 for r in para)
+    assert all(np.array_equal(a.net, b.net) and np.array_equal(a.n, b.n) for a, b in zip(serial, para))
+
+
+def test_the_no_skill_comparison_uses_the_same_warmup_and_multiples():
+    days = make_days(n=14, bars=30)
+    combos = [Combo("breakout", {"lookback": 5}, {}, {"stop_loss_pts": 0.5}), Combo("breakout", {"lookback": 10}, {}, {"stop_loss_pts": 0.5})]
+    a = bt.analyze("breakout", combos, days, 4.0, 0.6, 2, (5, 2), 1, 5, 5)
+    assert a["days"] == 9 and len(a["null"]) == 2 and "wf_t" in a["null"][0] and a["walk_forward"]["days"] == 4
+
+
+def test_cli_custom_grid_with_multiples_gets_a_warmup_automatically(db, tmp_path, capsys):
+    g = tmp_path / "g.json"
+    g.write_text(json.dumps({"strategy": "breakout", "params": {"lookback": [5, 10]}, "scaled": {"stop_loss_pts": [0.3]}}), encoding="utf-8")
+    assert main(["--db", db, "--grid", str(g), "--workers", "1", "--scale-days", "5"]) == 0
+    text = capsys.readouterr().out
+    assert "breakout（點數型參數＝振幅倍數）：2 組參數，35 天" in text and "前 5 天只用來算參考振幅" in text

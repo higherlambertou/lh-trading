@@ -23,6 +23,11 @@
      "base":   {"stop_loss_pts": [50, 100], "atr_trail_mult": [0, 3]}}    # 直接設在策略物件上的屬性
     params／base 也可以寫成「物件的陣列」＝一組一組明列（參數有搭配關係時用，例如 [{"short_period":5,"long_period":20}, …]）。
 
+波動度標準化（--scaled）：
+  固定點數的停損／距離會隨行情的波動大小失真（這份資料的近 20 日平均日內振幅從 244 漲到 1,053 點）。--scaled 把內建網格裡「點數型」的參數
+  （停損、orb 的 buffer_pts、vwap_revert 的 dev_pts）改成「近 N 日平均日內振幅 R 的倍數」，R 只用當天以前的資料；倍數＝原本的點數 ÷ R 的中位數。
+  自訂網格可以在 "scaled" 欄位直接寫倍數。用了倍數就需要 --warmup（前 N 天只用來算 R）；要和固定版比較，兩邊都要用同樣的 --warmup。
+
 怎麼讀結果（最容易誤判的地方）：
   - 挑 N 組參數裡「樣本內最好的」，它的樣本內成績本來就會被高估；一定要看樣本外，以及「沒有技巧的打亂資料」同樣流程挑出來的最佳組合長什麼樣。
   - t 值（以「天」為單位）要 |t| > 2 才算有一點證據；挑了很多組時要更高。
@@ -65,10 +70,12 @@ class Combo:
     strategy: str
     params: dict[str, Any] = field(default_factory=dict)      # 策略專屬參數（走 _apply_params）
     base: dict[str, Any] = field(default_factory=dict)        # 直接設在策略物件上的屬性（stop_loss_pts、atr_trail_mult…）
+    scaled: dict[str, float] = field(default_factory=dict)    # 點數型參數，寫成「近 N 日平均日內振幅 R 的倍數」；每天用當天以前的 R 換算成點數
 
     @property
     def label(self) -> str:
         parts = [f"{k}={v}" for k, v in {**self.params, **self.base}.items()]
+        parts += [f"{k}={v:g}R" for k, v in self.scaled.items()]
         return f"{self.strategy} " + " ".join(parts)
 
 
@@ -102,6 +109,13 @@ def validate_combo(combo: Combo) -> None:
     for k in combo.base:
         if not hasattr(s, k):
             raise ValueError(f"{combo.strategy} 沒有屬性 {k!r}")
+    for k, m in combo.scaled.items():
+        if k not in known and not hasattr(s, k):
+            raise ValueError(f"{combo.strategy} 沒有可以用振幅倍數設定的參數 {k!r}")
+        if k in combo.params or k in combo.base:
+            raise ValueError(f"{k!r} 同時寫了固定值和振幅倍數，請只留一個")
+        if isinstance(m, bool) or not isinstance(m, (int, float)) or not math.isfinite(m) or m < 0:
+            raise ValueError(f"振幅倍數 {k}={m!r} 要是 0 以上的數字")
 
 
 def _alternatives(spec: Any) -> list[dict[str, Any]]:
@@ -115,15 +129,38 @@ def _alternatives(spec: Any) -> list[dict[str, Any]]:
     return [dict(zip(keys, vals)) for vals in itertools.product(*axes)] or [{}]
 
 
-def expand_grid(strategy: str, params: Any = None, base: Any = None) -> list[Combo]:
-    out = [Combo(strategy, p, b) for p in _alternatives(params) for b in _alternatives(base)]
+def expand_grid(strategy: str, params: Any = None, base: Any = None, scaled: Any = None) -> list[Combo]:
+    out = [Combo(strategy, p, b, sc) for p in _alternatives(params) for b in _alternatives(base) for sc in _alternatives(scaled)]
     for c in out:
         validate_combo(c)
     return out
 
 
-def preset_grid(name: str) -> list[Combo]:
-    """內建網格：每個策略 10～48 組，涵蓋文件建議值附近的合理範圍（刻意不大，挑得越多組，樣本內最佳的水分越多）。"""
+# --scaled 時哪些「點數型」參數要改成振幅倍數（其餘的週期、比例、atr_trail_mult 本來就和價位無關）
+POINT_KEYS = {"orb": ("buffer_pts", "stop_loss_pts"), "vwap_revert": ("dev_pts", "stop_loss_pts")}
+DEFAULT_POINT_KEYS = ("stop_loss_pts",)
+
+
+def scale_combo(c: Combo, ref: float) -> Combo:
+    """固定點數的參數組 → 標準化版：點數型參數（> 0）改寫成 R 的倍數，倍數＝點數 ÷ ref（ref 取 R 的中位數，所以在那一天兩版完全一樣）；0 代表停用，維持 0。"""
+    params, base, scaled = dict(c.params), dict(c.base), {}
+    for k in POINT_KEYS.get(c.strategy, DEFAULT_POINT_KEYS):
+        for d in (params, base):
+            if k in d and d[k] > 0:
+                scaled[k] = round(d.pop(k) / ref, 3)
+    return Combo(c.strategy, params, base, scaled)
+
+
+def preset_grid(name: str, scaled_ref: Optional[float] = None) -> list[Combo]:
+    """內建網格：每個策略 10～48 組，涵蓋文件建議值附近的合理範圍（刻意不大，挑得越多組，樣本內最佳的水分越多）。
+    scaled_ref 有給＝標準化版（見 scale_combo）：同樣的組數、同樣的結構，只是點數型參數改成振幅倍數。"""
+    if scaled_ref is not None:
+        if scaled_ref <= 0:
+            raise ValueError("scaled_ref 要大於 0")
+        out = [scale_combo(c, scaled_ref) for c in preset_grid(name)]
+        for c in out:
+            validate_combo(c)
+        return out
     tp0 = {"take_profit_pts": [0]}
     if name == "orb":
         return expand_grid(name, {"or_minutes": [15, 30, 60], "buffer_pts": [5, 20]},
@@ -150,7 +187,7 @@ def load_grid_file(path: str) -> list[Combo]:
     spec = json.loads(Path(path).read_text(encoding="utf-8"))
     out: list[Combo] = []
     for item in spec if isinstance(spec, list) else [spec]:
-        out += expand_grid(item["strategy"], item.get("params"), item.get("base"))
+        out += expand_grid(item["strategy"], item.get("params"), item.get("base"), item.get("scaled"))
     return out
 
 
@@ -224,6 +261,29 @@ def surrogate_days(days: Days, seed: int) -> Days:
     return out
 
 
+# ── 參考振幅（波動度標準化用）─────────────────────────────────────
+
+SCALE_DAYS = 20
+
+
+def day_range(bars: list[tuple]) -> float:
+    return max(b[2] for b in bars) - min(b[3] for b in bars)
+
+
+def ref_ranges(days: Days, n: int = SCALE_DAYS) -> list[Optional[float]]:
+    """每一天的「參考振幅 R」＝前 n 個時段（高－低）的平均；前 n 天沒有（None）。只用當天以前的資料，不含當天自己。"""
+    hist: list[float] = []
+    out: list[Optional[float]] = []
+    for d in days:
+        out.append(float(np.mean(hist[-n:])) if len(hist) >= n else None)
+        hist.append(day_range(days[d]))
+    return out
+
+
+def scaled_points(mult: float, ref: float) -> int:
+    return 0 if mult == 0 else max(1, int(round(mult * ref)))
+
+
 # ── 引擎 ──────────────────────────────────────────────────────────
 
 def _patch_enter():
@@ -282,22 +342,30 @@ async def _intrabar(s, high: float, low: float) -> None:
             await s._check_sl_tp(e - tp)
 
 
-def build_strategy(combo: Combo):
-    """依參數組建出設定好的策略物件。"""
+def build_strategy(combo: Combo, ref: Optional[float] = None):
+    """依參數組建出設定好的策略物件。ref＝當天的參考振幅 R（combo 有振幅倍數的參數時必須給）。"""
     s = _make(combo.strategy)
     merged = {**combo.params, **combo.base}
+    attr_keys = set(BASE_KEYS) | set(combo.base)
+    if combo.scaled:
+        if ref is None:
+            raise ValueError("參數用了振幅倍數，但沒有參考振幅（前面的天數不夠算；請加 --warmup）")
+        for k, m in combo.scaled.items():
+            merged[k] = scaled_points(m, ref)
+            if k not in s.params:
+                attr_keys.add(k)
     for k, v in merged.items():
-        if k in BASE_KEYS or k in combo.base:
+        if k in attr_keys:
             setattr(s, k, v)
-    s._apply_params({k: v for k, v in merged.items() if k not in BASE_KEYS and k not in combo.base})
+    s._apply_params({k: v for k, v in merged.items() if k not in attr_keys})
     return s
 
 
-async def simulate_day(combo: Combo, bars: list[tuple]) -> list[float]:
+async def simulate_day(combo: Combo, bars: list[tuple], ref: Optional[float] = None) -> list[float]:
     """跑一天，回傳每筆已平倉的「毛損益（點，未扣成本）」。每天用全新的策略物件（＝每天早上重新啟動）。"""
     from core.bar_builder import Bar
     from strategies.bar_base import BarStrategy
-    s = build_strategy(combo)
+    s = build_strategy(combo, ref)
     holder = {"now": datetime.fromtimestamp(bars[0][0])}
     s._now = lambda: holder["now"]
     s._roll_risk_day()
@@ -331,43 +399,52 @@ class Result:
     wins: np.ndarray         # 每天獲利筆數（扣成本後）
 
 
-def _run_combo(combo: Combo, days: Days, cost: float) -> Result:
+def _run_combo(combo: Combo, days: Days, cost: float, warmup: int = 0, scale_days: int = SCALE_DAYS) -> Result:
+    """warmup：前幾天不納入成績（只用來算參考振幅）；所有參數組用同樣的天數，固定版和標準化版才能比較。"""
+    keys = list(days)
+    if warmup < 0 or warmup >= len(keys):
+        raise ValueError(f"--warmup {warmup} 不合理：資料只有 {len(keys)} 天")
+    refs = ref_ranges(days, scale_days)
+
     async def go():
         n, net, wins = [], [], []
-        for d in days:
-            t = await simulate_day(combo, days[d])
+        for i in range(warmup, len(keys)):
+            if combo.scaled and refs[i] is None:
+                raise ValueError(f"參數用了振幅倍數，但第 {i + 1} 天之前不到 {scale_days} 天可算參考振幅（請加 --warmup {scale_days}）")
+            t = await simulate_day(combo, days[keys[i]], refs[i])
             x = [g - cost for g in t]
             n.append(len(t))
             net.append(float(sum(x)))
             wins.append(sum(1 for v in x if v > 0))
         return n, net, wins
     n, net, wins = asyncio.run(go())
-    return Result(combo, list(days), np.array(n, float), np.array(net, float), np.array(wins, float))
+    return Result(combo, keys[warmup:], np.array(n, float), np.array(net, float), np.array(wins, float))
 
 
 _POOL: dict[str, Any] = {}
 
 
-def _pool_init(days: Days, cost: float) -> None:
-    _POOL["days"], _POOL["cost"] = days, cost
+def _pool_init(days: Days, cost: float, warmup: int = 0, scale_days: int = SCALE_DAYS) -> None:
+    _POOL.update(days=days, cost=cost, warmup=warmup, scale_days=scale_days)
     _patch_enter()                                       # 子行程跑完就結束，不需要還原
 
 
 def _pool_task(combo: Combo) -> Result:
-    return _run_combo(combo, _POOL["days"], _POOL["cost"])
+    return _run_combo(combo, _POOL["days"], _POOL["cost"], _POOL["warmup"], _POOL["scale_days"])
 
 
 def auto_workers() -> int:
     return max(1, min(8, (os.cpu_count() or 2) - 1))
 
 
-def run_grid(combos: list[Combo], days: Days, cost: float = DEFAULT_COST, workers: int = 1) -> list[Result]:
+def run_grid(combos: list[Combo], days: Days, cost: float = DEFAULT_COST, workers: int = 1,
+             warmup: int = 0, scale_days: int = SCALE_DAYS) -> list[Result]:
     if not days:
         raise ValueError("沒有資料可回測（日期範圍內沒有 K 棒）")
     if workers <= 1 or len(combos) < 4:
         with patched():
-            return [_run_combo(c, days, cost) for c in combos]
-    with ProcessPoolExecutor(max_workers=workers, initializer=_pool_init, initargs=(days, cost)) as ex:
+            return [_run_combo(c, days, cost, warmup, scale_days) for c in combos]
+    with ProcessPoolExecutor(max_workers=workers, initializer=_pool_init, initargs=(days, cost, warmup, scale_days)) as ex:
         return list(ex.map(_pool_task, combos, chunksize=2))
 
 
@@ -437,11 +514,12 @@ def walk_forward(results: list[Result], train: int, test: int, metric: str = "t"
 
 
 def null_calibration(combos: list[Combo], days: Days, cost: float, n_sur: int, ratio: float = 0.6,
-                     walk: Optional[tuple[int, int]] = None, workers: int = 1, seed0: int = 1000) -> list[dict[str, float]]:
+                     walk: Optional[tuple[int, int]] = None, workers: int = 1, seed0: int = 1000,
+                     warmup: int = 0, scale_days: int = SCALE_DAYS) -> list[dict[str, float]]:
     """在「沒有技巧」的打亂資料上跑同樣的流程：挑出樣本內最佳組合，看它的樣本外；（可選）也跑 walk-forward。"""
     out = []
     for k in range(n_sur):
-        res = run_grid(combos, surrogate_days(days, seed0 + k), cost, workers)
+        res = run_grid(combos, surrogate_days(days, seed0 + k), cost, workers, warmup, scale_days)
         rows = summarize(res, ratio, cost)
         best = max(rows, key=lambda r: r.is_["t"])
         item = {"best_is_t": best.is_["t"], "oos_t_of_best": best.oos["t"], "best_all_t": max(r.all["t"] for r in rows)}
@@ -455,14 +533,15 @@ def null_calibration(combos: list[Combo], days: Days, cost: float, n_sur: int, r
 # ── 報告 ──────────────────────────────────────────────────────────
 
 def analyze(strategy: str, combos: list[Combo], days: Days, cost: float, ratio: float, n_sur: int,
-            walk: Optional[tuple[int, int]], workers: int) -> dict[str, Any]:
-    results = run_grid(combos, days, cost, workers)
+            walk: Optional[tuple[int, int]], workers: int, warmup: int = 0, scale_days: int = SCALE_DAYS) -> dict[str, Any]:
+    results = run_grid(combos, days, cost, workers, warmup, scale_days)
     rows = summarize(results, ratio, cost)
-    nd = len(days)
-    keys = list(days)
+    keys = results[0].days                                  # 扣掉 warmup 之後實際納入成績的天數
+    nd = len(keys)
     cut = split_index(nd, ratio)
     out: dict[str, Any] = {
         "strategy": strategy, "combos": len(combos), "days": nd, "first": keys[0], "last": keys[-1],
+        "warmup": warmup, "scaled": any(c.scaled for c in combos),
         "split": {"is_days": cut, "oos_days": nd - cut, "oos_from": keys[cut]}, "cost": cost,
         "median_gross_pertrade": float(np.median([r.all["gross_pertrade"] for r in rows])),
         "median_net_pertrade": float(np.median([r.all["pertrade"] for r in rows])),
@@ -479,14 +558,17 @@ def analyze(strategy: str, combos: list[Combo], days: Days, cost: float, ratio: 
         out["walk_forward"] = {k: v for k, v in wf.items() if k != "picks"} | {"train": walk[0], "test": walk[1],
                                                                                  "picks": [list(p) for p in wf["picks"]]}
     if n_sur:
-        out["null"] = null_calibration(combos, days, cost, n_sur, ratio, walk, workers)
+        out["null"] = null_calibration(combos, days, cost, n_sur, ratio, walk, workers, warmup=warmup, scale_days=scale_days)
     return out
 
 
 def format_report(a: dict[str, Any], top: int = 3) -> str:
     L: list[str] = []
     sp = a["split"]
-    L.append(f"══ {a['strategy']}：{a['combos']} 組參數，{a['days']} 天（{a['first']} → {a['last']}），每筆成本 {a['cost']:g} 點 ══")
+    tag = "（點數型參數＝振幅倍數）" if a.get("scaled") else ""
+    L.append(f"══ {a['strategy']}{tag}：{a['combos']} 組參數，{a['days']} 天（{a['first']} → {a['last']}），每筆成本 {a['cost']:g} 點 ══")
+    if a.get("warmup"):
+        L.append(f"（前 {a['warmup']} 天只用來算參考振幅，不納入成績）")
     L.append(f"樣本內 {sp['is_days']} 天、樣本外 {sp['oos_days']} 天（{sp['oos_from']} 起）")
     L.append(f"扣成本前每筆損益（各組中位數）{a['median_gross_pertrade']:+.1f} 點；扣成本後 {a['median_net_pertrade']:+.1f} 點")
     L.append(f"全期淨損益為正的組數 {a['positive_all']}/{a['combos']}；樣本內為正的 {a['is_positive']} 組裡，樣本外仍為正的 {a['is_positive_oos_positive']} 組；"
@@ -533,6 +615,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--walk-forward", help="TRAIN,TEST 天數，例如 120,20")
     ap.add_argument("--top", type=int, default=3)
     ap.add_argument("--workers", type=int, default=0, help="平行行程數；0＝自動")
+    ap.add_argument("--scaled", action="store_true", help="內建網格的點數型參數改成『近 N 日平均日內振幅 R 的倍數』（見模組說明）；會自動用 --warmup")
+    ap.add_argument("--warmup", type=int, default=0, help="前幾天只用來算參考振幅、不納入成績（固定版和標準化版要用同樣的天數才能比較）")
+    ap.add_argument("--scale-days", type=int, default=SCALE_DAYS, help="參考振幅取前幾個時段的平均（預設 20）")
     ap.add_argument("--json", help="把完整結果寫成 JSON")
     args = ap.parse_args(argv)
 
@@ -548,6 +633,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         if walk and len(walk) != 2:
             raise ValueError("--walk-forward 要寫成 TRAIN,TEST，例如 120,20")
         days = load_days(args.db, args.source, args.code, args.session, args.start, args.end)
+        warmup = args.warmup
+        if args.scaled and not args.grid:
+            warmup = max(warmup, args.scale_days)
+            usable = [r for r in ref_ranges(days, args.scale_days)[warmup:] if r is not None]
+            if not usable:
+                raise ValueError(f"資料不夠：要先有 {args.scale_days} 天才算得出參考振幅")
+            ref_med = float(np.median(usable))
+            print(f"標準化：參考振幅 R＝前 {args.scale_days} 個時段（高－低）的平均，中位數 {ref_med:.0f} 點；倍數＝原本的點數 ÷ {ref_med:.0f}；前 {warmup} 天不納入成績\n")
+            names = STRATEGIES if args.strategy == "all" else (args.strategy,)
+            combos = [c for n in names for c in preset_grid(n, scaled_ref=ref_med)]
+        if any(c.scaled for c in combos) and warmup < args.scale_days:
+            warmup = args.scale_days
     except (ValueError, KeyError, OSError) as e:
         print(f"錯誤：{e}", file=sys.stderr)
         return 2
@@ -561,7 +658,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     reports = []
     for name, cs in by.items():
         try:
-            a = analyze(name, cs, days, args.cost, args.split, args.null, walk, workers)
+            a = analyze(name, cs, days, args.cost, args.split, args.null, walk, workers, warmup, args.scale_days)
         except ValueError as e:
             print(f"錯誤：{e}", file=sys.stderr)
             return 2
