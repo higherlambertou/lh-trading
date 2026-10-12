@@ -40,8 +40,8 @@
 | 小修三項 | ✅ 待重啟＋前端重 build | 即時面板外盤占比加遲滯（`flow_direction`）；持倉輪詢失敗退避（5→60 秒）；〈風險〉面板加「無技巧基準勝率」並以它當預設 | 915296b |
 | 逐分鐘外/內盤記錄 `core/flow_store.py` | ✅ 待重啟 | 每分鐘彙總 TMF 真實成交的買／賣／不明 筆數與口數、成交價 OHLC，存進 `market_state.db` 的 `flow_1m`（有每日備份）；背景執行緒批次寫入，任何錯誤都不影響報價派發；開盤前試算行情不會進來；`RECORD_FLOW=false` 可關 | 284c19e |
 | 每日指標歷史＋歷史回補 `core/indicator_history.py` | ✅ 資料已回補（不需重啟） | `daily` 重建每日 Hurst／日 K 方向／IV；`flow-from-ticks` 聚合本機 ticks.db；`flow-fetch` 向券商抓歷史逐筆（帶單次流量上限與保留額度）。單日逐筆約 5～10 MB（每筆約 40 位元組） | 284c19e |
-| 策略構想的檢驗工具 `core/structure_study.py`、`core/oi_study.py`、`core.backtest --scaled` | ✅ 離線分析，不需重啟 | 缺口／前日高低（只讀 `bars_1m`）、外資期貨未平倉（期交所公開資料，`fetch` 下載到 `data/taifex/`）、波動度標準化回測；判定標準在跑之前寫進發現 27；測試 `test_structure_study`、`test_oi_study`、`test_backtest` | — |
-| 慢速順勢與選擇權的檢驗 `core/trend_study.py`、`core/vrp_study.py`；歷史資料 `hurst_study fetch … until`、`oi_study fetch --only tx` | ✅ 離線分析，不需重啟 | TX 日行情 2003 年起（22 年）的慢速順勢 α 檢定；期交所選擇權行情 2016 年起的歷史 ATM IV（定義同 `iv_monitor`）vs 之後實際波動；券商 1 分 K 補到 2020-03-02（一次模擬盤唯讀登入）。判定標準都在跑之前寫進發現 27；測試 `test_trend_study`、`test_vrp_study`、`test_fetch_history` | — |
+| 策略構想的檢驗工具 `core/structure_study.py`、`core/oi_study.py`、`core.backtest --scaled` | ✅ 離線分析，不需重啟 | 缺口／前日高低（只讀 `bars_1m`）、外資期貨未平倉（期交所公開資料，`fetch` 下載到 `data/taifex/`）、波動度標準化回測；判定標準在跑之前寫進發現 27；測試 `test_structure_study`、`test_oi_study`、`test_backtest` | 21fc214 fb7676a 64221a3 |
+| 慢速順勢與選擇權的檢驗 `core/trend_study.py`、`core/vrp_study.py`；歷史資料 `hurst_study fetch … until`、`oi_study fetch --only tx` | ✅ 離線分析，不需重啟 | TX 日行情 2003 年起（22 年）的慢速順勢 α 檢定；期交所選擇權行情 2016 年起的歷史 ATM IV（定義同 `iv_monitor`）vs 之後實際波動；券商 1 分 K 補到 2020-03-02（一次模擬盤唯讀登入）。判定標準都在跑之前寫進發現 27；測試 `test_trend_study`、`test_vrp_study`、`test_fetch_history` | 067be05 8ed0105 c006d88 |
 | 手動下單的當沖 `core/daytrade.py`、〈手動下單〉勾選 | ✅ 待重啟＋前端重 build | 小台 MXF／大台 TXF 可勾「當沖」（倉別 DayTrade，日盤保證金減半）；微台、夜盤、策略不行；停損停利平倉單沿用。**開平倉怎麼標沒實測，先用 1 口小台確認**（發現 26） | 2132e44 |
 | 回測工具＋前端面板 `core/backtest.py`、`api/routes_backtest.py`、〈策略回測〉 | ✅ 待重啟＋前端重 build | 命令列與前端〈分析〉分頁同一套：驅動真實策略類別、樣本內／外、滾動式驗證、打亂資料對照、偵測力；前端經 `/api/backtest/*` 在**獨立子行程**（nice、同時一個、預設 2 平行、逾時 30 分鐘）執行，不拖慢下單；`BACKTEST_API=false` 可關 | bf92376 8b72fad |
 | 券商連線數保護 `core/broker_guard.py` | ✅ | 會另外登入的唯讀工具（`hurst_study fetch`、`flow-fetch`）登入前先問正式盤後端目前幾條連線，登入後最多 4 條（留 1 條給正式盤重啟） | 284c19e |
@@ -388,7 +388,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-12（續 4）— 後續三個方向：獨立驗證、慢速順勢、選擇權（發現 27 ④⑤⑥）— 未 commit
+### 2026-10-12（續 4）— 後續三個方向：獨立驗證、慢速順勢、選擇權（發現 27 ④⑤⑥）— fb7676a 067be05 8ed0105 c006d88 a35ca7b
 - 你說 1~3 都做（前日高低的獨立驗證、慢速順勢、選擇權）。每一項一樣先把假設與判定標準寫進 update.md 才跑、只跑一次：
   ④ **前日高低「突破後失敗」在從沒看過的資料（2020-03 ～ 2025-09，1,279 個事件）上沒有通過**：平均 −0.008R（−1.4 點）、t −0.95；發現樣本是 −0.043R——最可能只是那一年的巧合，假設不再追。
   ⑤ **慢速順勢**（TX 日行情 2003 ～ 2026，22 年）：3 個 α 都是正的（+5.6 ～ +9.6%/年）、前後半同號，但沒有任何一個過關（MA200 t＝2.18 只算線索）；偵測力 ±12.5%/年；**更實際的是帳戶規模：1 口微台名目約 46 萬、權益約 5.2 萬，槓桿近 9 倍**，不適合這類策略。
@@ -402,7 +402,7 @@
 - **結論**：六項（含 ①②③）都沒有找到可上線的優勢。**沒改任何交易行為，沒有需要重啟的東西。**
 - **待你**：不需要做任何事。
 
-### 2026-10-12（續 3）— 三項策略構想的檢驗（發現 27）— 未 commit
+### 2026-10-12（續 3）— 三項策略構想的檢驗（發現 27）— 21fc214 fb7676a 64221a3 a35ca7b
 - 你說照順序做。三項都**先把判定標準寫進 update.md 才跑**，每項只跑一次、不依結果回頭改設計：
   ① 波動度標準化（`core.backtest --scaled`）：7 個策略、滾動式驗證 128 天樣本外——沒有線索（標準化版最高 t −0.19），相對改善只有 2/7，vwap_revert 反而變差（t −2.33）。
   ② 缺口與前日高低（`core/structure_study.py`）：8 個檢定 0 個過關（|t| 最大 1.77）；前日高低 4 個結果方向一致（突破後略為失敗），但不顯著、效果小於偵測力，只能當成待驗證的假設。
