@@ -192,10 +192,11 @@ def _marks_for(legs: list[CloseLeg], chain: dict[str, Any]) -> tuple[list[dict[s
 async def close(req: CloseRequest) -> dict[str, Any]:
     chain, meta = await _get_chain(req.category, req.delivery_month, req.manual)
     marks, modeled = _marks_for(req.legs, chain)
+    closes = await _closes()
     try:
         res = await asyncio.to_thread(
             oc.close_analysis, [l.model_dump() for l in req.legs], F=chain["F"], T=chain["T"], iv=chain["atm_iv"],
-            marks=marks, ref_move=req.move_pts, hold_hours=req.hold_hours)
+            marks=marks, ref_move=req.move_pts, hold_hours=req.hold_hours, closes=closes)
     except ValueError as e:
         raise HTTPException(422, str(e))
     if modeled:

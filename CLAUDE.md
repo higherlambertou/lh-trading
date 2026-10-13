@@ -201,6 +201,12 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   Black-76 與 `iv_monitor` 同一套（T＝日曆天／365、`IV_RATE` 1.5%）；遠期價與 ATM IV 由鏈上買賣平價反推。`analyze` 算成本（照賣價）、損益兩平（分段線性逐段找零點）、Greeks、價格×時間／IV 的損益表、模型與歷史機率；
   `close_analysis`（平倉試算）對「全部持有／只平掉某一腳／全部平掉」各算已實現損益、**淨成本＝全部買進成本 − 已收回的錢**（＝留下的腳到期要值多少才回本＝最大總虧損）與情境表。
   資料：worker `option_chain` 一次 `api.snapshots` 查整個到期月（**只在使用者按下試算時查、5 秒快取，不要輪詢**）；手動模式用 `model_quotes` 造模擬鏈，休市也能用。口數明講 0 要擋（不能默默變 1）。
+- **選擇權的歷史資料與離線檢驗**（update.md 發現 30，全部離線、不碰交易路徑）：`core/option_history.py` 每月下載一次期交所〈選擇權每日交易行情〉、整理成近價鏈存 `data/taifex/opt/chain_YYYY_MM.csv.gz`（2010-01 起，約 13 MB；
+  月選擇權最近 2 個到期月 ±12%、週選擇權距到期 ≤14 天 ±6%，一般＋盤後；`python -m core.option_history fetch|status`，請求間隔 1 秒、錯誤頁不存、失敗的月重跑補抓）。**到期日當天結算價整欄是 0**（TX 也是）：F 改用價內選擇權最後成交價反推最終結算價（散得太開就算不出）；
+  舊檔沒有『契約到期日』欄位，到期日用第三個週三推算，**春節、端午、颱風順延的月份會錯**——`core/option_backtest.py` 用 TX 日行情（`data/taifex/tx/`）該契約最後有成交的日子更正（`expiry_fixes`），到期日算不出最終結算價的週期用 TX 當天收盤補（`rescue`）。
+  `core/option_backtest.py`（`python -m core.option_backtest sanity|run`）驅動 7 個事先登記的檢定：每個月選擇權到期月一個週期、到期後第一個交易日買 ATM 跨式；出場 X0~X3、進場訊號 S1~S3；**訊號只用進場日前一個交易日以前的資料**（`tests` 有金絲雀）、要賣就在下一個交易日收盤照買價賣。
+  `core/option_spread_study.py` 列歷史收盤價差（描述）；`core/hedge_sim.py` 用 TXF 1 分 K 當微台對沖跨式的 Delta（`bars_1m` 是連續月，**到期日最後一根要用 13:30 那根，不是 13:45**）；`core/option_spread_log.py` 盤中每 10 分鐘取樣整條鏈的價差（`OPTION_SPREAD_LOG`，需重啟後端才開始記，存 `data/option_spread.db`，無法回補）。
+  **判定標準在跑之前寫進 update.md、每項只跑一次**；收盤的最後最佳買賣價近年（2024~）價差很寬，多半是失真，不要當真實進出成本。`vrp_study` 曾因沒解析 `20260223` 這種日期格式讓春節順延的月份 T 算錯（已修）。
 - **手動停損確認**（`core/manual_monitor.py`）：觸發後送出平倉單**不立刻移除監看**，用委託狀態確認——全數成交才移除、沒成交才重送
   （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
   動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。

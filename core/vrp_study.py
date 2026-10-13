@@ -62,11 +62,12 @@ def verdict(t: float) -> str:
 
 def _expiry_dt(month: str, raw: str) -> datetime:
     """契約到期日：行情檔有『契約到期日』就用它（遇假日順延的情形才準），沒有就是第三個週三 13:30。"""
-    try:
-        d = datetime.strptime(raw.strip(), "%Y/%m/%d")
-        return d.replace(hour=13, minute=30)
-    except ValueError:
-        return expiry_of(month)
+    for fmt in ("%Y%m%d", "%Y/%m/%d"):                                                # 真實檔案是 20260223；斜線格式是早期寫的假設
+        try:
+            return datetime.strptime(raw.strip(), fmt).replace(hour=13, minute=30)
+        except ValueError:
+            pass
+    return expiry_of(month)
 
 
 def reduce_month(text: str) -> list[dict[str, Any]]:

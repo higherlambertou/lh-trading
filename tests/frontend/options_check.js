@@ -130,6 +130,30 @@ const man = { manual: true, deliveryMonth: "", mF: "49300", mIv: "20.5", mDays: 
   check("試算畫面：手動模式標「手動模型」、沒有到期月", tp.includes("手動模型") && !tp.includes("到期月") && !BAD.test(tp), tp.slice(0, 300));
 }
 {
+  const hs = fx("calc_straddle").hedge, hc = fx("calc_call").hedge;
+  check("對沖文字：賣出／買進／不用對沖", O.hedgeText({ ...hs, tmf_lots: -4, net_delta: 0.8, delta_twd_per_pt: 40, residual_twd_per_pt: 0 }) === "淨 Delta 0.80（約 +40 元/點）→ 賣出 4 口微台可中和，剩 0 元/點"
+    && O.hedgeText({ ...hs, tmf_lots: 3, net_delta: -0.6, delta_twd_per_pt: -30, residual_twd_per_pt: 10 }) === "淨 Delta -0.60（約 −30 元/點）→ 買進 3 口微台可中和，剩 +10 元/點"
+    && O.hedgeText({ ...hs, tmf_lots: 0, net_delta: 0.01, delta_twd_per_pt: 1 }).endsWith("：不用對沖"), O.hedgeText(hs));
+  const t = html(e(P.HedgeCard, { h: hs }));
+  check("對沖卡片：建議口數、打平點與實際波動、成本", t.includes("用微台對沖 Delta（試算，不下單）") && t.includes(O.hedgeText(hs)) && hs.be_rms_pts > 0 && t.includes(`${O.pts(hs.be_rms_pts)} 點`)
+    && t.includes(`市場隱含約 ${O.pts(hs.implied_rms_pts)} 點`) && t.includes(`最近 20 個交易日實際約 ${O.pts(hs.realized_rms_pts)} 點`) && t.includes(`${hs.ratio.toFixed(2)} 倍`)
+    && t.includes("只顯示、不下單"), t);
+  // 成本那一句：要對沖時顯示「每次對沖約付 X」，不用對沖（0 口）時改說每口多少，不要寫「每次對沖約付 0 元」
+  const tl = html(e(P.HedgeCard, { h: { ...hs, tmf_lots: -4, net_delta: 0.8, cost_per_hedge_twd: 120, cost_pts: 3 } }));
+  const tz = html(e(P.HedgeCard, { h: { ...hs, tmf_lots: 0, net_delta: 0.01, cost_per_hedge_twd: 0, cost_pts: 3 } }));
+  check("對沖卡片：成本那一句（要對沖／不用對沖）", tl.includes(`每次對沖約付 ${O.twd(120)}`) && !tl.includes("目前不用對沖")
+    && tz.includes("目前不用對沖") && tz.includes(`每買賣 1 口微台約付 ${O.twd(30)}`) && !tz.includes("每次對沖約付"), [tl.slice(-500), tz.slice(-500)]);
+  // 歷史模擬的結論要寫在卡片上（數字來自 update.md 發現 30 C，改動時兩邊要一起改）
+  check("對沖卡片：歷史模擬的結論（標準差 73%→26～29%、平均賠 −7%／−10～11%、不會變成賺錢）", ["77 個月", "73% 降到 26～29%", "每天對沖 −7%", "−10～11%", "不會讓買跨式變成賺錢", "update.md 發現 30"].every((x) => t.includes(x)), t.slice(-700));
+  const tn = html(e(P.HedgeCard, { h: { ...hs, realized_rms_pts: null, ratio: null } }));
+  check("對沖卡片：沒有歷史收盤時說沒有", tn.includes("沒有歷史收盤可比較") && !tn.includes("最近 20 個交易日"));
+  const tg = html(e(P.HedgeCard, { h: { ...hs, be_rms_pts: null, implied_rms_pts: null, realized_rms_pts: null, ratio: null } }));
+  check("對沖卡片：沒有 Gamma／Theta 時的說明", tg.includes("沒有 Gamma／Theta 可算") && !tg.includes("才賺得回"));
+  const tc = html(e(P.CalcResultView, { r: fx("calc_call") }));
+  check("試算畫面：有對沖卡片、單向 Call 建議賣微台", tc.includes("用微台對沖 Delta") && tc.includes("賣出") && hc.tmf_lots < 0 && !BAD.test(tc), tc.match(BAD));
+  check("對沖卡片沒有 undefined／NaN／null", !BAD.test(t + tn + tg), (t + tn + tg).match(BAD));
+}
+{
   const r = fx("close_doc");
   const t = html(e(P.CloseResultView, { r, sel: "close_1", onSelect: () => {} }));
   check("平倉畫面：各腳、虧損腳與獲利腳", t.includes("虧損腳") && t.includes("獲利腳") && t.includes("買權 Call") && t.includes("賣權 Put"), t.slice(0, 600));
@@ -138,6 +162,8 @@ const man = { manual: true, deliveryMonth: "", mF: "49300", mIv: "20.5", mDays: 
   const a = r.actions.find((x) => x.id === "close_1");
   check("平倉畫面：文件的例子（已實現 −1,500 元、淨成本 80 點、損益兩平 180）", a.realized_pts === -30 && a.net_basis_pts === 80 && t.includes("−1,500") && t.includes("80.0 點") && t.includes("上 180（"), t);
   check("平倉畫面：被選中的動作顯示它的情境表", t.includes("只平掉 賣權 100") && t.includes("價格 × 時間，IV 不變") && t.includes("價格 × IV 平移") && t.includes("留下部位：Delta"), t);
+  const ca = r.actions.find((x) => x.id === "close_1");
+  check("平倉畫面：被選中的動作顯示微台對沖建議、全部平掉沒有", ca.hedge !== null && t.includes("微台對沖：" + O.hedgeText(ca.hedge)) && !html(e(P.CloseResultView, { r, sel: "all", onSelect: () => {} })).includes("微台對沖："), t.slice(-600));
   const tAll = html(e(P.CloseResultView, { r, sel: "all", onSelect: () => {} }));
   check("平倉畫面：全部平掉＝損益固定、沒有情境表", tAll.includes("全部平掉後損益就固定了") && !tAll.includes("價格 × 時間"), tAll);
   const tUnknown = html(e(P.CloseResultView, { r, sel: "nope", onSelect: () => {} }));

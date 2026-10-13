@@ -4,9 +4,9 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import { Calculator } from "lucide-react";
 import { api, apiErrorDetail } from "@/lib/api";
 import {
-  DEFAULT_FORM, DEFAULT_SOURCE, EMPTY_ROW, KIND_HINT, KIND_TEXT, beText, buildCalcRequest, buildCloseRequest, defaultDelta, defaultMonth,
+  DEFAULT_FORM, DEFAULT_SOURCE, EMPTY_ROW, KIND_HINT, KIND_TEXT, beText, buildCalcRequest, buildCloseRequest, defaultDelta, defaultMonth, hedgeText,
   pct1, pnlColor, pts, rightText, rowsFromCalc, sigma, spts, stwd, twd,
-  type CloseRow, type OptCalc, type OptChain, type OptClose, type OptCloseAction, type OptForm, type OptKind, type OptScen, type OptSource,
+  type CloseRow, type OptCalc, type OptChain, type OptClose, type OptCloseAction, type OptForm, type OptHedge, type OptKind, type OptScen, type OptSource,
 } from "@/lib/options";
 
 // 〈選擇權試算〉：買跨式／買勒式／買單向 Call、Put 的成本、損益兩平、Greeks、情境表，以及已買部位的「平倉試算」。
@@ -80,6 +80,36 @@ function Scenarios({ sc, refLabel }: { sc: OptScen; refLabel: string }) {
 
 function Chip({ text, color = MUTED }: { text: string; color?: string }) {
   return <span className="text-[10px] px-1.5 py-0.5 rounded border font-mono whitespace-nowrap" style={{ color, borderColor: `${color}40`, background: `${color}15` }}>{text}</span>;
+}
+
+// 歷史模擬的結論（update.md 發現 30 C；數字改動時 tests/frontend/options_check.js 也要一起改）
+const HEDGE_HISTORY = "歷史模擬（2020-04～2026-08，77 個月的 ATM 跨式，用台指期 1 分 K 當微台）：對沖讓每月報酬率的標準差從 73% 降到 26～29%，但平均是賠的——"
+  + "每天對沖 −7%、每小時或門檻對沖 −10～11%（後兩者在 4 個檢定的校正後仍顯著）。主因是隱含波動平均高於實際波動，再加對沖成本。"
+  + "對沖讓結果變穩，不會讓買跨式變成賺錢；只有實際波動比隱含大才賺（update.md 發現 30）。";
+
+// 用微台對沖 delta（試算，不下單）：現在要買賣幾口微台、對沖後每個交易日要動多少才打平時間價值、最近實際動多少
+export function HedgeCard({ h }: { h: OptHedge }) {
+  return (
+    <div className={CARD}>
+      <div className={TITLE}>用微台對沖 Delta（試算，不下單）</div>
+      <div className="text-[11px] font-mono text-[#e0e0f0]">{hedgeText(h)}</div>
+      {h.be_rms_pts != null ? (
+        <div className="text-[11px] font-mono text-[#7070a0]">
+          對沖後每個交易日的波動（均方根）要超過 <span className="text-[#e0e0f0]">{pts(h.be_rms_pts)} 點</span>才賺得回時間價值（市場隱含約 {pts(h.implied_rms_pts)} 點）
+          {h.realized_rms_pts != null
+            ? <>；最近 20 個交易日實際約 <span className="text-[#e0e0f0]">{pts(h.realized_rms_pts)} 點</span>（是打平點的 {h.ratio?.toFixed(2)} 倍）</>
+            : "；沒有歷史收盤可比較"}
+        </div>
+      ) : <div className="text-[11px] text-[#404060]">沒有 Gamma／Theta 可算（太接近到期或沒有 IV）</div>}
+      <div className="text-[10px] text-[#404060] leading-snug">
+        {h.tmf_lots === 0
+          ? `淨 Delta 接近 0，目前不用對沖；之後每買賣 1 口微台約付 ${twd(h.cost_pts * 10)}（微台買賣價差＋手續費與期交稅，假設每口 ${h.cost_pts} 點）。`
+          : `每次對沖約付 ${twd(h.cost_per_hedge_twd)}（微台買賣價差＋手續費與期交稅，假設每口 ${h.cost_pts} 點）。`}
+        只顯示、不下單；要對沖請自己用〈手動下單〉的微台下。
+      </div>
+      <div className="text-[10px] text-[#7070a0] leading-snug">{HEDGE_HISTORY}</div>
+    </div>
+  );
 }
 
 export function MetaLine({ r }: { r: { source: string; delivery_month: string | null; expiry: string | null; days: number; F: number | null; atm_iv?: number | null; iv?: number | null } }) {
@@ -167,6 +197,8 @@ export function CalcResultView({ r, onToClose }: { r: OptCalc; onToClose?: () =>
         <div><div className="text-[10px] text-[#7070a0]">Vega（IV 每 +1 個波動點）</div><span style={{ color: pnlColor(r.greeks.vega_twd) }}>{stwd(r.greeks.vega_twd)} 元</span> <span className="text-[#404060]">{spts(r.greeks.vega_pts, 1)} 點</span></div>
       </div>
 
+      <HedgeCard h={r.hedge} />
+
       <Scenarios sc={r.scenarios} refLabel={refLabel} />
 
       {r.warnings.length > 0 && (
@@ -249,6 +281,7 @@ export function CloseResultView({ r, sel, onSelect }: { r: OptClose; sel: string
             留下部位：Delta {cur.greeks.delta.toFixed(3)}（{stwd(cur.greeks.delta_twd)} 元/點）· Theta <span style={{ color: pnlColor(cur.greeks.theta_day_twd) }}>{stwd(cur.greeks.theta_day_twd)} 元/天</span> · Vega {stwd(cur.greeks.vega_twd)} 元/IV 點
           </div>
         )}
+        {cur.hedge && <div className="text-[11px] font-mono text-[#7070a0]">微台對沖：{hedgeText(cur.hedge)}</div>}
         {cur.scenarios
           ? <Scenarios sc={cur.scenarios} refLabel={`1σ ＝ ${pts(r.ref_pts)} 點`} />
           : <div className="text-[11px] text-[#7070a0]">全部平掉後損益就固定了：{stwd(cur.realized_twd)} 元（以目前買價賣出）。</div>}

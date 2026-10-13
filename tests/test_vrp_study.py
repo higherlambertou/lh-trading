@@ -329,6 +329,16 @@ def test_the_exchange_expiry_date_column_wins_over_the_third_wednesday_rule():
     assert r["expiry_date"] == "2026-09-17" and r["T_days"] == pytest.approx(16 - 0.0 + (13.5 - 13.75) / 24, abs=0.02)
 
 
+def test_the_real_files_write_the_expiry_column_as_yyyymmdd():
+    """真實檔案（例：2026-02 的 202602 月契約，春節順延到 2026-02-23）的『契約到期日』是 20260223，不是 2026/02/23。
+    以前只認斜線格式，這種檔案會悄悄退回第三個週三（2026-02-18）、T 少算 5 天（update.md 發現 30 補充）。"""
+    T = 20 / 365
+    for raw in ("20260917", "2026/09/17"):
+        r = vs.reduce_month(csv_text(chain("2026/09/01", "202609", 47000.0, 0.2, T, exp=raw)))[0]
+        assert r["expiry_date"] == "2026-09-17"
+    assert vs._expiry_dt("202609", "亂碼").date() == third_wednesday(2026, 9)           # 都解析不了才退回第三個週三
+
+
 def test_the_trading_days_between_the_day_and_the_expiry_must_be_enough():
     g, contracts, iv = synthetic(300, seed=5)
     d = list(iv)[100]

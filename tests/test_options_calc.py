@@ -538,3 +538,60 @@ def test_close_analysis_is_json_safe():
     marks = [{"bid": 78.0, "ask": 82.0}, {"bid": 0.0, "ask": 0.0}]
     res = oc.close_analysis(straddle_legs(), F=130.0, T=5 / 365, iv=0.3, marks=marks)
     json.dumps(res, allow_nan=False)
+
+
+# ── 用微台對沖 delta ──────────────────────────────────────────────
+
+def test_hedge_lots_for_a_long_call_by_hand():
+    F, K, T, iv = 49300.0, 49700.0, 9 / 365, 0.20
+    d = oc.greeks(F, K, T, iv, R, True)["delta"]
+    h = oc.hedge_view([{"right": "C", "strike": K, "qty": 1, "iv": iv}], F, T, R, iv, lots=2)
+    assert h["net_delta"] == pytest.approx(2 * d, abs=0.001) and h["delta_twd_per_pt"] == round(2 * d * 50)         # 2 組 × delta × 每點 50 元
+    assert h["tmf_lots_exact"] == pytest.approx(-2 * d * 50 / 10, abs=0.01) and h["tmf_lots"] == round(-10 * d) < 0     # 買了 Call → 賣微台中和
+    assert h["residual_delta"] == pytest.approx(2 * d + h["tmf_lots"] * 0.2, abs=0.001) and abs(h["residual_delta"]) <= 0.1 + 1e-9   # 1 口微台 ＝ 0.2 個選擇權 delta
+    assert h["cost_per_hedge_twd"] == abs(h["tmf_lots"]) * 3 * 10
+
+
+def test_a_long_put_is_hedged_by_buying_micro_futures():
+    F, K, T, iv = 49300.0, 48800.0, 9 / 365, 0.20
+    h = oc.hedge_view([{"right": "P", "strike": K, "qty": 1, "iv": iv}], F, T, R, iv, lots=3)
+    assert h["net_delta"] < 0 and h["tmf_lots"] > 0 and h["tmf_lots_exact"] > 0 and abs(h["residual_delta"]) <= 0.1 + 1e-9
+
+
+def test_an_atm_straddle_needs_no_hedge_and_its_breakeven_is_the_implied_daily_move():
+    F, T, iv = 49300.0, 30 / 365, 0.20
+    legs = [{"right": "C", "strike": F, "qty": 1, "iv": iv}, {"right": "P", "strike": F, "qty": 1, "iv": iv}]
+    h = oc.hedge_view(legs, F, T, 0.0, iv, closes=None)
+    assert h["tmf_lots"] == 0 and h["cost_per_hedge_twd"] == 0 and abs(h["net_delta"]) < 0.05
+    assert h["be_rms_pts"] == pytest.approx(F * iv * math.sqrt(1.4 / 365), rel=0.01) and h["implied_rms_pts"] == pytest.approx(h["be_rms_pts"], rel=0.01)
+    assert h["realized_rms_pts"] is None and h["ratio"] is None                                                       # 沒有歷史收盤就不比較
+
+
+def test_realized_move_is_the_rms_of_the_last_twenty_daily_changes():
+    F, T, iv = 49300.0, 30 / 365, 0.20
+    legs = [{"right": "C", "strike": F, "qty": 1, "iv": iv}, {"right": "P", "strike": F, "qty": 1, "iv": iv}]
+    closes = [30000.0] + [30000.0 + (100 if i % 2 else 0) for i in range(1, 60)]                                     # 來回 ±100：每天變動的均方根 100
+    h = oc.hedge_view(legs, F, T, 0.0, iv, closes=closes)
+    assert h["realized_rms_pts"] == 100.0 and h["ratio"] == pytest.approx(100 / h["be_rms_pts"], abs=0.01)
+    assert oc.hedge_view(legs, F, T, 0.0, iv, closes=closes[:5])["realized_rms_pts"] is None                         # 資料太少不算
+    assert oc.hedge_view(legs, F, T, 0.0, iv, closes=[0.0] * 30)["realized_rms_pts"] is None
+
+
+def test_hedge_view_degrades_when_there_is_no_gamma_or_theta():
+    h = oc.hedge_view([{"right": "C", "strike": 40000.0, "qty": 1, "iv": 0.2}], 49300.0, 0.0, R, 0.2)               # 到期了：delta 1、其他是 0
+    assert h["be_rms_pts"] is None and h["gamma"] == 0.0 and h["tmf_lots"] == -5 and h["net_delta"] == pytest.approx(1.0, abs=0.001)
+    json.dumps(h, allow_nan=False)
+
+
+def test_analyze_and_close_analysis_carry_the_hedge_view():
+    ch, _ = flat_chain()
+    closes = [30000.0 * (1 + 0.01 * ((-1) ** i)) for i in range(40)]
+    a = oc.analyze(ch, oc.select_legs(ch, "call", select="delta", delta=0.4), kind="call", lots=2, closes=closes)
+    assert a["hedge"]["tmf_lots"] < 0 and a["hedge"]["realized_rms_pts"] is not None and a["hedge"]["be_rms_pts"] > 0
+    legs = [{"right": "C", "strike": 100.0, "qty": 1, "entry": 50.0}, {"right": "P", "strike": 100.0, "qty": 1, "entry": 50.0}]
+    res = oc.close_analysis(legs, F=130.0, T=20 / 365, iv=0.25, marks=[{"bid": 78.0, "ask": 82.0}, {"bid": 20.0, "ask": 20.0}], closes=[30000.0 + i for i in range(30)])
+    assert res["actions"][0]["hedge"] is not None and res["actions"][-1]["hedge"] is None                          # 全部平掉就沒有要對沖的部位
+    keep_call = next(x for x in res["actions"] if x["id"] == "close_1")["hedge"]
+    assert keep_call["tmf_lots"] < 0                                                                              # 只留下價內很深的 Call：賣微台
+    json.dumps(res, allow_nan=False)
+    json.dumps(a, allow_nan=False)

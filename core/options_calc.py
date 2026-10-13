@@ -30,6 +30,8 @@ WARN_DAYS = 3.0                 # 距到期不到這麼多天：Gamma 大、時�
 IV_SANE = (0.03, 1.5)           # 反推出來的 IV 超出這個範圍當作沒有（同 iv_monitor 的 3%~150%）
 SCENARIO_MULTS = (-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0)    # 價格情境：參考波動的倍數
 IV_SHOCKS = (-5.0, -2.5, 0.0, 2.5, 5.0)                               # IV 情境：平移幾個波動點
+TMF_MULT = 10                   # 微台每點 10 元
+HEDGE_COST_PTS = 3.0            # 每口每次對沖的成本（指數點，假設）：買賣價差約 1 點 + 手續費與期交稅約 2 點
 KINDS = ("straddle", "strangle", "call", "put")
 ACTION_HOLD, ACTION_ALL = "hold", "all"
 
@@ -371,6 +373,42 @@ def trading_days(T: float) -> int:
     return max(1, round(T * YEAR_DAYS * 5.0 / 7.0))
 
 
+# ── 用微台對沖 delta ──────────────────────────────────────────────
+
+def hedge_view(legs: Sequence[dict], F: float, T: float, r: float, default_iv: float, *, mult: float = MULT, lots: int = 1,
+               closes: Sequence[float] | None = None, tmf_mult: float = TMF_MULT, cost_pts: float = HEDGE_COST_PTS) -> dict[str, Any]:
+    """買了選擇權、想用微台把 delta 中和（gamma scalping）：現在要買賣幾口微台、對沖之後「每天要動多少才打平時間價值」、最近實際動多少。
+    1 個選擇權單位的 delta d ＝ 標的每動 1 點、部位賺賠 d × 50 元（臺指選擇權每點 50）；微台每點 10 元 → 中和要的微台口數 ＝ −d × 50 / 10（正＝買進、負＝賣出）。
+    對沖後的每天損益 ≈ ½·Γ·(ΔS)² − |Θ|，所以每個交易日的均方根波動要超過 sqrt(2·|Θ|/Γ) 才賺（Θ 是每日曆天、一週有 5 個交易日，所以乘 7/5）。
+    這只是試算：不下單；對沖本身的期望值多半是負的（實際波動通常不比隱含波動大，update.md 發現 30）。"""
+    d = g = th = 0.0
+    for l in legs:
+        x = greeks(F, l["strike"], T, l.get("iv") or default_iv, r, l["right"] == "C")
+        d += l["qty"] * x["delta"]
+        g += l["qty"] * x["gamma"]
+        th += l["qty"] * x["theta"] / YEAR_DAYS
+    net = d * lots
+    exact = -net * mult / tmf_mult
+    n = round(exact)
+    residual = net + n * tmf_mult / mult                       # 對沖後剩下的 delta（選擇權單位；1 口微台 ＝ tmf_mult/mult 個）
+    be = math.sqrt(2.0 * abs(th) * 1.4 / g) if g > 1e-12 and th < 0 else None
+    real = None
+    if closes:
+        c = [x for x in closes[-21:] if x and x > 0]
+        if len(c) >= 11:
+            diffs = [b - a for a, b in zip(c, c[1:])]
+            real = math.sqrt(sum(x * x for x in diffs) / len(diffs))
+    sig = default_iv
+    return {"net_delta": _r1(net, 3), "delta_twd_per_pt": round(net * mult), "tmf_lots": n, "tmf_lots_exact": _r1(exact, 2),
+            "residual_delta": _r1(residual, 3), "residual_twd_per_pt": round(residual * mult),
+            "gamma": _r1(g * lots, 5), "theta_day_twd": round(th * lots * mult),
+            "be_rms_pts": _r1(be, 0) if be else None,
+            "implied_rms_pts": _r1(F * sig * math.sqrt(1.4 / YEAR_DAYS), 0) if sig else None,
+            "realized_rms_pts": _r1(real, 0) if real else None,
+            "ratio": round(real / be, 2) if real and be else None,
+            "cost_per_hedge_twd": round(abs(n) * cost_pts * tmf_mult), "cost_pts": cost_pts}
+
+
 # ── 試算（A）─────────────────────────────────────────────────────
 
 def _greek_sum(legs: Sequence[dict], F: float, T: float, r: float, default_iv: float, mult: float, lots: int) -> dict[str, float]:
@@ -434,6 +472,7 @@ def analyze(chain: dict, legs: Sequence[dict], *, kind: str = "", lots: int = 1,
         "breakeven": be,
         "prob": {"lognormal": _r1(p_ln, 4) if p_ln is not None else None, "hist": hist},
         "greeks": _greek_sum(legs, F, T, r, iv0, mult, lots),
+        "hedge": hedge_view(legs, F, T, r, iv0, mult=mult, lots=lots, closes=closes),
         "scenarios": scenario_tables(legs, F, T, r, cost, em, hold_hours, iv0, mult=mult, lots=lots),
         "warnings": warnings,
     }
@@ -465,7 +504,7 @@ def _marks(legs: Sequence[dict], F: float, T: float, r: float, iv: float | None,
 
 def close_analysis(legs: Sequence[dict], *, F: float, T: float, r: float = RATE, iv: float | None = None,
                    marks: Sequence[dict] | None = None, ref_move: float | None = None, hold_hours: float = 24.0,
-                   mult: float = MULT) -> dict[str, Any]:
+                   mult: float = MULT, closes: Sequence[float] | None = None) -> dict[str, Any]:
     """已持有（買進）的各腳：legs＝[{right, strike, qty, entry}]（entry＝買進價，點）。
     對「全部持有」「只平掉某一腳」「全部平掉」各算：已實現損益（以買價 bid 賣出）、留下來的損益兩平（扣掉已收回的錢）、
     還要再走多少、最大總虧損、情境表（到期與持有 hold_hours 後）與 Greeks。
@@ -509,6 +548,7 @@ def close_analysis(legs: Sequence[dict], *, F: float, T: float, r: float = RATE,
                 "max_loss_pts": _r1(-basis) if keep else _r1(realized), "max_loss_twd": round((-basis if keep else realized) * mult),
                 "remaining_now_pts": _r1(now_val), "need_ratio": round(basis / now_val, 3) if keep and now_val > 0 and basis > 0 else None,
                 "breakeven": _be_view(levels, F, em_rem), "greeks": _greek_sum(keep, F, T, r, iv_ref, mult, 1) if keep else None,
+                "hedge": hedge_view(keep, F, T, r, iv_ref, mult=mult, lots=1, closes=closes) if keep else None,
                 "scenarios": sc}
 
     actions = [action(ACTION_HOLD, "全部持有", set())]

@@ -27,6 +27,7 @@ from api.routes_tradelog import router as tradelog_router
 from api.routes_risk import router as risk_router
 from api.routes_backtest import router as backtest_router, manager as backtest_manager
 from api.routes_options import router as options_router
+from core.option_spread_log import spread_log_loop
 from core.manual_monitor import manual_monitor
 from core.tick_store import tick_recorder
 from core.flow_store import flow_recorder
@@ -80,6 +81,8 @@ async def lifespan(app: FastAPI):
     positions_task = loop.create_task(positions_refresh_loop())
     trades_task    = loop.create_task(trades_refresh_loop())
     market_task    = loop.create_task(market_state_loop())
+    spread_task    = (loop.create_task(spread_log_loop(broker, quote_hub))      # 選擇權買賣價差的時段紀錄（只記錄；OPTION_SPREAD_LOG=false 關閉）
+                      if os.getenv("OPTION_SPREAD_LOG", "true").lower() == "true" else None)
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
     startup_task.cancel()
@@ -87,6 +90,8 @@ async def lifespan(app: FastAPI):
     positions_task.cancel()
     trades_task.cancel()
     market_task.cancel()
+    if spread_task:
+        spread_task.cancel()
     tick_recorder.stop()
     flow_recorder.stop()
     backtest_manager.shutdown()          # 回測子行程不能變成孤兒繼續吃 CPU

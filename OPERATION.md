@@ -396,6 +396,23 @@ curl -s "http://$H/api/options/chain?delivery_month=202610&rows=5" | python3 -m 
 - 買方試算不碰下單與策略。要實際下單還是用〈手動下單〉的選擇權分頁；這裡算出的履約價要自己去那邊填。
 - 測試與核對：`python -m pytest tests/test_options_calc.py tests/test_routes_options.py tests/test_frontend_options.py -q`。
 
+### 選擇權的歷史資料與離線檢驗（update.md 發現 30；唯讀、不下單、不連券商）
+
+```bash
+python -m core.option_history status          # 歷史近價鏈有幾個月（data/taifex/opt/）
+python -m core.option_history fetch           # 補齊缺的月（每月 1 次請求、間隔 1 秒；已結束的月不重抓；失敗的月重跑即可）
+python -m core.option_backtest sanity         # 只看資料處理有沒有對（週期數、進場距到期、報價可用、IV 與 TX 對帳），不算報酬
+python -m core.option_backtest run            # 7 個事先登記的檢定（買 ATM 跨式：出場規則 X0~X3、進場訊號 S1~S3）
+python -m core.option_spread_study run        # 歷史收盤的買賣價差（時段 × 月/週 × 離平值距離 × 年份）
+python -m core.hedge_sim run                  # 用台指期 1 分 K 當微台，對沖跨式的 Delta 的歷史模擬（需要 data/market_state.db 的 TXF 1 分 K）
+python -m core.option_spread_log report       # 盤中取樣的價差（要先讓後端跑一陣子；OPTION_SPREAD_LOG=true、預設每 10 分鐘）
+```
+
+- 這些都是**離線分析**，不需要重啟後端；只有 `option_spread_log` 的取樣迴圈要**重啟後端**才會開始記（每次取樣向券商查一次整條鏈，排在 worker 佇列上；`OPTION_SPREAD_MINUTES` 調間隔，`OPTION_SPREAD_LOG=false` 關掉）。盤中價差無法回補，早開早累積。
+- **請求要節制**：期交所網站每月 1 次、間隔 1 秒，下載到錯誤頁會記失敗不存檔；不要寫迴圈猛打。
+- **判讀要小心**：每個檢定只有約 200 個（回測）或 77 個（對沖）月度週期，報告都附最小可偵測效果（MDE）；沒過關不等於證明沒有。收盤的最後最佳買賣價近年很寬（失真），出場被機械性地看成不利，所以另有『成交價 = 結算價 ± 1.5%』的敏感度。
+- 測試與核對：`python -m pytest tests/test_option_history.py tests/test_option_backtest.py tests/test_option_spread_study.py tests/test_option_spread_log.py tests/test_hedge_sim.py -q`。
+
 ### 備份與 tick 瘦身
 
 **自動備份**：每個交易日 `BACKUP_TIME`（預設 14:00）把 `market_state.db`、`trade_log.db` 備份到 `data/backup/日期/`（`BACKUP_DIR` 可改位置），

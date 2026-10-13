@@ -133,6 +133,11 @@ export interface OptBE { level: number | null; dist_pts: number | null; dist_pct
 export interface OptGreeks {
   delta: number; gamma: number; theta_day_pts: number; vega_pts: number; delta_twd: number; theta_day_twd: number; vega_twd: number;
 }
+export interface OptHedge {
+  net_delta: number; delta_twd_per_pt: number; tmf_lots: number; tmf_lots_exact: number; residual_delta: number; residual_twd_per_pt: number;
+  gamma: number; theta_day_twd: number; be_rms_pts: number | null; implied_rms_pts: number | null; realized_rms_pts: number | null; ratio: number | null;
+  cost_per_hedge_twd: number; cost_pts: number;
+}
 export interface OptScen {
   moves: { mult: number; pts: number; pct: number }[];
   time_cols: { label: string; days: number }[];
@@ -150,6 +155,7 @@ export interface OptCalc extends OptMeta {
   breakeven: OptBE[];
   prob: { lognormal: number | null; hist: { p: number; n: number; h_days: number; abs_move_q: { "50": number; "75": number; "90": number } } | null };
   greeks: OptGreeks;
+  hedge: OptHedge;
   scenarios: OptScen;
   warnings: string[];
 }
@@ -161,7 +167,7 @@ export interface OptCloseAction {
   id: string; label: string; closed: number[];
   realized_pts: number | null; realized_twd: number; proceeds_pts: number | null; net_basis_pts: number | null;
   max_loss_pts: number | null; max_loss_twd: number; remaining_now_pts: number | null; need_ratio: number | null;
-  breakeven: OptBE[]; greeks: OptGreeks | null; scenarios: OptScen | null;
+  breakeven: OptBE[]; greeks: OptGreeks | null; hedge: OptHedge | null; scenarios: OptScen | null;
 }
 export interface OptClose extends OptMeta {
   F: number | null; days: number; iv: number | null; em_sigma_pts: number | null; ref_pts: number | null; entry_total_pts: number | null;
@@ -207,6 +213,13 @@ export const spct = (x: number | null | undefined, d = 2): string => (x == null 
 export const sigma = (x: number | null | undefined): string => (x == null || !Number.isFinite(x) ? "—" : `${x > 0 ? "+" : x < 0 ? MINUS : ""}${Math.abs(x).toFixed(2)}σ`);
 export const rightText = (r: "C" | "P"): string => (r === "C" ? "買權 Call" : "賣權 Put");
 export const pnlColor = (x: number | null | undefined): string => (x == null || x === 0 ? "#7070a0" : x > 0 ? "#00e676" : "#ff1744");
+
+// 微台對沖的建議文字：「賣出 4 口微台可中和（剩 +200 元/點）」；0 口＝不用對沖
+export function hedgeText(h: OptHedge): string {
+  const n = h.tmf_lots;
+  if (n === 0) return `淨 Delta ${h.net_delta.toFixed(2)}（約 ${stwd(h.delta_twd_per_pt)} 元/點）：不用對沖`;
+  return `淨 Delta ${h.net_delta.toFixed(2)}（約 ${stwd(h.delta_twd_per_pt)} 元/點）→ ${n > 0 ? "買進" : "賣出"} ${Math.abs(n)} 口微台可中和，剩 ${stwd(h.residual_twd_per_pt)} 元/點`;
+}
 
 // 損益兩平一行字：「上 50,556（+1,267 點、+2.57%、+0.82σ）」
 export function beText(b: OptBE): string {
