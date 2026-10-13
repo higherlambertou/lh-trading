@@ -207,6 +207,11 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   `core/option_backtest.py`（`python -m core.option_backtest sanity|run`）驅動 7 個事先登記的檢定：每個月選擇權到期月一個週期、到期後第一個交易日買 ATM 跨式；出場 X0~X3、進場訊號 S1~S3；**訊號只用進場日前一個交易日以前的資料**（`tests` 有金絲雀）、要賣就在下一個交易日收盤照買價賣。
   `core/option_spread_study.py` 列歷史收盤價差（描述）；`core/hedge_sim.py` 用 TXF 1 分 K 當微台對沖跨式的 Delta（`bars_1m` 是連續月，**到期日最後一根要用 13:30 那根，不是 13:45**）；`core/option_spread_log.py` 盤中每 10 分鐘取樣整條鏈的價差（`OPTION_SPREAD_LOG`，需重啟後端才開始記，存 `data/option_spread.db`，無法回補）。
   **判定標準在跑之前寫進 update.md、每項只跑一次**；收盤的最後最佳買賣價近年（2024~）價差很寬，多半是失真，不要當真實進出成本。`vrp_study` 曾因沒解析 `20260223` 這種日期格式讓春節順延的月份 T 算錯（已修）。
+- **盤前跨市場資訊紀錄**（`core/premarket_log.py`、`api/routes_premarket.py`、`core/premarket_study.py`，需求文件《盤前跨市場資訊紀錄與驗證》，update.md 發現 31）：每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照——台指期夜盤報酬（基準，本機 `ticks.db`）、費半、台積電 ADR、VIX。
+  **只記錄，不影響任何交易決策**：沒有任何策略或風控模組讀這些欄位（`tests/test_premarket_log.py` 靜態檢查＋啟用前後重播訂單完全相同）；寫入失敗只警示（ERROR log、計數、`premarket_errors`、備援檔 `data/premarket/premarket_errors.jsonl`），不擋任何事。存在 `trade_log.db`（`premarket_snapshots`，資料庫觸發器擋 UPDATE／DELETE：更正＝新增 correction、作廢＝新增 void）。
+  規則：資料時間戳晚於 T 的一律拒絕；美股收盤用 `zoneinfo` 算（夏令 04:00／冬令 05:00 台北，提早收盤日 13:00 ET，VIX 晚 15 分鐘）；**美股休市日該欄位 null＋原因、不沿用前一天**（週一用上週五）；缺值與來源失敗一律 null＋原因、沒有預設值；異常值只標記（`PREMARKET_RANGE_*`，費半、TSM 預設 ±25%）；每個交易日恰好一筆（冪等，部分唯一索引）。
+  **來源**：Yahoo 對這台機器回 429，預設用 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX）（`PREMARKET_SOURCES`；Yahoo 轉接器沒對真實 Yahoo 驗證過；失敗轉移、429 後暫停 6 小時）。**Cboe 的 VIX 歷史在美股休市日也有值（環球交易時段），只用開市日的列**。台股休市用證交所公開日曆（快取；查不到退回『平日』並標 `fallback_weekday`），颱風假事後 `python -m core.premarket_log void 日期 --reason …`。
+  **歷史預檢**（`python -m core.premarket_study fetch|sanity|run`，不連券商）：TX 日行情的**盤後列的交易日期＝它之後那個日盤的交易日**；對齊與特徵直接用 `premarket_log` 的函式（同一套定義）；判定標準事先寫在 update.md、只跑一次。結論：VIX（相對近 20 日平均）對日盤波動有增量，費半沒有；只決定要不要繼續記錄，不決定上線。
 - **手動停損確認**（`core/manual_monitor.py`）：觸發後送出平倉單**不立刻移除監看**，用委託狀態確認——全數成交才移除、沒成交才重送
   （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
   動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。

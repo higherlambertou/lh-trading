@@ -413,6 +413,28 @@ python -m core.option_spread_log report       # 盤中取樣的價差（要先�
 - **判讀要小心**：每個檢定只有約 200 個（回測）或 77 個（對沖）月度週期，報告都附最小可偵測效果（MDE）；沒過關不等於證明沒有。收盤的最後最佳買賣價近年很寬（失真），出場被機械性地看成不利，所以另有『成交價 = 結算價 ± 1.5%』的敏感度。
 - 測試與核對：`python -m pytest tests/test_option_history.py tests/test_option_backtest.py tests/test_option_spread_study.py tests/test_option_spread_log.py tests/test_hedge_sim.py -q`。
 
+### 盤前跨市場資訊紀錄（只記錄、不影響交易；update.md 發現 31）
+
+**重啟後端（空手時）才開始記**；之後每個台股交易日 08:30（`PREMARKET_TIME`）自動一筆，來源失敗的欄位 15 分鐘內每 2 分鐘重試，過了就帶著 null 寫入；後端 08:30 之後才啟動最晚補記到 13:45（資料仍只用 T 之前的，標 `late_seconds`）。
+
+```bash
+python -m core.premarket_log show              # 今天會記什麼（只算、不寫；會真的去抓 Nasdaq／Cboe／證交所各一次）
+python -m core.premarket_log run               # 現在記（只在 T ~ 13:45 之間、休市日不記；已經有了就不動）
+python -m core.premarket_log status            # 有沒有啟用、記了幾筆、今天記了沒、失敗警示
+python -m core.premarket_log export > premarket.csv      # CSV（UTF-8 含 BOM、時間一律台北 +08:00、缺值留空）
+python -m core.premarket_log void 2026-10-14 --reason "颱風假，期交所休市"    # 事後作廢（新增一筆，不改原紀錄）
+python -m core.premarket_log correct 2026-10-14 --patch '{"sox": {"value": 0.01}}' --reason "…"   # 更正（新增一筆指向原紀錄）
+curl -s http://$H:8002/api/premarket/status | python3 -m json.tool
+curl -s "http://$H:8002/api/premarket/snapshots?days=30" | python3 -m json.tool | head -60
+curl -s http://$H:8002/api/premarket/snapshots.csv -o premarket.csv
+```
+
+- 欄位：`txf_night`（夜盤收盤 ÷ 前一個交易日日盤收盤 − 1，本機 `ticks.db`）、`sox`／`tsm`（最近一個已收盤的美股交易日的對數報酬）、`vix`（收盤值；`detail.rel20`＝相對近 20 日平均）。每個欄位都有 `value`、`source`、`source_timestamp`（資料本身的時間，UTC）、`fetched_at`、`missing_reason`、`flag`、`detail`。
+- **null 不是 bug**：美股休市日隔天（`us_closed: …`）、來源失敗（`source_error: …`）、資料還沒更新（`stale_or_missing`）、後端那段時間沒開（`no_ticks`／`incomplete_session`）、異常值（`out_of_range`，原始數字在 `detail.raw_value`）。**不會用前一天的值或預設值補**。
+- **來源**：預設 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX）；Yahoo 這台機器回 429，要試的話 `PREMARKET_SOURCES=yahoo,nasdaq,cboe`（失敗自動換下一個）。都是免費公開端點、不是契約授權，只存檔供個人研究；改版、限流、被擋時欄位會是 null。
+- **歷史預檢**（不連券商、不需要重啟）：`python -m core.premarket_study fetch`（下載日線，每個來源一次請求）→ `sanity`（只看資料處理）→ `run`（4 個事先登記的檢定；墳場紀錄寫進 `premarket_graveyard`）。判定標準在跑之前寫在 update.md 發現 31、只跑一次，**不要為了湊出結果回頭改設計**。
+- 測試：`python -m pytest tests/test_premarket_log.py tests/test_premarket_study.py -q`。
+
 ### 備份與 tick 瘦身
 
 **自動備份**：每個交易日 `BACKUP_TIME`（預設 14:00）把 `market_state.db`、`trade_log.db` 備份到 `data/backup/日期/`（`BACKUP_DIR` 可改位置），
