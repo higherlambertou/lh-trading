@@ -177,6 +177,8 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   交易所的時段 `high/low`；`_extract_quote` 現在轉發（五檔放在 `book`，全部附加、任何一個欄位壞掉都不能讓行情掉）。**漲跌的欄位叫 `price_chg`，沒有 `change_price`**（以前讀 `change_price` 永遠是 0，畫面漲跌永遠「—」）。
   `live_state.feed(..., quote=)` 吃這些：五檔價差／失衡（近 30 秒平均）、VWAP、基差（只在 09:00~13:30 有效）、交易所累計內外盤、開盤後 30／60 分的早盤與之後振幅（`cp`）；
   日盤高低在「後端開盤後才啟動」時改用交易所的值（自己從開盤就在跑則自己的優先，兩邊不一致會寫 warning）。WebSocket 推播**不含 `book`**（只走 `/api/market/live`）。
+  另外追蹤小台、大台的真實成交方向（各合約最近 30 分鐘的 `TimedFlow`，同一套「真實成交」判定、各合約代碼各自去重）：`snapshot()["xc"]` 給近 5／15／30 分鐘的外盤**口數**占比與微台−大台的差（成交少於 10 筆不顯示）。
+  用時間視窗不用「最近 N 筆」，因為各合約的成交頻率差很多；小台與大台**只**進這個比較，不碰微台的最新價、日高低、五檔與逐筆視窗。只顯示、沒驗證過差有沒有意義。
 - **`core/intraday_context.py`** — 盤中時段脈絡（只顯示）：各 15 分鐘時段的典型波動倍數、開盤後 30／60 分振幅 → 之後振幅的預期範圍（迴歸，用 TXF 1 分 K 估計）、距收盤倒數、結算日提醒。
   在背景執行緒每天算一次（`IntradayContext.get` 只回快取，第一次回 None），**R20 只用當天以前**；`python -m core.intraday_context screen|show`。相對成交量與結算日效應的檢驗沒過，不做。
 - **`core/trade_log.py`** — 成交紀錄（`data/trade_log.db`，**無法回補，請備份**）：每筆委託（策略、原因 entry/tp/sl/trail、
@@ -195,6 +197,10 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 - **手動下單的當沖**（`core/daytrade.py`、`api/routes_order.py`、`OrderPanel`，update.md 發現 26）：期交所保證金減半只給 TX／TE／TF／MTX 的日盤，**微台 TMF 不在內**；所以只有手動下單的小台 MXF、大台 TXF 能勾當沖（倉別 `DayTrade`），
   後端擋 TMF 勾當沖與日盤（週一～五 08:45~13:45）以外勾當沖；`manual_monitor` 的平倉單沿用當沖（日盤以外退回 `Auto`）。**策略一律 `Auto`**（`tests/test_daytrade_order.py` 掃 `strategies/` 不得出現 `DayTrade`）。
   永豐沒寫當沖單的開平倉怎麼標，「兩邊都標」是常見做法、未實測，第一次先用 1 口小台確認。
+- **選擇權買方試算**（`core/options_calc.py`、`api/routes_options.py`、worker `option_chain`、前端〈分析〉分頁〈選擇權試算〉，update.md 發現 29）：**純函式、唯讀、不碰下單與策略**。只做買方（最大虧損＝權利金）：買跨式／買勒式／買單向 Call、Put，履約價用 Delta 或「預期波動點數」選。
+  Black-76 與 `iv_monitor` 同一套（T＝日曆天／365、`IV_RATE` 1.5%）；遠期價與 ATM IV 由鏈上買賣平價反推。`analyze` 算成本（照賣價）、損益兩平（分段線性逐段找零點）、Greeks、價格×時間／IV 的損益表、模型與歷史機率；
+  `close_analysis`（平倉試算）對「全部持有／只平掉某一腳／全部平掉」各算已實現損益、**淨成本＝全部買進成本 − 已收回的錢**（＝留下的腳到期要值多少才回本＝最大總虧損）與情境表。
+  資料：worker `option_chain` 一次 `api.snapshots` 查整個到期月（**只在使用者按下試算時查、5 秒快取，不要輪詢**）；手動模式用 `model_quotes` 造模擬鏈，休市也能用。口數明講 0 要擋（不能默默變 1）。
 - **手動停損確認**（`core/manual_monitor.py`）：觸發後送出平倉單**不立刻移除監看**，用委託狀態確認——全數成交才移除、沒成交才重送
   （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
   動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。

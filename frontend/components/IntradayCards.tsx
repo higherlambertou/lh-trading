@@ -1,5 +1,6 @@
+import { Fragment } from "react";
 import type { LiveState } from "@/lib/api";
-import { depthShare, imbalanceText, minutesText, pctPair, price, profileHeights, SESSION_TEXT, signed } from "@/lib/intraday";
+import { depthShare, imbalanceText, minutesText, pct, pctPair, price, profileHeights, SESSION_TEXT, signed } from "@/lib/intraday";
 
 // 盤中即時面板的三張卡片：買賣掛單（五檔）／均價與基差／時段脈絡。
 // 資料來源是報價事件本來就帶的欄位（後端新近才轉發），純顯示、不影響下單；舊後端沒有這些欄位時各卡片顯示「尚無」。
@@ -161,6 +162,35 @@ export function ContextCard({ st }: { st: LiveState }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// 各合約（大台／小台／微台）近 5／15／30 分鐘的外盤占比（口數）並排；放在〈外/內盤〉那張卡片的下面。
+// 只是並排顯示：大台與微台的差有沒有意義沒驗證過，所以不上色、不下判讀。舊後端沒有 xc 欄位就整塊不顯示。
+export function CrossFlow({ st }: { st: LiveState }) {
+  const xc = st.xc;
+  if (!xc) return null;
+  const rows = Object.entries(xc.windows).sort((a, b) => Number(a[0]) - Number(b[0]));
+  const cols = [{ key: "TXF", label: "大台" }, { key: "MXF", label: "小台" }, { key: "TMF", label: "微台" }] as const;
+  return (
+    <div className="pt-2 border-t border-[#1e1e3a] space-y-1">
+      <div className="text-[10px] text-[#7070a0] uppercase tracking-widest">各合約外盤占比（口數）</div>
+      <div className="grid grid-cols-[3.4rem_repeat(4,minmax(0,1fr))] gap-x-1 gap-y-0.5 text-[11px] font-mono whitespace-nowrap">
+        <span />
+        {cols.map((c) => <span key={c.key} className="text-right text-[#7070a0]">{c.label}</span>)}
+        <span className="text-right text-[#7070a0]">微−大</span>
+        {rows.map(([w, r]) => (
+          <Fragment key={w}>
+            <span className="text-[#7070a0]">近 {w} 分</span>
+            {cols.map((c) => <span key={c.key} className="text-right">{pct(r[c.key]?.share)}</span>)}
+            <span className="text-right">{r.gap == null ? "—" : signed(r.gap * 100, 0)}</span>
+          </Fragment>
+        ))}
+      </div>
+      <div className="text-[10px] text-[#404060] leading-snug">
+        成交少於 {xc.min_trades} 筆的格子不顯示；微−大＝微台減大台（百分點）。只是並排顯示，兩者的差有沒有意義沒驗證過。
+      </div>
     </div>
   );
 }

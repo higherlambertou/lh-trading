@@ -33,6 +33,9 @@ EX_MISMATCH_LOG_MAX = 5             # 自己累計的日盤高低和交易所給
 SESSION_OPEN_MIN = 8 * 60 + 45      # 日盤第 0 分鐘（08:45）；早盤／之後振幅以此起算
 EARLY_CHECKPOINTS = (30, 60)        # 開盤後幾分鐘為「早盤」（update.md 發現 28：早盤振幅有助預測之後的振幅）
 BASIS_START_HHMM, BASIS_END_HHMM = 900, 1330     # 現貨指數只在 09:00~13:30 更新；其餘時間（含夜盤）的基差是舊的，不顯示
+XC_PREFIXES = ("TMF", "MXF", "TXF")  # 跨合約外盤占比：微台、小台、大台（TMF 是主要追蹤的合約；小台與大台只算成交方向）
+XC_WINDOWS_MIN = (5, 15, 30)        # 用「時間視窗」比：不同合約的成交頻率差很多，同樣 100 筆在微台是 1 分鐘、在大台可能是 10 分鐘
+XC_MIN_TRADES = 10                  # 視窗內成交少於這麼多筆就不顯示占比（太少，占比沒有意義）
 BIG_MOVE = 1.5                      # 日盤振幅 / 近 20 日均振幅 >= 此值 → 大波動（與 stats 的 big_move 一致）
 QUIET = 0.6                         # <= 此值 → 清淡
 
@@ -76,6 +79,37 @@ def flow_direction(share: float | None, prev: int = 0, up: float = FLOW_UP, down
     if share <= down - margin:
         return -1
     return 0
+
+
+class TimedFlow:
+    """某個合約最近一段時間的真實成交（時間、方向 1=外盤／2=內盤、口數）；只保留最長視窗那麼久。"""
+
+    def __init__(self, keep_sec: float) -> None:
+        self.keep_sec = keep_sec
+        self._d: deque[tuple[float, int, int]] = deque()
+
+    def add(self, ts: float, side: int, vol: int) -> None:
+        if self._d and ts < self._d[-1][0]:
+            ts = self._d[-1][0]                      # 時間戳偶爾亂序（後到的那筆更舊）：當作同一時刻，deque 永遠由舊到新，stats 才能提早結束
+        self._d.append((ts, side, vol))
+        cutoff = ts - self.keep_sec
+        while self._d and self._d[0][0] < cutoff:
+            self._d.popleft()
+
+    def stats(self, now: float, window_sec: float) -> dict[str, int]:
+        """now 往前 window_sec 秒內：成交筆數、外盤筆數、外盤口數、內盤口數。"""
+        lo = now - window_sec
+        n = buy_n = buy_v = sell_v = 0
+        for ts, side, vol in reversed(self._d):
+            if ts < lo:
+                break
+            n += 1
+            if side == 1:
+                buy_n += 1
+                buy_v += vol
+            else:
+                sell_v += vol
+        return {"n": n, "buy_n": buy_n, "buy_vol": buy_v, "sell_vol": sell_v}
 
 
 def book_stats(book: dict | None) -> dict[str, Any] | None:
@@ -128,12 +162,16 @@ class LiveState:
         self._ex_mismatch = 0
         self._ex_mismatch_logged = 0
         self._cp: dict[int, dict[str, list[float | None]]] = {}       # 開盤後 c 分鐘的早盤（early）與之後（post）的 [高, 低]
+        self._xc = {p: TimedFlow(max(XC_WINDOWS_MIN) * 60) for p in XC_PREFIXES}       # 各合約最近 30 分鐘的真實成交（跨合約比較）
 
     # ── 餵資料（event loop 執行緒）────────────────────────────────
     def feed(self, code: str, price: float, volume: int, total_volume: int, tick_type: int, ts: float,
              quote: dict | None = None) -> None:
         """quote＝QuoteHub 收到的整包行情 dict（可省略）：有的話順便吃五檔、交易所均價／累計內外盤／現貨指數／日盤高低。"""
-        if not code.startswith(self.prefix) or not price:
+        if not price:
+            return
+        if not code.startswith(self.prefix):
+            self._feed_peer(code, volume, total_volume, tick_type, ts)        # 小台、大台：只算成交方向（跨合約比較用）
             return
         self.last_price, self.last_ts = price, ts
         lt = time.localtime(ts)
@@ -161,6 +199,15 @@ class LiveState:
         if tick_type in (1, 2):
             self._trades.append((ts, tick_type, int(volume)))
             self._update_dirs()
+            if self.prefix in self._xc:
+                self._xc[self.prefix].add(ts, tick_type, int(volume))
+
+    def _feed_peer(self, code: str, volume: int, total_volume: int, tick_type: int, ts: float) -> None:
+        pfx = next((p for p in XC_PREFIXES if p != self.prefix and code.startswith(p)), None)
+        if pfx is None:
+            return
+        if self._detector.is_trade(code, volume, total_volume) and tick_type in (1, 2):      # 同一套「真實成交」判定（每個合約代碼各自去重）
+            self._xc[pfx].add(ts, tick_type, int(volume))
 
     def _track_checkpoints(self, price: float, minute: int) -> None:
         """開盤後第 minute 分鐘（08:45 起算）的價格，記進各檢查點的「早盤」（< c 分）或「之後」（>= c 分）的高低。"""
@@ -259,6 +306,7 @@ class LiveState:
             "ex_range": ({"high": self._ex_hi, "low": self._ex_lo, "mismatch": self._ex_mismatch}
                          if self._ex_hi is not None else None),
             "cp": self._checkpoints(own_partial),
+            "xc": self._xc_view(now),
         }
 
     # ── snapshot 的附加區塊 ───────────────────────────────────────
@@ -295,6 +343,21 @@ class LiveState:
             return None
         return {"spot": ex["underlying_price"], "value": round(self.last_price - ex["underlying_price"], 1),
                 "valid": BASIS_START_HHMM <= ex["hhmm"] < BASIS_END_HHMM}
+
+    def _xc_view(self, now: float) -> dict[str, Any]:
+        """各合約近 5／15／30 分鐘的外盤占比（口數）；gap＝微台 − 大台。成交不到 XC_MIN_TRADES 筆的占比是 None。"""
+        windows: dict[str, Any] = {}
+        for w in XC_WINDOWS_MIN:
+            row: dict[str, Any] = {}
+            for p in XC_PREFIXES:
+                st = self._xc[p].stats(now, w * 60)
+                tot = st["buy_vol"] + st["sell_vol"]
+                row[p] = {"n": st["n"], "vol": tot,
+                          "share": round(st["buy_vol"] / tot, 3) if st["n"] >= XC_MIN_TRADES and tot > 0 else None}
+            a, b = row["TMF"]["share"], row["TXF"]["share"]
+            row["gap"] = round(a - b, 3) if a is not None and b is not None else None
+            windows[str(w)] = row
+        return {"min_trades": XC_MIN_TRADES, "windows": windows}
 
     def _checkpoints(self, own_partial: bool) -> dict[str, Any] | None:
         """各檢查點的早盤振幅與之後已走的振幅。不是從開盤就在跑（重啟）→ None（早盤那段不完整，不能拿來預測）。"""

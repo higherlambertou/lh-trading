@@ -227,6 +227,31 @@ def _opt_right(c) -> str:
     return str(getattr(r, "value", r)).upper()
 
 
+def _chain_quotes(contracts, snaps) -> list[dict]:
+    """選擇權合約與對應的 snapshots（依 code 配對）→ 純 dict 的報價列：{code, strike, right('C'|'P'), bid, ask, close, volume,
+    total_volume, bid_vol, ask_vol, ts}。配不到快照、履約價或買賣權看不懂的合約略過。"""
+    by = {str(getattr(s, "code", "")): s for s in snaps}
+    out = []
+    for c in contracts:
+        s = by.get(str(getattr(c, "code", "")))
+        if s is None:
+            continue
+        try:
+            strike = float(c.strike_price)
+        except (TypeError, ValueError):
+            continue
+        cr = _opt_right(c).split(".")[-1]                      # 列舉的 .value 是 "C"／"P"；字串形式 "OptionRight.Call" 也認得
+        right = "C" if cr.startswith("C") else "P" if cr.startswith("P") else ""
+        if not right:
+            continue
+        g = lambda name: float(getattr(s, name, 0) or 0)      # noqa: E731
+        out.append({"code": str(getattr(c, "code", "")), "strike": strike, "right": right,
+                    "bid": g("buy_price"), "ask": g("sell_price"), "close": g("close"), "volume": g("volume"),
+                    "total_volume": g("total_volume"), "bid_vol": g("buy_volume"), "ask_vol": g("sell_volume"),
+                    "ts": float(getattr(s, "ts", 0) or 0) / 1e9})
+    return out
+
+
 def _extract_position(p) -> dict:
     direction = getattr(p, "direction", None)
     return {
@@ -507,6 +532,21 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
                     "ask": float(getattr(s, "sell_price", 0) or 0),
                     "total_volume": int(getattr(s, "total_volume", 0) or 0),
                 }
+
+            elif method == "option_chain":
+                # 一次查整個到期月的選擇權鏈（api.snapshots 一次最多 500 檔；這裡每 200 檔一批）。center 給了就取離它最近的 max_n 檔。
+                dm = str(cmd["delivery_month"])
+                contracts = [c for c in _list_option_contracts(cmd.get("category", "TXO")) if str(c.delivery_month) == dm]
+                if not contracts:
+                    raise ValueError(f"找不到選擇權到期月: {cmd.get('category', 'TXO')} {dm}")
+                if cmd.get("center"):
+                    contracts.sort(key=lambda c: abs(float(c.strike_price) - float(cmd["center"])))
+                contracts = contracts[: int(cmd.get("max_n") or 400)]
+                snaps = []
+                for i in range(0, len(contracts), 200):
+                    snaps += api.snapshots(contracts[i:i + 200])
+                result = {"delivery_month": dm, "delivery_date": str(getattr(contracts[0], "delivery_date", "")),
+                          "quotes": _chain_quotes(contracts, snaps)}
 
             elif method == "option_expiries":
                 contracts = _list_option_contracts(cmd.get("category", "TXO"))

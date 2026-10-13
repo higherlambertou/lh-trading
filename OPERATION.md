@@ -369,6 +369,33 @@ python -m core.ruin --capital 51482 --tp 20 --sl 60 --win 0.65 --cost-pts 2
 
 結果對**勝率與賺賠比非常敏感**；模型假設每筆獨立、損益固定，不含跳空與滑價，所以是「下限的提醒」不是預言。`cost_pts` 要自己填（手續費＋稅＋滑價折成點）。
 
+### 選擇權試算（買方，唯讀、不下單；update.md 發現 29）
+
+重啟後端（空手時）＋前端重 build 後，在〈分析〉分頁的〈選擇權試算〉使用；也可以直接打 API。**即時模式每次試算向券商查一次整個到期月的鏈**（5 秒內同一個月用快取），不要寫腳本輪詢（worker 單執行緒、行情查詢有額度）。
+
+```bash
+H=100.127.125.13:8002
+# 即時：ATM 買跨式（delivery_month 用 /api/order/option/expiries 查得到的月份）
+curl -s -X POST http://$H/api/options/calc -H 'Content-Type: application/json' \
+  -d '{"kind":"straddle","delivery_month":"202610","lots":1,"budget_twd":80000}' | python3 -m json.tool | head -80
+# 勒式：兩翼 |Delta| 0.25；或改用預期波動（距離＝k × 預期波動，move_pts 自己填預期波動的點數、留空＝市場隱含 1σ）
+curl -s -X POST http://$H/api/options/calc -H 'Content-Type: application/json' \
+  -d '{"kind":"strangle","select":"move","k":0.5,"move_pts":800,"delivery_month":"202610"}' | python3 -m json.tool | head -60
+# 手動（休市、沒連券商也能用）：自己給遠期價、ATM IV（%）、距到期天數
+curl -s -X POST http://$H/api/options/calc -H 'Content-Type: application/json' \
+  -d '{"kind":"call","select":"delta","delta":0.4,"manual":{"F":49300,"iv":20.5,"days":9}}' | python3 -m json.tool | head -60
+# 平倉試算：已買的各腳（買進價是點）；目前買價／賣價（bid／ask）選填
+curl -s -X POST http://$H/api/options/close -H 'Content-Type: application/json' \
+  -d '{"legs":[{"right":"C","strike":49300,"qty":1,"entry":740},{"right":"P","strike":49300,"qty":1,"entry":560}],"delivery_month":"202610"}' | python3 -m json.tool | head -80
+# 鏈摘要：遠期價、ATM IV、距到期、市場隱含的預期波動，與 ATM 附近的報價
+curl -s "http://$H/api/options/chain?delivery_month=202610&rows=5" | python3 -m json.tool | head -60
+```
+
+- 報價與遠期價：遠期價與 ATM IV 由鏈上買賣平價反推（和 IV 監控同一條公式），不需要期貨報價；T＝（交割日 13:30 − 現在）／365 天，無風險利率 `IV_RATE`（預設 1.5%）。
+- **休市時**（沒有買賣報價）會回 422 並建議改用手動模式；券商沒連線／查詢逾時回 503；找不到那個到期月回 404。
+- 買方試算不碰下單與策略。要實際下單還是用〈手動下單〉的選擇權分頁；這裡算出的履約價要自己去那邊填。
+- 測試與核對：`python -m pytest tests/test_options_calc.py tests/test_routes_options.py tests/test_frontend_options.py -q`。
+
 ### 備份與 tick 瘦身
 
 **自動備份**：每個交易日 `BACKUP_TIME`（預設 14:00）把 `market_state.db`、`trade_log.db` 備份到 `data/backup/日期/`（`BACKUP_DIR` 可改位置），

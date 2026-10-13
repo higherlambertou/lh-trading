@@ -326,6 +326,11 @@ class BrokerClient:
             right=right, category=category,
         )
 
+    async def option_chain(self, delivery_month: str, category: str = "TXO", center: float | None = None, max_n: int = 400) -> dict:
+        """整個到期月的選擇權鏈報價（一次 snapshots，不是逐檔查）。只在使用者按下試算時呼叫，不要輪詢。"""
+        return await self._acall("option_chain", timeout=25.0, delivery_month=delivery_month, category=category,
+                                 center=center, max_n=max_n)
+
     async def option_expiries(self, category: str = "TXO") -> list[str]:
         return await self._acall("option_expiries", category=category)
 

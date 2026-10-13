@@ -44,6 +44,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 import type { BacktestInfo, BacktestJob, BacktestRequest } from "./backtest";
+import type { CalcBody, CloseBody, OptCalc, OptChain, OptClose } from "./options";
 
 /** 把 req() 丟出的 `409 — {"detail":"…"}` 還原成後端給的那句說明（FastAPI 的錯誤主體是 JSON），不是 JSON 就原樣回傳。 */
 export function apiErrorDetail(e: unknown): string {
@@ -284,6 +285,11 @@ export interface IntradayCtx {
   proj?: ContextProj; proj_note?: string;
 }
 
+// 各合約近 N 分鐘的外盤占比（同一個時間視窗並排；不同合約的成交頻率差很多，用「最近幾筆」比的是不同長度的時間）
+export interface XcCell { n: number; vol: number; share: number | null }   // 成交筆數、口數、外盤口數占比（成交太少為 null）
+export interface XcRow { TMF: XcCell; MXF: XcCell; TXF: XcCell; gap: number | null }   // gap＝微台 − 大台
+export interface XcFlow { min_trades: number; windows: Record<string, XcRow> }
+
 export interface LiveState {
   ready: boolean;
   as_of: number;
@@ -314,6 +320,7 @@ export interface LiveState {
   basis?: BasisView | null;
   ex_range?: { high: number; low: number; mismatch: number } | null;   // mismatch＝和自己累計的對不上的次數（今天）
   ctx?: IntradayCtx | null;
+  xc?: XcFlow | null;
 }
 
 // 市場指標回放（歷史）＋統計驗證
@@ -424,6 +431,13 @@ export const api = {
         method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify(data),
       }),
     stats: (strategy = "scalp") => req<MarketStats>(`/market/stats?strategy=${strategy}`),
+  },
+  // 選擇權買方試算（唯讀、不下單）；即時模式向券商一次查整個到期月的鏈，所以只在按下按鈕時呼叫，不要輪詢
+  options: {
+    calc: (body: CalcBody) => req<OptCalc>("/options/calc", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) }),
+    close: (body: CloseBody) => req<OptClose>("/options/close", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) }),
+    chain: (deliveryMonth: string, category = "TXO") =>
+      req<OptChain>(`/options/chain?delivery_month=${encodeURIComponent(deliveryMonth)}&category=${encodeURIComponent(category)}`),
   },
   strategy: {
     list: () => req<StrategyInfo[]>("/strategy/"),

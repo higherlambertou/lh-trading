@@ -11,13 +11,14 @@ import LiveStatePanel from "./LiveStatePanel";
 import RiskPanel from "./RiskPanel";
 import IndicatorReplayPanel from "./IndicatorReplayPanel";
 import BacktestPanel from "./BacktestPanel";
+import OptionCalcPanel from "./OptionCalcPanel";
 
 type Tab = "trade" | "market" | "analysis";
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: "trade", label: "交易", hint: "部位、策略、盤中即時、委託、成交" },
   { id: "market", label: "市場", hint: "盤前判斷、盤中買賣力道" },
-  { id: "analysis", label: "分析", hint: "破產機率驗證、市場指標回放、策略回測（只讀歷史資料，不影響交易）" },
+  { id: "analysis", label: "分析", hint: "破產機率驗證、市場指標回放、策略回測、選擇權試算（只試算，不影響交易）" },
 ];
 
 const isTab = (x: string): x is Tab => TABS.some((t) => t.id === x);
@@ -96,6 +97,7 @@ export default function DashboardTabs() {
                 <RiskPanel />
                 <IndicatorReplayPanel />
                 <BacktestPanel />
+                <OptionCalcPanel />
               </div>
             )}
           </>

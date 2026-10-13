@@ -126,6 +126,13 @@ class MarketStore:
             c.executemany("INSERT OR REPLACE INTO bars_1m VALUES (?,?,?,?,?,?,?,?)", data)
             c.commit()
 
+    def day_closes(self, code: str) -> list[float]:
+        """日盤每天最後一根 1 分 K 的收盤（由舊到新）；選擇權試算用來看「過去這麼久的時間漲跌多少」。"""
+        sql = ("SELECT b.close FROM bars_1m b JOIN (SELECT date, MAX(hhmm) AS m FROM bars_1m WHERE code=? GROUP BY date) x "
+               "ON x.date = b.date AND x.m = b.hhmm WHERE b.code=? ORDER BY b.date")
+        with closing(self._conn()) as c:
+            return [float(r[0]) for r in c.execute(sql, (code, code)).fetchall() if r[0]]
+
     def days_1m(self, code: str) -> int:
         with closing(self._conn()) as c:
             return c.execute("SELECT COUNT(DISTINCT date) FROM bars_1m WHERE code=?", (code,)).fetchone()[0]

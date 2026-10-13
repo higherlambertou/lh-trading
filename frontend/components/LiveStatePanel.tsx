@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Radio } from "lucide-react";
 import { api, LiveState, FlowWindow } from "@/lib/api";
-import IntradayCards from "./IntradayCards";
+import IntradayCards, { CrossFlow } from "./IntradayCards";
 
 const GREEN = "#00e676";
 const RED = "#ff1744";
@@ -103,6 +103,7 @@ export default function LiveStatePanel({ compact = false }: { compact?: boolean 
             {(["20", "100", "300"] as const).map((k) => (
               <FlowRow key={k} label={`最近 ${k} 筆`} w={st.flow[k]} up={th.flow_up} down={th.flow_down} />
             ))}
+            <CrossFlow st={st} />
           </div>
 
           <div className="bg-[#0d0d14] rounded-lg border border-[#1e1e3a] p-3 space-y-1.5">

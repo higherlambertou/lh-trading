@@ -26,6 +26,7 @@ from api.routes_market import router as market_router, market_state_loop
 from api.routes_tradelog import router as tradelog_router
 from api.routes_risk import router as risk_router
 from api.routes_backtest import router as backtest_router, manager as backtest_manager
+from api.routes_options import router as options_router
 from core.manual_monitor import manual_monitor
 from core.tick_store import tick_recorder
 from core.flow_store import flow_recorder
@@ -126,6 +127,7 @@ app.include_router(market_router,   prefix="/api/market",   tags=["market"])
 app.include_router(tradelog_router, prefix="/api/tradelog", tags=["tradelog"])
 app.include_router(risk_router,     prefix="/api/risk",     tags=["risk"])
 app.include_router(backtest_router, prefix="/api/backtest", tags=["backtest"])
+app.include_router(options_router,  prefix="/api/options",  tags=["options"])
 
 
 @app.get("/api/health")

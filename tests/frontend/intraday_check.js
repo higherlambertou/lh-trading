@@ -68,6 +68,10 @@ const base = (over = {}) => ({
   vwap: { price: 49353.320758, diff: -53.3, session: "day" },
   basis: { spot: 49301.96, value: -1.96, valid: true },
   ex_range: { high: 49420, low: 49280, mismatch: 0 },
+  xc: { min_trades: 10, windows: {
+    "5": { TMF: { n: 120, vol: 260, share: 0.612 }, MXF: { n: 40, vol: 70, share: 0.55 }, TXF: { n: 14, vol: 31, share: 0.484 }, gap: 0.128 },
+    "15": { TMF: { n: 340, vol: 700, share: 0.57 }, MXF: { n: 110, vol: 190, share: 0.52 }, TXF: { n: 45, vol: 92, share: 0.652 }, gap: -0.082 },
+    "30": { TMF: { n: 700, vol: 1400, share: 0.5 }, MXF: { n: 5, vol: 7, share: null }, TXF: { n: 90, vol: 180, share: 0.5 }, gap: 0.0 } } },
   ctx: { session: "day", ready: true, elapsed: 95, settle_day: false, mins_to_close: 205, close_hhmm: "13:45", r20: 525.1, n_days: 1607,
          bucket: { label: "10:15~10:30", mult: 1.09, idx: 6 }, profile,
          proj: { c: 60, early: 140, expect: { lo: 160, mid: 210, hi: 280 }, done: 25, done_ratio: 0.12, n: 1587 } },
@@ -138,6 +142,28 @@ const base = (over = {}) => ({
   check("脈絡卡：任何形狀都沒有 undefined／NaN／null", !/undefined|NaN|null/.test(all));
 }
 
+// ── 各合約外盤占比（大台／小台／微台）──
+{
+  const t = html(e(Cards.CrossFlow, { st: base() }));
+  check("跨合約：標題與欄位", t.includes("各合約外盤占比（口數）") && t.includes("大台") && t.includes("小台") && t.includes("微台") && t.includes("微−大"), t);
+  check("跨合約：三個時間視窗由短到長", t.indexOf("近 5 分") < t.indexOf("近 15 分") && t.indexOf("近 15 分") < t.indexOf("近 30 分") && t.includes("近 5 分"), t);
+  // 第一列：大台 48%、小台 55%、微台 61%、差 +13（0.128 → 12.8 → +13）
+  check("跨合約：第一列的數字（大台、小台、微台的順序）", t.includes("近 5 分48%55%61%+13"), t);
+  check("跨合約：差是負的用真正的減號", t.includes("近 15 分65%52%57%−8"), t);
+  check("跨合約：成交太少的格子顯示破折號、差為 0 顯示 0", t.includes("近 30 分50%—50%0"), t);
+  check("跨合約：說明門檻與未驗證", t.includes("少於 10 筆") && t.includes("沒驗證過"));
+  check("跨合約：沒有 undefined／NaN／null", !/undefined|NaN|null/.test(t), t);
+  const ooo = base().xc; const shuffled = { min_trades: 10, windows: { "30": ooo.windows["30"], "5": ooo.windows["5"], "15": ooo.windows["15"] } };
+  const t2 = html(e(Cards.CrossFlow, { st: base({ xc: shuffled }) }));
+  check("跨合約：視窗不管傳進來的順序，一律照分鐘數排", t2.indexOf("近 5 分") < t2.indexOf("近 15 分") && t2.indexOf("近 15 分") < t2.indexOf("近 30 分"));
+  const thin = { min_trades: 10, windows: { "5": { TMF: { n: 3, vol: 4, share: null }, MXF: { n: 0, vol: 0, share: null }, TXF: { n: 1, vol: 1, share: null }, gap: null } } };
+  const t3 = html(e(Cards.CrossFlow, { st: base({ xc: thin }) }));
+  check("跨合約：全部太少時整列都是破折號", t3.includes("近 5 分————"), t3);
+  check("跨合約：舊後端（沒有 xc）整塊不顯示", html(e(Cards.CrossFlow, { st: base({ xc: undefined }) })) === "" && html(e(Cards.CrossFlow, { st: base({ xc: null }) })) === "");
+  const colored = raw(e(Cards.CrossFlow, { st: base() }));
+  check("跨合約：不上色（沒驗證過的差不能暗示買賣方向）", !/#00e676|#ff1744|color:/.test(colored), colored.slice(0, 300));
+}
+
 // ── 整個面板（hooks 替身）──
 const NAMES = ["st", "err"];
 function renderPanel(forced = {}, props = {}) {
@@ -152,9 +178,10 @@ function renderPanel(forced = {}, props = {}) {
   const full = renderPanel({ st: base() });
   check("面板：舊的三欄還在，新的三張卡片也在", full.includes("外/內盤（只算真實成交）") && full.includes("日盤振幅") && full.includes("與盤前判斷")
     && full.includes("買賣掛單（五檔）") && full.includes("均價與基差") && full.includes("時段脈絡"));
+  check("面板：外/內盤卡片下面有各合約外盤占比；舊後端沒有", full.includes("各合約外盤占比（口數）") && !renderPanel({ st: (() => { const o = base(); delete o.xc; return o; })() }).includes("各合約外盤占比"));
   check("面板：compact 模式也有三張卡片", renderPanel({ st: base() }, { compact: true }).includes("買賣掛單（五檔）"));
   check("面板：還沒有行情時不顯示卡片", !renderPanel({ st: base({ ready: false }) }).includes("買賣掛單（五檔）") && renderPanel({ st: null }).includes("尚未收到行情"));
-  const old = base(); for (const k of ["book", "session_flow", "vwap", "basis", "ex_range", "ctx", "range_source", "session"]) delete old[k];
+  const old = base(); for (const k of ["book", "session_flow", "vwap", "basis", "ex_range", "ctx", "range_source", "session", "xc"]) delete old[k];
   const o = renderPanel({ st: old });
   check("面板：舊後端（全部新欄位都沒有）照常顯示、新卡片顯示尚無", o.includes("日盤振幅") && o.includes("尚無五檔資料") && !/undefined|NaN/.test(o), o);
   check("面板：高低取自交易所時的說明", renderPanel({ st: base({ range_source: "exchange" }) }).includes("高低取自交易所"));
