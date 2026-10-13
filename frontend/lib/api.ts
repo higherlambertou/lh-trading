@@ -45,6 +45,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 import type { BacktestInfo, BacktestJob, BacktestRequest } from "./backtest";
 import type { CalcBody, CloseBody, OptCalc, OptChain, OptClose } from "./options";
+import type { PmPreview, PmSnapshot, PmStatus } from "./premarket";
 
 /** 把 req() 丟出的 `409 — {"detail":"…"}` 還原成後端給的那句說明（FastAPI 的錯誤主體是 JSON），不是 JSON 就原樣回傳。 */
 export function apiErrorDetail(e: unknown): string {
@@ -438,6 +439,12 @@ export const api = {
     close: (body: CloseBody) => req<OptClose>("/options/close", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) }),
     chain: (deliveryMonth: string, category = "TXO") =>
       req<OptChain>(`/options/chain?delivery_month=${encodeURIComponent(deliveryMonth)}&category=${encodeURIComponent(category)}`),
+  },
+  // 盤前跨市場快照（只讀；preview 會去抓外部資料，所以不要輪詢）
+  premarket: {
+    status: () => req<PmStatus>("/premarket/status"),
+    snapshots: (days = 60, limit = 12) => req<PmSnapshot[]>(`/premarket/snapshots?days=${days}&limit=${limit}`),
+    preview: (date = "") => req<PmPreview>(`/premarket/preview${date ? `?date=${encodeURIComponent(date)}` : ""}`),
   },
   strategy: {
     list: () => req<StrategyInfo[]>("/strategy/"),

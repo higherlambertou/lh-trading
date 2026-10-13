@@ -415,7 +415,7 @@ python -m core.option_spread_log report       # 盤中取樣的價差（要先�
 
 ### 盤前跨市場資訊紀錄（只記錄、不影響交易；update.md 發現 31）
 
-**重啟後端（空手時）才開始記**；之後每個台股交易日 08:30（`PREMARKET_TIME`）自動一筆，來源失敗的欄位 15 分鐘內每 2 分鐘重試，過了就帶著 null 寫入；後端 08:30 之後才啟動最晚補記到 13:45（資料仍只用 T 之前的，標 `late_seconds`）。
+**重啟後端（空手時）才開始記**；之後每個台股交易日 08:30（`PREMARKET_TIME`）自動一筆，來源失敗的欄位 15 分鐘內每 2 分鐘重試，過了就帶著 null 寫入；後端 08:30 之後才啟動最晚補記到 13:45（資料仍只用 T 之前的，標 `late_seconds`）；**13:45 之後才啟動，當天就錯過、不補**（WARNING log＋`premarket_errors` 的 `missed`，不算失敗警示；`/status` 的 `missed_dates` 與面板會列出）。週末與國定假日重啟不會誤報（台股日曆先於時間窗檢查）。
 
 ```bash
 python -m core.premarket_log show              # 今天會記什麼（只算、不寫；會真的去抓 Nasdaq／Cboe／證交所各一次）
@@ -425,10 +425,12 @@ python -m core.premarket_log export > premarket.csv      # CSV（UTF-8 含 BOM�
 python -m core.premarket_log void 2026-10-14 --reason "颱風假，期交所休市"    # 事後作廢（新增一筆，不改原紀錄）
 python -m core.premarket_log correct 2026-10-14 --patch '{"sox": {"value": 0.01}}' --reason "…"   # 更正（新增一筆指向原紀錄）
 curl -s http://$H:8002/api/premarket/status | python3 -m json.tool
+curl -s "http://$H:8002/api/premarket/preview" | python3 -m json.tool | head -60     # 如果現在記會長什麼樣（不寫入；?date=YYYY-MM-DD 指定那天）
 curl -s "http://$H:8002/api/premarket/snapshots?days=30" | python3 -m json.tool | head -60
 curl -s http://$H:8002/api/premarket/snapshots.csv -o premarket.csv
 ```
 
+- **畫面**：〈市場〉分頁最下方〈盤前跨市場快照〉（最新紀錄、預覽、最近 12 筆、CSV 下載；FRONTEND.md）。前端要 `npm run build` 才看得到；後端要重啟才有 `/preview` 與 `status` 的 `next_snapshot`／`missed_dates`（舊版後端畫面會寫「後端還沒有這個 API」）。**預覽每次會去抓外部來源（60 秒快取），不要寫腳本輪詢**。
 - 欄位：`txf_night`（夜盤收盤 ÷ 前一個交易日日盤收盤 − 1，本機 `ticks.db`）、`sox`／`tsm`（最近一個已收盤的美股交易日的對數報酬）、`vix`（收盤值；`detail.rel20`＝相對近 20 日平均）。每個欄位都有 `value`、`source`、`source_timestamp`（資料本身的時間，UTC）、`fetched_at`、`missing_reason`、`flag`、`detail`。
 - **null 不是 bug**：美股休市日隔天（`us_closed: …`）、來源失敗（`source_error: …`）、資料還沒更新（`stale_or_missing`）、後端那段時間沒開（`no_ticks`／`incomplete_session`）、異常值（`out_of_range`，原始數字在 `detail.raw_value`）。**不會用前一天的值或預設值補**。
 - **來源**：預設 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX）；Yahoo 這台機器回 429，要試的話 `PREMARKET_SOURCES=yahoo,nasdaq,cboe`（失敗自動換下一個）。都是免費公開端點、不是契約授權，只存檔供個人研究；改版、限流、被擋時欄位會是 null。

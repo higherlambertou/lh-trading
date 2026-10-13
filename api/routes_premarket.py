@@ -3,7 +3,7 @@ import asyncio
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
 from core import premarket_log as pm
@@ -13,8 +13,21 @@ router = APIRouter()
 
 @router.get("/status")
 def get_status() -> dict[str, Any]:
-    """是否啟用、取樣時間、來源順序、已記錄幾筆、今天記了沒、最近一筆缺哪些欄位、失敗警示。"""
+    """是否啟用、取樣時間、來源順序、已記錄幾筆、今天記了沒、下一筆什麼時候記、錯過的日子、最近一筆缺哪些欄位、失敗警示。"""
     return pm.status()
+
+
+@router.get("/preview")
+async def get_preview(date: str = "") -> dict[str, Any]:
+    """某個交易日（預設最近一個 T 已過的）的快照『會記成什麼樣子』——只算、不寫入。會去抓 Nasdaq／Cboe／證交所（60 秒快取），在 executor 裡跑。"""
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d").date() if date else None
+    except ValueError:
+        raise HTTPException(422, "date 要是 YYYY-MM-DD") from None
+    try:
+        return await asyncio.to_thread(pm.preview, d)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"預覽失敗：{type(e).__name__}: {e}") from e
 
 
 @router.get("/snapshots")

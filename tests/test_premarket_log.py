@@ -39,6 +39,7 @@ def tpe(y, m, d, hh=0, mm=0, ss=0):
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch, tmp_path):
     pm._breaker.clear()
+    pm._preview_cache.clear()
     pm.alerts.count, pm.alerts.last = 0, None
     pm._default_store = None
     monkeypatch.setattr(pm, "ERROR_FILE", tmp_path / "premarket_errors.jsonl")
@@ -160,6 +161,26 @@ def test_tw_calendar_open_closed_cache_and_fallback(tmp_path):
     nothing = TwCalendar(tmp_path / "other.json", Http({"holidaySchedule": SourceError("network", "x")}))
     assert nothing.check(date(2026, 10, 9)) == {"open": True, "reason": None, "source": "fallback_weekday"}                # 沒有任何資訊：退回平日、標明
     assert nothing.check(date(2027, 3, 3))["source"] == "fallback_weekday"                                                   # 那一年沒公布
+
+
+def test_a_failing_holiday_calendar_is_retried_only_after_ten_minutes(tmp_path):
+    good = TwCalendar(tmp_path / "tw.json", Http({"holidaySchedule": twse_json()}), now=lambda: 1_000.0)
+    good.check(date(2026, 10, 9))                                                                                       # 先有一份快取
+    clock = [1_000.0 + 8 * 86400]                                                                                       # 快取過期（超過 7 天）
+    http = Http({"holidaySchedule": SourceError("network", "x")})
+    cal = TwCalendar(tmp_path / "tw.json", http, now=lambda: clock[0])
+    src = lambda: cal.check(date(2026, 10, 9))["source"]                                                                # noqa: E731
+    assert src() == "twse_stale_cache" and http.count("holidaySchedule") == 1
+    clock[0] += 599
+    assert src() == "twse_stale_cache" and http.count("holidaySchedule") == 1                                           # 10 分鐘內不再打、仍標明是過期快取
+    clock[0] += 2
+    assert src() == "twse_stale_cache" and http.count("holidaySchedule") == 2                                           # 過了才再試一次
+    clock[0] += 1
+    cal.check(date(2026, 10, 9))
+    assert http.count("holidaySchedule") == 2                                                                           # 又退避 10 分鐘
+    http.routes["holidaySchedule"] = twse_json()
+    clock[0] += 601
+    assert src() == "twse" and http.count("holidaySchedule") == 3                                                       # 抓到了：恢復成 twse，不再是過期快取
 
 
 def test_previous_open_skips_weekends_holidays_and_the_new_year_break(tmp_path):
@@ -588,12 +609,20 @@ def test_ticks_gap_makes_only_the_night_return_null(tmp_path):
     assert all(row["features"][k]["value"] is not None for k in ("sox", "tsm", "vix"))
 
 
+def test_the_window_edges_are_inclusive(tmp_path):
+    for hh, mm, ss, late in ((8, 30, 0, 0.0), (13, 45, 0, (5 * 3600 + 15 * 60))):                              # 剛好 T、剛好 13:45：都還在窗內
+        (tmp_path / f"{hh}{mm}").mkdir()
+        w = World(tmp_path / f"{hh}{mm}")
+        res = pm.run_once(date(2026, 10, 14), now=tpe(2026, 10, 14, hh, mm, ss), **w.kw)
+        assert res["status"] == "written" and res["late_seconds"] == pytest.approx(late)
+
+
 def test_the_time_window_before_T_after_the_close_and_late_start(tmp_path):
     w = World(tmp_path)
     d = date(2026, 10, 14)
     assert pm.run_once(d, now=tpe(2026, 10, 14, 8, 29, 59), **w.kw)["status"] == "too_early"
     assert pm.run_once(d, now=tpe(2026, 10, 14, 13, 45, 1), **w.kw)["status"] == "too_late"
-    assert w.store.effective() == [] and w.http.calls == []                                                           # 窗外根本不去抓資料
+    assert w.store.effective() == [] and w.http.count("api.nasdaq.com") == 0 and w.http.count("cdn.cboe.com") == 0     # 窗外不去抓美股資料（只有日曆查過）
     res = pm.run_once(d, now=tpe(2026, 10, 14, 10, 12), **w.kw)                                                       # 後端 10:12 才啟動：補記，資料仍只用 T 之前的
     assert res["status"] == "written" and res["late_seconds"] == pytest.approx(102 * 60)
     (row,) = w.store.effective()
@@ -703,6 +732,19 @@ def test_void_marks_the_day_without_touching_the_original(tmp_path):
     assert w.store.status() == {"snapshots": 1, "corrections": 0, "voids": 1, "errors_logged": 0, "graveyard": 0}
 
 
+def test_status_latest_is_the_newest_day_that_is_not_voided(tmp_path):
+    w = written(tmp_path)                                                                                      # 10/14
+    make_ticks(w.db, session_ticks(date(2026, 10, 14)))
+    pm.run_once(date(2026, 10, 15), now=tpe(2026, 10, 15, 8, 31), **w.kw)
+    now = tpe(2026, 10, 15, 9, 0)
+    assert pm.status(w.store, cal=w.cal, now=now)["latest"]["trading_date"] == "2026-10-15"
+    w.store.add_void(date(2026, 10, 15), "颱風假")
+    assert pm.status(w.store, cal=w.cal, now=now)["latest"]["trading_date"] == "2026-10-14"                    # 作廢的 10/15 不算最新
+    w.store.add_void(date(2026, 10, 14), "颱風假")
+    s = pm.status(w.store, cal=w.cal, now=now)
+    assert s["latest"] is None and s["snapshots"] == 2 and s["today_recorded"] is True                         # 都作廢了：沒有最新；但今天『有一筆（作廢的）』
+
+
 # ── 寫入失敗不影響交易（驗收 9）────────────────────────────────────
 
 def test_a_failing_store_raises_an_alert_and_never_an_exception(tmp_path, monkeypatch, caplog):
@@ -737,10 +779,109 @@ def test_an_exception_inside_the_builder_is_contained(tmp_path, monkeypatch):
     assert res["status"] == "error" and pm.alerts.count == 1 and w.store.effective() == []
 
 
+# ── 休市日不算錯過、日曆不被猛打、下一筆時間、預覽 ──────────────────
+
+def test_closed_days_are_skipped_even_after_the_window_and_never_count_as_missed(tmp_path):
+    """週末或假日 13:45 之後重啟，不能誤報『錯過』。"""
+    w = World(tmp_path)
+    for d in (date(2026, 10, 10), date(2026, 10, 11), date(2026, 10, 9)):                                      # 週六、週日、國慶補假
+        res = pm.run_once(d, now=datetime.combine(d, dtime(16, 0), tzinfo=pm.TPE), **w.kw)
+        assert res["status"] == "skipped", (d, res)
+    assert w.store.status()["errors_logged"] == 0 and w.store.effective() == []
+    d = date(2026, 10, 13)                                                                                       # 對照：交易日 13:45 之後才啟動 → 真的錯過
+    assert pm.run_once(d, now=datetime.combine(d, dtime(16, 0), tzinfo=pm.TPE), **w.kw)["status"] == "too_late"
+
+
+def test_tw_calendar_does_not_hammer_twse_when_the_fetch_fails(tmp_path):
+    http, t = Http({"holidaySchedule": SourceError("network", "x")}), [1000.0]
+    cal = TwCalendar(tmp_path / "tw.json", http, now=lambda: t[0])
+    for _ in range(6):
+        assert cal.check(date(2026, 10, 9))["source"] == "fallback_weekday"
+    assert http.count("holidaySchedule") == 1                                                                    # 失敗之後 10 分鐘內不再打
+    t[0] += 601
+    cal.check(date(2026, 10, 9))
+    assert http.count("holidaySchedule") == 2
+    http.routes["holidaySchedule"] = twse_json()                                                                 # 恢復了：下一次重試就用得到
+    t[0] += 601
+    assert cal.check(date(2026, 10, 9)) == {"open": False, "reason": "國慶日", "source": "twse"}
+
+
+def test_next_snapshot_is_today_until_the_window_closes_then_the_next_trading_day(tmp_path):
+    w = World(tmp_path)
+    nxt = lambda y, m, d, hh, mm: pm.next_snapshot(w.store, w.cal, tpe(y, m, d, hh, mm))                       # noqa: E731
+    assert nxt(2026, 10, 14, 7, 0) == {"trading_date": "2026-10-14", "time": "2026-10-14T08:30+08:00", "late": False}
+    assert nxt(2026, 10, 14, 10, 0) == {"trading_date": "2026-10-14", "time": "2026-10-14T08:30+08:00", "late": True}            # 已過 T、還在 13:45 前：補記
+    assert nxt(2026, 10, 14, 16, 0)["trading_date"] == "2026-10-15"                                                              # 已經過了補記的時限
+    assert nxt(2026, 10, 16, 16, 0)["trading_date"] == "2026-10-19"                                                              # 週五晚上 → 下週一
+    assert nxt(2026, 10, 8, 16, 0)["trading_date"] == "2026-10-12"                                                               # 10/9 補假＋週末
+    pm.run_once(date(2026, 10, 14), now=tpe(2026, 10, 14, 8, 31), **w.kw)
+    assert nxt(2026, 10, 14, 10, 0)["trading_date"] == "2026-10-15"                                                              # 今天記過了
+
+
+def test_status_has_the_next_snapshot_and_the_missed_days(tmp_path):
+    w = World(tmp_path)
+    w.store.log_error("missed", "x", "2026-10-13")
+    w.store.log_error("missed", "y", "2026-10-13")
+    s = pm.status(w.store, cal=w.cal, now=tpe(2026, 10, 14, 7, 0))
+    assert s["missed_dates"] == ["2026-10-13"] and s["next_snapshot"]["trading_date"] == "2026-10-14" and s["alerts"] == 0 and s["snapshots"] == 0
+    assert s["today"] == "2026-10-14" and s["today_recorded"] is False and s["latest"] is None
+
+
+def test_missed_dates_are_newest_first_and_only_the_missed_ones(tmp_path):
+    store = pm.PremarketStore(tmp_path / "t.db")
+    store.log_error("missed", "x", "2026-10-13")
+    store.log_error("missed", "x", "2026-10-14")
+    store.log_error("run", "database is locked", "2026-10-15")                                                   # 一般的失敗不算「錯過」
+    assert store.missed_dates() == ["2026-10-14", "2026-10-13"] and store.missed_dates(limit=1) == ["2026-10-14"]
+
+
+def test_next_snapshot_edges_are_inclusive(tmp_path):
+    w = World(tmp_path)
+    at = lambda hh, mm, ss: pm.next_snapshot(w.store, w.cal, tpe(2026, 10, 14, hh, mm, ss))                      # noqa: E731
+    assert at(8, 29, 59) == {"trading_date": "2026-10-14", "time": "2026-10-14T08:30+08:00", "late": False}
+    assert at(8, 30, 0) == {"trading_date": "2026-10-14", "time": "2026-10-14T08:30+08:00", "late": True}        # 剛好 T：已經可以記了
+    assert at(13, 45, 0)["trading_date"] == "2026-10-14" and at(13, 45, 1)["trading_date"] == "2026-10-15"        # 13:45:00 還補得到、13:45:01 不行
+
+
+def test_default_preview_date_is_the_latest_trading_day_whose_T_has_passed(tmp_path):
+    w = World(tmp_path)
+    f = lambda y, m, d, hh, mm: pm.default_preview_date(w.cal, tpe(y, m, d, hh, mm))                            # noqa: E731
+    assert f(2026, 10, 14, 7, 0) == date(2026, 10, 13) and f(2026, 10, 14, 8, 30) == date(2026, 10, 14) and f(2026, 10, 14, 23, 0) == date(2026, 10, 14)
+    assert f(2026, 10, 10, 12, 0) == date(2026, 10, 8) and f(2026, 10, 12, 8, 0) == date(2026, 10, 8)          # 週六、連假後週一 T 之前 → 連假前最後一個交易日
+
+
+def test_preview_is_a_dry_run_that_matches_what_would_be_recorded(tmp_path):
+    w = World(tmp_path)
+    now = tpe(2026, 10, 14, 9, 0)
+    pv = pm.preview(date(2026, 10, 14), now=now, **w.kw)
+    assert pv["dry_run"] is True and pv["recorded"] is False and pv["trading_date"] == "2026-10-14" and pv["snapshot_time"] == "2026-10-14T08:30+08:00"
+    assert w.store.effective() == [] and w.store.raw_rows() == []                                              # 預覽不寫入
+    assert all(pv["features"][k]["value"] is not None for k in pm.FEATURE_KEYS) and "retryable" not in pv
+    pm.run_once(date(2026, 10, 14), now=now, **w.kw)
+    real = w.store.effective()[0]
+    strip = lambda feats: {k: {x: y for x, y in v.items() if x != "fetched_at"} for k, v in feats.items()}     # noqa: E731
+    assert strip(pv["features"]) == strip(real["features"]) and pv["calendar"] == real["calendar"]               # 預覽的內容就是真的會記的內容
+    assert pm.preview(date(2026, 10, 14), now=now, use_cache=False, **w.kw)["recorded"] is True
+
+
+def test_preview_is_cached_for_a_minute_and_uses_the_default_day(tmp_path, monkeypatch):
+    w = World(tmp_path)
+    now = tpe(2026, 10, 14, 7, 0)                                                                              # T 之前 → 預設看 10/13
+    a = pm.preview(now=now, **w.kw)
+    assert a["trading_date"] == "2026-10-13" and a["features"]["sox"]["detail"]["bar_date"] == "2026-10-12"
+    calls = len(w.http.calls)
+    assert pm.preview(now=now, **w.kw) is a and len(w.http.calls) == calls                                      # 60 秒內不再去抓
+    clock = [pm.time.time() + pm.PREVIEW_TTL + 1]
+    monkeypatch.setattr(pm.time, "time", lambda: clock[0])
+    assert pm.preview(now=now, **w.kw) is not a and len(w.http.calls) > calls                                   # 過了就重抓
+    closed = pm.preview(date(2026, 10, 9), now=now, **w.kw)                                                      # 休市日也能預覽（日曆欄位會標休市）
+    assert closed["calendar"]["tw_closed"] is True and closed["calendar"]["tw_reason"] == "國慶日"
+
+
 # ── 背景迴圈 ──────────────────────────────────────────────────────
 
-def drive_loop(monkeypatch, results, dates):
-    """跑 premarket_log_loop 幾圈：run_guarded 依序回傳 results、日期依序是 dates；回傳 (呼叫次數, 每次睡多久)。"""
+def drive_loop(monkeypatch, results, dates, hhmm=dtime(8, 31)):
+    """跑 premarket_log_loop 幾圈：run_guarded 依序回傳 results、日期依序是 dates、現在時間固定是 hhmm；回傳 (呼叫次數, 每次睡多久)。"""
     sleeps, calls = [], []
     it_res, it_date = iter(results), iter(dates)
 
@@ -749,10 +890,10 @@ def drive_loop(monkeypatch, results, dates):
         if len(sleeps) > len(results):
             raise asyncio.CancelledError
 
-    class FakeDT:
-        @staticmethod
-        def now(tz=None):
-            return datetime.combine(next(it_date), dtime(8, 31), tzinfo=pm.TPE)
+    class FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.combine(next(it_date), hhmm, tzinfo=pm.TPE)
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(pm, "datetime", FakeDT)
@@ -776,11 +917,22 @@ def test_loop_does_not_call_again_for_a_finished_day(monkeypatch):
     assert calls == [d1]                                                                                           # 當天寫完就不再叫
 
 
-def test_loop_alerts_when_the_day_was_missed_and_stays_alive_on_exceptions(monkeypatch):
+def test_loop_records_a_missed_day_quietly_and_never_before_T(monkeypatch, tmp_path, caplog):
+    """後端 13:45 之後才啟動：這天留一筆『錯過』紀錄與警告，但不算失敗警示（重新部署本來就會碰到）；T 之前根本不呼叫。"""
     d1 = date(2026, 10, 14)
-    calls, _ = drive_loop(monkeypatch, [{"status": "too_late"}], [d1, d1, d1])
-    assert calls == [d1] and pm.alerts.count == 1 and pm.alerts.last["where"] == "missed"
-    pm.alerts.count = 0
+    store = pm.PremarketStore(tmp_path / "t.db")
+    monkeypatch.setattr(pm, "_default_store", store)
+    with caplog.at_level("WARNING"):
+        calls, _ = drive_loop(monkeypatch, [{"status": "too_late"}], [d1, d1, d1])
+    assert calls == [d1] and pm.alerts.count == 0 and "沒有盤前快照" in caplog.text
+    assert store.status()["errors_logged"] == 1 and store.status()["snapshots"] == 0
+    with sqlite3.connect(store.path) as con:
+        assert con.execute("SELECT where_, trading_date FROM premarket_errors").fetchall() == [("missed", "2026-10-14")]
+    calls, _ = drive_loop(monkeypatch, [{"status": "written"}], [d1, d1], hhmm=dtime(8, 29))              # 08:29：還沒到 T
+    assert calls == []
+
+
+def test_loop_stays_alive_on_unexpected_exceptions(monkeypatch):
     n = {"i": 0}
 
     async def fake_sleep(s):
@@ -841,6 +993,25 @@ def client(tmp_path, monkeypatch):
     app = FastAPI()
     app.include_router(rp.router, prefix="/api/premarket")
     return TestClient(app), w, rp
+
+
+def test_api_preview_and_status_extras(client, monkeypatch):
+    c, w, rp = client
+    seen = {}
+
+    def fake_preview(d=None):
+        seen["d"] = d
+        return {"dry_run": True, "trading_date": "2026-10-13", "features": {}, "calendar": {}}
+
+    monkeypatch.setattr(pm, "preview", fake_preview)
+    assert c.get("/api/premarket/preview").json()["dry_run"] is True and seen["d"] is None
+    assert c.get("/api/premarket/preview", params={"date": "2026-10-09"}).status_code == 200 and seen["d"] == date(2026, 10, 9)
+    assert c.get("/api/premarket/preview", params={"date": "亂寫"}).status_code == 422
+    monkeypatch.setattr(pm, "preview", lambda d=None: (_ for _ in ()).throw(RuntimeError("來源全掛")))
+    r = c.get("/api/premarket/preview")
+    assert r.status_code == 502 and "來源全掛" in r.json()["detail"]
+    s = c.get("/api/premarket/status").json()
+    assert "next_snapshot" in s and "missed_dates" in s and s["missed_dates"] == []
 
 
 def test_api_status_snapshots_csv_and_run(client, monkeypatch):

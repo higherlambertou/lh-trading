@@ -221,6 +221,7 @@ class TwCalendar:
         self.cache_path = cache_path if cache_path is not None else CACHE_DIR / "tw_holidays.json"
         self.http, self.now, self.ttl = http, now, ttl_days * 86400
         self._mem: Optional[dict[str, Any]] = None
+        self._retry_at = 0.0                                   # 抓失敗之後，這個時間之前不再重試
 
     def _cache(self) -> dict[str, Any]:
         if self._mem is None:
@@ -246,13 +247,16 @@ class TwCalendar:
         c = self._cache()
         stale = not c or self.now() - c.get("fetched_at", 0) > self.ttl or str(year) not in c.get("years", [])
         src = "twse"                                          # 一週內抓過的（這次抓的或快取）都算 twse
-        if stale:
+        if stale and self.now() >= self._retry_at:
             try:
                 self._refresh()
                 c = self._cache()
             except (SourceError, ValueError) as e:
-                logger.warning("台股休市日曆取不到（%s）", e)
+                logger.warning("台股休市日曆取不到（%s），10 分鐘後再試", e)
+                self._retry_at = self.now() + 600
                 src = "twse_stale_cache"                      # 抓不到、用過期的快取
+        elif stale:
+            src = "twse_stale_cache"
         if str(year) not in c.get("years", []):
             return None, "fallback_weekday"
         return c["closed"], src
@@ -684,6 +688,10 @@ class PremarketStore:
             c.commit()
             return int(cur.lastrowid)
 
+    def missed_dates(self, limit: int = 10) -> list[str]:
+        with closing(self._conn()) as c:
+            return [r[0] for r in c.execute("SELECT DISTINCT trading_date FROM premarket_errors WHERE where_='missed' ORDER BY trading_date DESC LIMIT ?", (limit,)).fetchall()]
+
     def status(self) -> dict[str, Any]:
         with closing(self._conn()) as c:
             n = c.execute("SELECT COUNT(*) FROM premarket_snapshots WHERE kind='snapshot'").fetchone()[0]
@@ -723,6 +731,17 @@ def _record_error(store: Optional[PremarketStore], where: str, error: str, tradi
 
 # ── 執行 ─────────────────────────────────────────────────────────
 
+def _record_missed(store: Optional[PremarketStore], d: date) -> None:
+    """這個台股交易日後端在 13:45 之後才啟動、沒機會記：留一筆紀錄與警告（不算『失敗警示』：重新部署本來就會碰到）。"""
+    msg = f"{d} 後端在 {LATEST_HHMM[0]}:{LATEST_HHMM[1]} 之後才啟動，這天沒有盤前快照"
+    logger.warning("盤前跨市場資訊：%s", msg)
+    try:
+        if store is not None:
+            store.log_error("missed", msg, d.isoformat())
+    except Exception:  # noqa: BLE001
+        logger.exception("missed 紀錄寫不進去（已忽略）")
+
+
 def run_once(d: date, *, now: Optional[datetime] = None, store: Optional[PremarketStore] = None, cal: Optional[TwCalendar] = None,
              ticks_path: Path = TICKS_PATH, http: Callable[..., str] = http_get, order: Optional[Sequence[str]] = None,
              writer: str = "", force: bool = False) -> dict[str, Any]:
@@ -732,15 +751,15 @@ def run_once(d: date, *, now: Optional[datetime] = None, store: Optional[Premark
     store = store or default_store()
     if store.has_snapshot(d):
         return {"status": "exists"}
+    cal = cal or TwCalendar()
+    info = cal.check(d)
+    if not info["open"]:                                     # 休市日：不管幾點都不記，也不算「錯過」（週末或假日重啟不該誤報）
+        return {"status": "skipped", "reason": info["reason"], "source": info["source"]}
     T = t_of(d)
     if not force and now < T:
         return {"status": "too_early"}
     if not force and now > latest_of(d):
         return {"status": "too_late"}
-    cal = cal or TwCalendar()
-    info = cal.check(d)
-    if not info["open"]:
-        return {"status": "skipped", "reason": info["reason"], "source": info["source"]}
     rec = build_snapshot(d, now=now, cal=cal, ticks_path=ticks_path, http=http, order=order)
     retry = rec.pop("retryable")
     if retry and not force and now < T + timedelta(minutes=RETRY_WINDOW_MIN):
@@ -777,8 +796,9 @@ async def premarket_log_loop() -> None:
         await asyncio.sleep(wait)
         wait = 30.0
         try:
-            d = datetime.now(TPE).date()
-            if d in done:
+            now = datetime.now(TPE)
+            d = now.date()
+            if d in done or now < t_of(d):
                 continue
             res = await asyncio.to_thread(run_guarded, d, writer=mode)
             if res["status"] in ("written", "exists", "skipped", "too_late"):
@@ -786,7 +806,7 @@ async def premarket_log_loop() -> None:
                 if res["status"] == "written":
                     logger.info("盤前快照 %s 已寫入（缺值：%s）", d, res.get("missing") or "無")
                 elif res["status"] == "too_late":
-                    _record_error(_default_store, "missed", f"{d} 後端在 {LATEST_HHMM[0]}:{LATEST_HHMM[1]} 之後才有機會記，這天沒有盤前快照", d.isoformat())
+                    await asyncio.to_thread(_record_missed, _default_store, d)
             elif res["status"] == "retry":
                 wait = 120.0
                 logger.info("盤前快照 %s：%s 取不到，2 分鐘後重試", d, res.get("retryable"))
@@ -839,14 +859,67 @@ def to_csv(rows: Sequence[dict[str, Any]]) -> str:
     return buf.getvalue()
 
 
-def status(store: Optional[PremarketStore] = None, today: Optional[date] = None) -> dict[str, Any]:
+def next_snapshot(store: PremarketStore, cal: TwCalendar, now: datetime) -> Optional[dict[str, Any]]:
+    """下一筆預計什麼時候記：今天還沒記而且還在 13:45 之前（含已經過了 T 的補記）就是今天，否則是下一個台股交易日的 T。"""
+    d = now.date()
+    for i in range(15):
+        day = d + timedelta(days=i)
+        if not cal.check(day)["open"]:
+            continue
+        if i == 0 and (now > latest_of(day) or store.has_snapshot(day)):
+            continue
+        return {"trading_date": day.isoformat(), "time": t_of(day).isoformat(timespec="minutes"), "late": i == 0 and now >= t_of(day)}
+    return None
+
+
+def status(store: Optional[PremarketStore] = None, today: Optional[date] = None, cal: Optional[TwCalendar] = None, now: Optional[datetime] = None) -> dict[str, Any]:
     store = store or default_store()
-    today = today or datetime.now(TPE).date()
+    now = now or (datetime.combine(today, dtime(0, 0), tzinfo=TPE) if today else datetime.now(TPE))
+    today = today or now.date()
     out: dict[str, Any] = {"enabled": enabled(), "snapshot_time": snapshot_time().strftime("%H:%M"), "sources": source_order(), "alerts": alerts.count,
-                           "last_alert": alerts.last, "today": today.isoformat(), **store.status()}
+                           "last_alert": alerts.last, "today": today.isoformat(), "missed_dates": store.missed_dates(), **store.status()}
     rows = store.effective()
     out["today_recorded"] = bool(rows) and any(r["trading_date"] == today.isoformat() for r in rows)
-    out["latest"] = ({"trading_date": rows[0]["trading_date"], "missing": {k: v["missing_reason"] for k, v in rows[0]["features"].items() if v["value"] is None}} if rows else None)
+    valid = [r for r in rows if not r["voided"]]                          # 作廢的那天不算「最新」（面板也是這個定義）
+    out["latest"] = ({"trading_date": valid[0]["trading_date"], "missing": {k: v["missing_reason"] for k, v in valid[0]["features"].items() if v["value"] is None}} if valid else None)
+    try:
+        out["next_snapshot"] = next_snapshot(store, cal or TwCalendar(), now)
+    except Exception as e:  # noqa: BLE001
+        out["next_snapshot"] = None
+        logger.warning("算不出下一筆快照的時間：%r", e)
+    return out
+
+
+# ── 預覽（只算不寫）─────────────────────────────────────────────
+
+PREVIEW_TTL = 60.0
+_preview_cache: dict[date, tuple[float, dict[str, Any]]] = {}
+
+
+def default_preview_date(cal: TwCalendar, now: datetime) -> date:
+    """預覽預設看哪一天：最近一個『T 已經過了』的台股交易日（今天 T 之前就看前一個交易日），這樣美股與夜盤都已經有資料、看得到真實的值。"""
+    d = now.date()
+    for _ in range(15):
+        if cal.check(d)["open"] and now >= t_of(d):
+            return d
+        d -= timedelta(days=1)
+    raise ValueError("找不到最近的台股交易日")
+
+
+def preview(d: Optional[date] = None, *, now: Optional[datetime] = None, store: Optional[PremarketStore] = None, cal: Optional[TwCalendar] = None,
+            ticks_path: Path = TICKS_PATH, http: Callable[..., str] = http_get, order: Optional[Sequence[str]] = None, use_cache: bool = True) -> dict[str, Any]:
+    """某個交易日（預設最近一個 T 已過的）的快照『會記成什麼樣子』，不寫入。每次會去抓 Nasdaq／Cboe／證交所，所以 60 秒內重複呼叫用快取。"""
+    now = now or datetime.now(TPE)
+    store = store or default_store()
+    cal = cal or TwCalendar()
+    d = d or default_preview_date(cal, now)
+    hit = _preview_cache.get(d)
+    if use_cache and hit and time.time() - hit[0] < PREVIEW_TTL:
+        return hit[1]
+    rec = build_snapshot(d, now=now, cal=cal, ticks_path=ticks_path, http=http, order=order)
+    rec.pop("retryable", None)
+    out = {**rec, "dry_run": True, "recorded": store.has_snapshot(d), "snapshot_time": t_of(d).isoformat(timespec="minutes")}
+    _preview_cache[d] = (time.time(), out)
     return out
 
 

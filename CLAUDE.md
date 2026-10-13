@@ -211,6 +211,8 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   **只記錄，不影響任何交易決策**：沒有任何策略或風控模組讀這些欄位（`tests/test_premarket_log.py` 靜態檢查＋啟用前後重播訂單完全相同）；寫入失敗只警示（ERROR log、計數、`premarket_errors`、備援檔 `data/premarket/premarket_errors.jsonl`），不擋任何事。存在 `trade_log.db`（`premarket_snapshots`，資料庫觸發器擋 UPDATE／DELETE：更正＝新增 correction、作廢＝新增 void）。
   規則：資料時間戳晚於 T 的一律拒絕；美股收盤用 `zoneinfo` 算（夏令 04:00／冬令 05:00 台北，提早收盤日 13:00 ET，VIX 晚 15 分鐘）；**美股休市日該欄位 null＋原因、不沿用前一天**（週一用上週五）；缺值與來源失敗一律 null＋原因、沒有預設值；異常值只標記（`PREMARKET_RANGE_*`，費半、TSM 預設 ±25%）；每個交易日恰好一筆（冪等，部分唯一索引）。
   **來源**：Yahoo 對這台機器回 429，預設用 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX）（`PREMARKET_SOURCES`；Yahoo 轉接器沒對真實 Yahoo 驗證過；失敗轉移、429 後暫停 6 小時）。**Cboe 的 VIX 歷史在美股休市日也有值（環球交易時段），只用開市日的列**。台股休市用證交所公開日曆（快取；查不到退回『平日』並標 `fallback_weekday`），颱風假事後 `python -m core.premarket_log void 日期 --reason …`。
+  **面板與預覽**：前端〈市場〉分頁〈盤前跨市場快照〉（`PremarketPanel.tsx`、`lib/premarket.ts`；`tests/test_frontend_premarket.py` 用後端現算的資料渲染）。`GET /api/premarket/preview` 是『如果現在記』的試算：不寫入、60 秒快取、**會去抓外部來源，不要輪詢**（面板只在載入、按鈕、後端從失敗恢復時各呼叫一次）。
+  `run_once` 的檢查順序固定：已記過 → **台股日曆（休市就 skipped）** → T 之前 → 13:45 之後；**日曆一定先於時間窗**，否則週末／假日重啟會誤報錯過。錯過只記 WARNING＋`premarket_errors`（`missed`），不算失敗警示；證交所日曆抓不到時 10 分鐘內不重試。
   **歷史預檢**（`python -m core.premarket_study fetch|sanity|run`，不連券商）：TX 日行情的**盤後列的交易日期＝它之後那個日盤的交易日**；對齊與特徵直接用 `premarket_log` 的函式（同一套定義）；判定標準事先寫在 update.md、只跑一次。結論：VIX（相對近 20 日平均）對日盤波動有增量，費半沒有；只決定要不要繼續記錄，不決定上線。
 - **手動停損確認**（`core/manual_monitor.py`）：觸發後送出平倉單**不立刻移除監看**，用委託狀態確認——全數成交才移除、沒成交才重送
   （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
