@@ -464,6 +464,24 @@ python -m core.notify watchdog --event freeze --detail down --mode live   # watc
   ① @BotFather 建立 bot，拿到 token；② 在 Telegram **先對你的 bot 傳一則訊息**（隨便，例如 `/start`——bot 不能主動找你）；③ 把 `NOTIFY_TELEGRAM_TOKEN=…` 寫進 `.env`（**token 只放 `.env`，不要貼到聊天或 commit**）；
   ④ `python -m core.notify chat-id` → 印出聊天室 id，把 `NOTIFY_TELEGRAM_CHAT_ID=…` 也寫進 `.env`；⑤ `python -m core.notify test` → 手機收到「推播測試」才算成功。
   **不用重啟**：watchdog 每次呼叫都重新讀 `.env`；後端下次（重新）啟動時讀到設定，之後的啟動報告就會推播。
+- **現在會通知什麼**（全部只通知、不動委託；`python -m core.notify test` 測通道）：
+
+  | 事件 | 什麼時候 | 優先序 |
+  |---|---|---|
+  | 後端啟動報告 | 重啟、對帳完、**有持倉**：恢復了哪些停損（含停損價）／哪些持倉沒保護 | 有沒保護的＝緊急 |
+  | 連不上券商 | 重啟後 10 分鐘仍連不上、停損監控沒恢復 | 緊急 |
+  | 凍結／斷線／進程消失 | watchdog 要重啟之前、且最後已知有持倉 | 緊急 |
+  | 🛑停損／🎯停利觸發 | 手動停損停利監控送出第一張平倉單（進場價、現價、點數） | 停損＝緊急 |
+  | ✅平倉完成 | 平倉單全數成交、監看移除 | 一般 |
+  | ⚠️平倉單沒成交 | 平倉單從第 3 次起每次重送 | 一般 |
+  | 🚨停損平不掉 | 平倉單送了 8 次仍未平倉、系統放棄自動重送 | 緊急 |
+  | 保證金風險 | 券商回報追繳（緊急）；權益總值 ÷ 維持保證金 < 120%（緊急）、< 150%（警告）；回到安全範圍推播「已解除」；沒有持倉不判斷 | 警告／緊急 |
+  | ✅成交 | 手動單成交（`NOTIFY_FILLS=manual` 預設；`all` 連策略；`off` 關閉）；停損停利的平倉單用上面的訊息、不重複 | 一般 |
+  | ⏰當沖倉位還沒平 | 13:15、13:25（週一～五）：勾了當沖的倉位還開著；期貨商通常在收盤前約 15 分鐘強制沖銷，以期貨商規定為準 | 緊急 |
+
+  設定（`.env`）：`NOTIFY_FILLS`、`NOTIFY_MARGIN_WARN`（預設 150）、`NOTIFY_MARGIN_URGENT`（預設 120）、`NOTIFY_SIM`（預設不在模擬盤推播）。同一件事有冷卻（警告 30 分鐘、緊急 10 分鐘、其他 1 小時），推播失敗會把冷卻還回去。
+  **限制**：當沖提醒認得「手動下單勾了當沖、後端之後沒重啟」或「有掛停損停利的當沖部位」；券商的持倉資料不帶倉別。你自己在券商 App 平掉部位時，不會有「平倉完成」。
+  **測試不能碰真實通道**：`tests/conftest.py` 設 `NOTIFY_SKIP_DOTENV=1`、把 `core.notify._http_post`／`_http_get` 換成會直接失敗的替身（update.md 發現 34 的事故）；要測真函式用 `nt.REAL_HTTP_POST`。
 - **通道**：Telegram bot（私人、免費，建議）、ntfy（主題名稱就是密碼：用一長串隨機字或自架）、自訂 webhook。訊息只放合約、方向、口數與停損點數，不放帳號與權益；token／網址不會出現在 log。
   **推播是把這些資訊送到第三方服務**，通道由你自己設定，沒設定就不會送。
 - 測試：`python -m pytest tests/test_notify.py tests/test_protection.py tests/test_manual_restore.py tests/test_startup_protection.py tests/test_frontend_protection.py -q`。

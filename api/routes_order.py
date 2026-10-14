@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from core.broker import broker
-from core.daytrade import OCTYPES, check_octype
+from core.daytrade import OCTYPES, check_octype, note_open as note_daytrade_open
 from core.manual_monitor import manual_monitor, _txo_round_tick
 from core.quote_hub import quote_hub
 from core.trade_log import trade_log
@@ -102,6 +102,8 @@ async def place_order(req: ManualOrderRequest) -> dict[str, Any]:
         logger.error("手動下單失敗: %s", e)
         raise HTTPException(500, f"下單失敗: {e}")
 
+    if req.octype == "DayTrade":
+        note_daytrade_open(req.contract, 1 if req.action == "Buy" else -1)     # 收盤前提醒用（core/reminders.py）
     watch_id = None
     if req.stop_loss_pts > 0 or req.take_profit_pts > 0:
         direction = 1 if req.action == "Buy" else -1

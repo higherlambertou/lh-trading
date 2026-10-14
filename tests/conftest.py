@@ -22,10 +22,23 @@ def _no_real_pushes_or_state_files(monkeypatch):
     for k in ("NOTIFY_TELEGRAM_TOKEN", "NOTIFY_TELEGRAM_CHAT_ID", "NOTIFY_NTFY_URL", "NOTIFY_WEBHOOK_URL"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("NOTIFY_COOLDOWN_FILE", "")            # 空字串＝冷卻只用記憶體
+    monkeypatch.setenv("NOTIFY_SKIP_DOTENV", "1")             # CLI 不讀真的 .env（裡面有真的 Telegram token）
+    monkeypatch.delenv("SIMULATION", raising=False)
     monkeypatch.setenv("POSITION_STATE_FILE", "false")
     monkeypatch.setenv("MANUAL_WATCH_PERSIST", "false")
     import core.notify as nt
     nt._memory_last.clear()
+
+    class NoRealNetwork(BaseException):                        # BaseException：不會被 `except Exception` 吞掉，測試會直接失敗
+        pass
+
+    def _never(*a, **k):
+        raise NoRealNetwork("測試不能真的送出推播或連 Telegram：請用假的 _http_post／_http_get（monkeypatch.setattr(nt, '_http_post', fake)）")
+
+    monkeypatch.setattr(nt, "REAL_HTTP_POST", nt._http_post, raising=False)       # 要測「真的函式」的測試（只驗網址 scheme，不連網）用這兩個
+    monkeypatch.setattr(nt, "REAL_HTTP_GET", nt._http_get, raising=False)
+    monkeypatch.setattr(nt, "_http_post", _never)
+    monkeypatch.setattr(nt, "_http_get", _never)
 
 
 @pytest.fixture(autouse=True)

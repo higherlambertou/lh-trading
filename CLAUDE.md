@@ -219,6 +219,10 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   口數依建立先後分配、不超過部位、方向與代碼要對得上、**部位不在的舊監看一律丟掉（絕不能把舊停損掛到新部位）**，限價開倉單還掛著才留；連不上就保留檔案不動；③ **策略不自動恢復**（會下真單，刻意不做）；④ 〈部位〉橫幅＝`protection.unprotected()`（只有停損點數 > 0 且 `seen` 的監看、或策略在跑的微台算保護）；
   ⑤ **推播**（`core/notify.py`，Telegram／ntfy／webhook，只用 urllib、背景執行緒、永不丟例外、秘密不進 log、冷卻跨進程記在 `data/notify_cooldown.json`、全部失敗會還冷卻）：啟動報告（有持倉才送）、連不上券商、watchdog 判定凍結／進程消失且**最後已知有持倉**
   （後端每 5 秒寫 `data/position_state_<mode>.json`，watchdog 讀它；`python -m core.notify watchdog` 由 `run_live.sh`／`.ps1` 在 kill 之前背景呼叫，不能拖慢重啟）。**這些全部不下單**。新增會動 `ManualWatch` 的欄位時，記得決定要不要加進 `_SAVED_FIELDS`（暫時狀態不要存）。
+  **通知的種類與規則**（update.md 發現 34；全部只通知、不動委託）：除了上面的啟動報告／凍結，還有手動停損停利事件（`manual_monitor._note`：觸發／完成／第 3 次起重送／放棄）、保證金風險（`core/margin_watch.py`，掛在 `cache_refresh_loop`）、
+  手動單成交（`core/fill_notify.py`，掛在 `TradeLog.deal_listeners`；成交回報只有 trade_id，合約與買賣方向靠 `TradeLog._recent` 記的委託脈絡）、當沖倉位 13:15／13:25 提醒（`core/reminders.py`＋`daytrade.note_open`）。`core/notify.notify()` 在 `SIMULATION=true` 時不推播（`NOTIFY_SIM=true` 例外）。
+  新增通知一律走 `notify()`（背景執行緒、永不丟例外、有冷卻 key）；在交易路徑上呼叫要再包 try/except，**通知壞了不能影響平倉**。
+  **測試絕不能碰真實通道**：`.env` 有真的 Telegram token 之後，任何會載入 `.env`、或呼叫真的 `_http_post`／`_http_get` 的測試都會把假警示送到使用者手機（發現 34 的事故）——`tests/conftest.py` 已設 `NOTIFY_SKIP_DOTENV=1`、把兩個 HTTP 函式換成會直接失敗的替身；`tests/test_notify.py` 有測試守住它。
   測試的暫存目錄在 macOS 要 `fs.realpathSync`（`/var` 是 `/private/var` 的連結，否則 node 會把同一個模組載入兩份）。
 - **依波動的建議停損停利**（update.md 發現 33；`core/stop_calibration.py`、`core/stop_calibration.json`、`core/stop_suggest.py`、`GET /api/market/suggest`、前端〈委託〉面板的 `StopSuggestCard`）：**純顯示、不碰下單**。
   σ＝進場前最近 30 個 1 分鐘收盤價變動的樣本標準差（至少 25 個有效）——**`stop_calibration.trailing_sigma` 與 `stop_suggest.sigma_from_closes` 定義必須一致**（`tests/test_stop_suggest.py` 有一致性測試），距離一律用 k·σ√T。

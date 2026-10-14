@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from core import protection
 from core.broker import broker
 from core.manual_monitor import manual_monitor
+from core.margin_watch import margin_watcher
 from core.trade_log import current_mode
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ async def cache_refresh_loop() -> None:
             try:
                 _cache["margin"] = await asyncio.wait_for(broker.margin(), timeout=5)
                 _cache["updated_at"] = time.time()
+                margin_watcher.check(_cache["margin"])                    # 權益快被維持保證金追上就推播（只通知，update.md 發現 34）
             except Exception as e:
                 logger.debug("margin cache 刷新失敗（保留舊值）: %s", e)
 

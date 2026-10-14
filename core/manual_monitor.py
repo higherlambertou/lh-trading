@@ -9,6 +9,7 @@ from pathlib import Path
 
 from core.broker import broker
 from core.daytrade import close_octype
+from core.notify import notify
 from core.quote_hub import quote_hub
 from core.trade_log import current_mode, trade_log
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 # 平倉單的確認與重送：送出後不立刻移除監看，確認結果才決定移除或重送
 MAX_CLOSE_ATTEMPTS = 8        # 平倉單最多送幾次（每次重送前都先確認前一張的結果）
+RETRY_NOTICE_AT = 3           # 平倉單送到第幾次（含）以後，每次重送都推播（前一兩次沒成交很常見，不吵你）
 CLOSE_RETRY_MIN_GAP = 2.0     # 前一張確定沒成交（取消/失敗）後，至少隔幾秒才重送
 CLOSE_FILLED_GRACE = 5.0      # 前一張有成交但這個監看還有口數沒平：等持倉刷新再補平剩餘
 CLOSE_LIVE_TIMEOUT = 15.0     # IOC 不該掛這麼久：狀態一直是「處理中」超過這麼久，視為沒成交
@@ -79,6 +81,7 @@ class ManualWatch:
     close_gave_up: bool = False    # 超過 MAX_CLOSE_ATTEMPTS 仍未平倉：不再自動重送，需人工處理
     octype: str = "Auto"           # 期貨平倉單的倉別：開倉勾了當沖（DayTrade）就沿用（見 core/daytrade.py）；選擇權固定 Auto
     created_at: float = 0.0        # 登記時間（epoch 秒）：重啟後多個監看分配同一個部位的口數時，依建立先後
+    trig_kind: str = ""            # 觸發的是停損（sl）還是停利（tp）：推播用，不落地
 
 
 # 落地的欄位：只存「使用者設定了什麼」；平倉追蹤（close_*、retry_after…）是暫時狀態，重啟後從頭來
@@ -154,6 +157,21 @@ def _from_saved(d: dict) -> "ManualWatch":
     w = ManualWatch(**{k: v for k, v in d.items() if k in known and k != "remaining"})
     w.remaining = w.quantity                              # 重啟後這個監看要平的口數 ＝ 對帳後分到的口數
     return w
+
+
+_KIND_ZH = {"sl": "停損", "tp": "停利"}
+
+
+def _note(title: str, message: str, *, key: str | None = None, cooldown: float = 0.0, priority: str = "high") -> None:
+    """推播（背景執行緒、永不丟例外）；這裡再包一層：組訊息時的任何問題都不能影響平倉。"""
+    try:
+        notify(title, message, key=key, cooldown=cooldown, priority=priority)
+    except Exception:  # noqa: BLE001
+        logger.exception("停損停利推播失敗（已忽略，不影響平倉）")
+
+
+def _who(w: "ManualWatch", qty: int | None = None) -> str:
+    return f"{w.match_code or w.contract} {'多' if w.direction == 1 else '空'} {qty or w.remaining or w.quantity} 口"
 
 
 class ManualOrderMonitor:
@@ -453,6 +471,8 @@ class ManualOrderMonitor:
         # 先結算上一張平倉單：全數成交 → 這個監看的任務完成（持倉裡剩下的口數屬於別的單，不能動）
         if watch.close_order_id and self._settle(watch, order_status, order_fills or {}):
             logger.info("手動監控 [%s] 平倉單已全數成交，移除監控", watch.id)
+            _note("✅ 平倉完成", f"{_who(watch, watch.quantity)}（{_KIND_ZH.get(watch.trig_kind, '停損停利')}），共送出 {watch.close_attempts} 次平倉單。",
+                  key=f"done:{watch.id}", cooldown=3600)
             self.remove(watch.id)
             return
 
@@ -515,6 +535,8 @@ class ManualOrderMonitor:
             watch.close_gave_up = True
             logger.error("手動監控 [%s] 平倉單已送 %d 次仍未平倉，不再自動重送，請立刻手動處理！",
                          watch.id, watch.close_attempts)
+            _note("🚨 停損平不掉！請立刻手動處理", f"{_who(watch)}：平倉單已送 {watch.close_attempts} 次仍未平倉，系統不再自動重送。請立刻到券商 App 處理。",
+                  key=f"gaveup:{watch.id}", cooldown=600, priority="urgent")
             return
         remaining = watch.remaining or watch.quantity
         pos_qty = int(pos.get("quantity", 0) or 0)
@@ -524,6 +546,11 @@ class ManualOrderMonitor:
                            watch.id, reason, current_price, watch.close_attempts + 1, qty)
         else:
             logger.info("手動下單 [%s] %s @ %.0f，執行平倉", watch.id, reason, current_price)
+            watch.trig_kind = kind
+            pts = (current_price - watch.entry_price) * watch.direction
+            _note(f"{'🛑' if kind == 'sl' else '🎯'} {_KIND_ZH.get(kind, kind)}觸發",
+                  f"{_who(watch, qty)}：進場 {watch.entry_price:,.0f}，現價 {current_price:,.0f}（{pts:+.0f} 點），已送出平倉單，等待成交確認。",
+                  key=f"trig:{watch.id}", cooldown=3600, priority="urgent" if kind == "sl" else "high")
         # 成交紀錄用：設定的停損/停利價位與觸發當下的價格（滑價 = 實際成交價 vs 這些）
         ref = watch.entry_price + watch.direction * (
             watch.take_profit_pts if kind == "tp" else -watch.stop_loss_pts)
@@ -537,6 +564,9 @@ class ManualOrderMonitor:
         attempt = watch.close_attempts              # 0 = 第一次
         now = self._clock()
         watch.close_attempts += 1
+        if watch.close_attempts >= RETRY_NOTICE_AT:
+            _note("⚠️ 平倉單沒成交，重送中", f"{_who(watch, qty)}：第 {watch.close_attempts} 次送出平倉單（前一張沒成交）；超過 {MAX_CLOSE_ATTEMPTS} 次會放棄並再通知你。",
+                  key=f"retry:{watch.id}:{watch.close_attempts}", cooldown=600)
         # 先設好「結果不明時」的保護：就算送單丟例外/逾時（單可能已送達券商），也要等一下才重送，避免重複平倉
         watch.close_order_id, watch.close_qty = "", 0
         watch.retry_after = now + CLOSE_UNKNOWN_TIMEOUT

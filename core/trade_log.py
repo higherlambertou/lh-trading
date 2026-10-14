@@ -25,10 +25,10 @@ import queue
 import sqlite3
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from core import entry_log
 
@@ -38,6 +38,7 @@ DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "trade_log.db"
 FLUSH_INTERVAL = 1.0        # 秒
 FLUSH_BATCH = 200           # 筆
 QUEUE_MAX = 20_000
+RECENT_MAX = 500                 # 記住最近幾筆委託的脈絡（成交推播要知道是哪個合約、買還是賣、誰下的）
 RETRY_CAP = 5_000           # 寫入持續失敗時，緩衝超過此數量才丟棄
 IOC_UNFILLED_AFTER = 30     # IOC 單超過幾秒仍無成交/取消回報，才視為「沒成交」
 POINT_VALUE = {"TMF": 10, "MXF": 50, "TXF": 200}     # 期貨每點元數（選擇權不處理）
@@ -97,6 +98,8 @@ class TradeLog:
         self._dropped = 0
         self._tag: dict[str, Any] = {}
         self._entry: entry_log.EntrySync | None = None
+        self._recent: "OrderedDict[str, dict[str, Any]]" = OrderedDict()      # trade_id → 委託脈絡（成交推播用；成交回報只有 trade_id）
+        self.deal_listeners: list[Callable[[dict[str, Any], dict[str, Any]], None]] = []   # 每筆成交回報：(事件, 委託脈絡)；任何例外都吞掉
 
     # ── 脈絡（呼叫端在下單前設定）────────────────────────────────
     @contextmanager
@@ -127,6 +130,11 @@ class TradeLog:
             except Exception as e:                      # noqa: BLE001  進場快照的擷取失敗不能擋下單，但不能靜默
                 state_json = None
                 entry_log.alerts.fire("capture", f"{type(e).__name__}: {e}", str(trade_id or ""))
+            if trade_id:
+                self._recent[str(trade_id)] = {"strategy": str(ctx.get("strategy", "")), "reason": str(ctx.get("reason", "")), "contract": str(contract),
+                                               "action": str(action), "qty": int(qty)}
+                while len(self._recent) > RECENT_MAX:
+                    self._recent.popitem(last=False)
             self._put("order", (
                 ts or time.time(), current_mode(), str(trade_id or ""), str(ctx.get("strategy", "")),
                 str(ctx.get("reason", "")), str(contract), str(action), int(qty), str(price_type),
@@ -143,6 +151,12 @@ class TradeLog:
             return
         try:
             kind = "deal" if "Deal" in str(ev.get("state", "")) else "order"
+            if kind == "deal":
+                for fn in list(self.deal_listeners):                                    # 成交推播等：不能影響成交紀錄
+                    try:
+                        fn(ev, dict(self._recent.get(str(ev.get("trade_id") or ""), {})))
+                    except Exception:  # noqa: BLE001
+                        logger.exception("成交監聽失敗（已忽略）")
             self._put("event", (
                 time.time(), current_mode(), kind, str(ev.get("trade_id") or ""),
                 float(ev.get("price") or 0), int(ev.get("quantity") or 0),

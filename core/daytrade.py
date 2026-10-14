@@ -41,6 +41,20 @@ def check_octype(octype: str, contract: str, now: Optional[datetime] = None) -> 
     return None
 
 
+_MARKS: dict[tuple[str, int], str] = {}               # (合約, 方向) → 登記的日期；只在記憶體（重啟後靠停損停利監控的 octype 補）
+
+
+def note_open(contract: str, direction: int, now: Optional[datetime] = None) -> None:
+    """手動下單勾了當沖就登記：收盤前提醒（core/reminders.py）用它認出哪些部位是當沖倉位。"""
+    _MARKS[((contract or "").upper(), 1 if direction == 1 else -1)] = (now or taipei_now()).astimezone(TAIPEI).date().isoformat()
+
+
+def marks(now: Optional[datetime] = None) -> list[tuple[str, int]]:
+    """今天登記的當沖開倉（過期的不算）。"""
+    today = (now or taipei_now()).astimezone(TAIPEI).date().isoformat()
+    return [k for k, d in _MARKS.items() if d == today]
+
+
 def close_octype(octype: str, now: Optional[datetime] = None) -> str:
     """停損停利監控送平倉單用的倉別：當沖部位在日盤內用 DayTrade 平倉；日盤以外（理論上不會還有當沖部位）退回 Auto，
     免得平倉單被拒絕、停損送不出去。"""

@@ -205,9 +205,18 @@ def _deliver(title: str, message: str, priority: str, key: Optional[str], cooldo
     return res
 
 
+def sim_blocked() -> bool:
+    """模擬盤（SIMULATION=true）不推播：模擬的成交、持倉不是真錢，推到手機只會讓人混淆。NOTIFY_SIM=true 可打開。
+    只有明確寫 true 才擋（沒設定＝不擋，測試與 CLI 不受影響）；正式盤的 .env 是 SIMULATION=false。"""
+    return os.getenv("SIMULATION", "").strip().lower() == "true" and os.getenv("NOTIFY_SIM", "").strip().lower() != "true"
+
+
 def notify(title: str, message: str, *, key: Optional[str] = None, cooldown: float = 0.0, priority: str = "high", wait: bool = False) -> bool:
-    """推播一則警示。回傳 False ＝ 這件事在冷卻期內已經送過（沒有再送）。預設在背景執行緒送（不卡 event loop）；wait=True 在原地送。"""
+    """推播一則警示。回傳 False ＝ 這件事在冷卻期內已經送過、或是模擬盤（沒有再送）。預設在背景執行緒送（不卡 event loop）；wait=True 在原地送。"""
     try:
+        if sim_blocked():
+            logger.info("模擬盤：不推播（%s）", title)
+            return False
         if key and cooldown > 0 and not _claim(key, cooldown):
             logger.info("推播略過（%s 在 %.0f 秒冷卻內已送過）", key, cooldown)
             return False
@@ -223,12 +232,20 @@ def notify(title: str, message: str, *, key: Optional[str] = None, cooldown: flo
 
 # ── CLI ─────────────────────────────────────────────────────────
 
-def main(argv: Optional[list[str]] = None) -> int:
+def _load_dotenv() -> None:
+    """CLI 自己讀 repo 根目錄的 .env（watchdog 呼叫時環境變數是空的）。NOTIFY_SKIP_DOTENV=1 不讀——測試用：
+    測試絕不能載入真的 .env（裡面有真的 token，測試會把假警示送到使用者的手機）。"""
+    if os.getenv("NOTIFY_SKIP_DOTENV", "").strip().lower() in ("1", "true", "yes"):
+        return
     try:
         from dotenv import load_dotenv
         load_dotenv(ROOT / ".env")
     except ImportError:                                        # pragma: no cover
         pass
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    _load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  notify  %(message)s")
     ap = argparse.ArgumentParser(prog="python -m core.notify", description="手機推播（持倉保護警示）")
     sub = ap.add_subparsers(dest="cmd", required=True)

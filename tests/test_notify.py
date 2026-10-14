@@ -121,9 +121,9 @@ def test_a_long_message_is_cut(monkeypatch, http):
 
 def test_http_post_only_accepts_http_and_https():
     with pytest.raises(ValueError, match="http"):
-        nt._http_post("file:///etc/passwd", b"x", {})
+        nt.REAL_HTTP_POST("file:///etc/passwd", b"x", {})
     with pytest.raises(ValueError, match="http"):
-        nt._http_post("ftp://example.org/", b"x", {})
+        nt.REAL_HTTP_POST("ftp://example.org/", b"x", {})
 
 
 # ── 冷卻 ─────────────────────────────────────────────────────────
@@ -343,4 +343,45 @@ def test_chat_id_survives_a_non_json_reply(monkeypatch, capsys):
 
 def test_http_get_only_accepts_http_and_https():
     with pytest.raises(ValueError, match="http"):
-        nt._http_get("file:///etc/passwd")
+        nt.REAL_HTTP_GET("file:///etc/passwd")
+
+
+# ── 測試本身不能送出真的推播（這個檢查是為了防止再發生「測試把假警示送到使用者手機」）──
+
+def test_tests_can_never_reach_the_network_or_load_the_real_dotenv(monkeypatch):
+    import os
+    assert os.getenv("NOTIFY_SKIP_DOTENV") == "1"
+    with pytest.raises(BaseException) as e:
+        nt._http_post("https://api.telegram.org/botX/sendMessage", b"x", {})                  # 預設的 _http_post 是會直接失敗的替身
+    assert "測試不能真的送出推播" in str(e.value) and not isinstance(e.value, Exception)
+    with pytest.raises(BaseException):
+        nt._http_get("https://api.telegram.org/botX/getUpdates")
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URL", "https://hooks.example.org/x")
+    with pytest.raises(BaseException):
+        nt.send_sync("t", "m")                                                                 # 就算有設定通道，也送不出去（而且會大聲失敗，不是靜靜吞掉）
+
+
+def test_main_does_not_read_the_dotenv_file_when_told_not_to(monkeypatch, tmp_path):
+    loaded = []
+    import types, sys as _sys
+    fake = types.SimpleNamespace(load_dotenv=lambda path: loaded.append(path))
+    monkeypatch.setitem(_sys.modules, "dotenv", fake)
+    nt.main(["status"])
+    assert loaded == []                                                                        # NOTIFY_SKIP_DOTENV=1：不讀
+    monkeypatch.delenv("NOTIFY_SKIP_DOTENV")
+    nt.main(["status"])
+    assert len(loaded) == 1 and str(loaded[0]).endswith(".env")
+
+
+def test_simulation_mode_does_not_push(monkeypatch, http):
+    configure(monkeypatch, webhook=True)
+    monkeypatch.setenv("SIMULATION", "true")
+    assert nt.sim_blocked() is True
+    assert nt.notify("t", "m", wait=True) is False and http.calls == []                         # 模擬盤的成交與持倉不是真錢，不推到手機
+    monkeypatch.setenv("NOTIFY_SIM", "true")
+    assert nt.sim_blocked() is False and nt.notify("t", "m", wait=True) is True and len(http.calls) == 1
+    monkeypatch.setenv("SIMULATION", "false")
+    monkeypatch.delenv("NOTIFY_SIM")
+    assert nt.sim_blocked() is False
+    monkeypatch.delenv("SIMULATION")
+    assert nt.sim_blocked() is False                                                            # 沒設定＝不擋（測試、CLI）
