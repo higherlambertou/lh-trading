@@ -34,6 +34,16 @@ if (Test-Path ".env") {
 $HealthHost = if ($BindHost -in @("0.0.0.0", "", "localhost")) { "127.0.0.1" } else { $BindHost }
 $HealthUrl = "http://${HealthHost}:$Port/api/health"
 
+# 持倉中出事就推播手機（update.md 發現 32）：凍結時問不到後端，所以讀後端每 5 秒寫一次的持倉狀態檔。
+# 沒有持倉、沒有狀態檔、或沒設定通道就什麼都不送。背景執行，不拖慢重啟；失敗不影響重啟。
+function Send-Trouble {
+    param([string]$Event, [string]$Detail)
+    try {
+        Start-Process -FilePath "python" -ArgumentList @("-m", "core.notify", "watchdog", "--event", $Event, "--detail", $Detail, "--mode", "live") `
+            -NoNewWindow -RedirectStandardOutput (Join-Path $env:TEMP "lh_notify.out.log") -RedirectStandardError (Join-Path $env:TEMP "lh_notify.err.log") | Out-Null
+    } catch { Write-Log "推播呼叫失敗（略過）：$_" }
+}
+
 function Write-Log { param([string]$Msg) Write-Host ("{0}  [watchdog-live]  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Msg) }
 
 function Get-HealthCode {
@@ -86,7 +96,7 @@ try {
         $fails = 0
         while ($true) {
             Start-Sleep -Seconds $CheckInterval
-            if ($child.HasExited) { Write-Log "進程已不存在（自行結束），重啟"; break }
+            if ($child.HasExited) { Write-Log "進程已不存在（自行結束），重啟"; Send-Trouble "exit" "gone"; break }
             $code = Get-HealthCode
             if ($code -eq 200) {
                 $fails = 0
@@ -95,6 +105,7 @@ try {
                 Write-Log "health=$code（連續 $fails/$FailThreshold 次失敗）"
                 if ($fails -ge $FailThreshold) {
                     Write-Log "判定凍結 → kill PID=$($child.Id) 並重啟"
+                    Send-Trouble "freeze" "down"
                     Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
                     Start-Sleep -Seconds 3
                     break

@@ -16,6 +16,19 @@ def _never_touch_the_real_backend(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_pushes_or_state_files(monkeypatch):
+    """推播、持倉狀態檔、手動停損落地（update.md 發現 32）：測試預設全部關閉——絕不送真的推播、不寫進 repo 的 data/。
+    要測的測試自己指定暫存路徑與假通道。"""
+    for k in ("NOTIFY_TELEGRAM_TOKEN", "NOTIFY_TELEGRAM_CHAT_ID", "NOTIFY_NTFY_URL", "NOTIFY_WEBHOOK_URL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("NOTIFY_COOLDOWN_FILE", "")            # 空字串＝冷卻只用記憶體
+    monkeypatch.setenv("POSITION_STATE_FILE", "false")
+    monkeypatch.setenv("MANUAL_WATCH_PERSIST", "false")
+    import core.notify as nt
+    nt._memory_last.clear()
+
+
+@pytest.fixture(autouse=True)
 def _preopen_filter_off_by_default(monkeypatch):
     """盤前試算行情的隔離取決於「報價時間是幾點」。既有測試常用 time.time() 當報價時間，
     不能因為剛好在 08:30~08:45 或 14:50~15:00 執行就失敗；要測隔離的測試自己打開 qh.FILTER_PREOPEN。"""

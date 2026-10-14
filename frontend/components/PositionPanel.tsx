@@ -6,6 +6,8 @@ import {
   api, Position, Margin, ProfitLoss,
   pointValue, ORDER_PLACED_EVENT,
 } from "@/lib/api";
+import type { Unprotected } from "@/lib/protection";
+import UnprotectedBanner from "./UnprotectedBanner";
 
 function Num({ value }: { value: number }) {
   const pos = value >= 0;
@@ -25,6 +27,7 @@ export default function PositionPanel() {
   const [quotes, setQuotes] = useState<Record<string, number>>({});
   const [dataAge, setDataAge] = useState<number>(-1);
   const [posAge, setPosAge] = useState<number>(-1);   // 部位資料多久沒更新（-1 = 從未取得）
+  const [unprotected, setUnprotected] = useState<Unprotected[]>([]);   // 沒有停損保護的持倉（後端算好的；取不到就不顯示）
 
   const loadData = useCallback(async () => {
     const [posResult, marResult, pnlResult, metaResult] = await Promise.allSettled([
@@ -44,6 +47,7 @@ export default function PositionPanel() {
     if (pnlResult.status === "fulfilled") setPnlList(pnlResult.value);
     setDataAge(metaResult.status === "fulfilled" ? metaResult.value.age_sec : -1);
     setPosAge(metaResult.status === "fulfilled" ? (metaResult.value.positions_age_sec ?? -1) : -1);
+    setUnprotected(metaResult.status === "fulfilled" ? (metaResult.value.unprotected ?? []) : []);
   }, []);
 
   // 部位/保證金：10s 輪詢（後端快取 TTL 10s）＋下單事件立即刷新
@@ -92,6 +96,8 @@ export default function PositionPanel() {
           </span>
         )}
       </h2>
+
+      {positions.length > 0 && <UnprotectedBanner items={unprotected} />}
 
       {error ? (
         <p className="text-xs text-[#ff1744]/70 bg-[#ff1744]/5 border border-[#ff1744]/10 rounded p-3">

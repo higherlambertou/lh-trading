@@ -437,6 +437,54 @@ curl -s http://$H:8002/api/premarket/snapshots.csv -o premarket.csv
 - **歷史預檢**（不連券商、不需要重啟）：`python -m core.premarket_study fetch`（下載日線，每個來源一次請求）→ `sanity`（只看資料處理）→ `run`（4 個事先登記的檢定；墳場紀錄寫進 `premarket_graveyard`）。判定標準在跑之前寫在 update.md 發現 31、只跑一次，**不要為了湊出結果回頭改設計**。
 - 測試：`python -m pytest tests/test_premarket_log.py tests/test_premarket_study.py -q`。
 
+### 持倉保護（手動停損落地與重啟恢復、凍結與重啟的手機通知；update.md 發現 18、32）
+
+**需重啟後端才生效**（空手時重啟）。要手機通知就在 `.env` 設定通道（見 `.env.example`；不設定也行，只是少了推播，畫面橫幅與 log 照常）。
+
+```bash
+python -m core.notify status        # 目前設定了哪些通道（不顯示 token）
+python -m core.notify chat-id       # Telegram：列出對你的 bot 傳過訊息的聊天室 id（不會送訊息；token 讀 .env，不會印出來）
+python -m core.notify test          # 送一則測試訊息；收到才算設定成功（結束碼 0＝都成功、1＝有通道失敗、2＝沒設定）
+python -m core.notify send "標題" "內容" [--key K --cooldown 600]
+python -m core.notify watchdog --event freeze --detail down --mode live   # watchdog 內部用；手動跑可以看它會不會推播
+```
+
+- **手動停損停利落地**：登記、修改、移除都寫進 `data/manual_watches_live.json`（模擬盤 `_sim`；原子寫入）。後端（重新）啟動、券商連上後**對帳一次**再恢復：
+  同一個部位（合約代碼＋方向）的口數由監看依建立先後分配、不超過部位口數；**部位已經不在的舊監看直接丟掉**（不會把舊停損掛到你重啟期間手動開的新部位上）；
+  限價開倉單還掛在券商的，留著等成交。券商一直連不上（等 10 分鐘）就原封不動保留檔案、推播通知。log 找「手動停損停利監控 [id] 已恢復／不恢復」。
+  **限制**：恢復的是你當初設的停損停利點數與進場價；重啟期間你若在券商 App 動過這個部位（加減碼、改價），要自己確認停損價（推播訊息會列出恢復的停損價）。
+  `MANUAL_WATCH_PERSIST=false` 關閉落地、`MANUAL_WATCH_STATE` 指定檔案。
+- **策略不會自動恢復**（自動重啟會下真單，我們沒做）：重啟後有微台持倉、沒有手動停損監控 → 視為沒有保護。
+- **沒有停損保護的持倉**：〈部位〉面板標題下方的黃色橫幅（`GET /api/position/meta` 的 `unprotected`；沒有策略在跑、也沒有「停損點數 > 0 且已看到部位」的手動監看覆蓋的口數）。只有停利、沒有停損的監看不算保護。
+- **推播什麼時候送**：① 後端啟動、對帳完、**有持倉**時一則報告（恢復了什麼和停損價，或哪些持倉沒有保護）；② 連不上券商、停損監控沒恢復；
+  ③ watchdog 判定凍結／斷線／進程消失、要重啟之前，**且最後已知有持倉**（後端每 5 秒把持倉寫進 `data/position_state_live.json`，watchdog 讀它，不必問已凍結的後端）。
+  沒有持倉就不打擾；同樣的事 10 分鐘內只推一次（冷卻記在 `data/notify_cooldown.json`，跨進程有效）；推播失敗會把冷卻還回去、下一次事件再試。
+  `run_live.sh`／`run_live.ps1` 都有掛（`.ps1` 沒在 Windows 上實測）；模擬盤不推播。
+- **設定 Telegram（建議）**，用跑後端的那個 Python（`/Users/lambert/anaconda3/bin/python3.11`），在 repo 根目錄：
+  ① @BotFather 建立 bot，拿到 token；② 在 Telegram **先對你的 bot 傳一則訊息**（隨便，例如 `/start`——bot 不能主動找你）；③ 把 `NOTIFY_TELEGRAM_TOKEN=…` 寫進 `.env`（**token 只放 `.env`，不要貼到聊天或 commit**）；
+  ④ `python -m core.notify chat-id` → 印出聊天室 id，把 `NOTIFY_TELEGRAM_CHAT_ID=…` 也寫進 `.env`；⑤ `python -m core.notify test` → 手機收到「推播測試」才算成功。
+  **不用重啟**：watchdog 每次呼叫都重新讀 `.env`；後端下次（重新）啟動時讀到設定，之後的啟動報告就會推播。
+- **通道**：Telegram bot（私人、免費，建議）、ntfy（主題名稱就是密碼：用一長串隨機字或自架）、自訂 webhook。訊息只放合約、方向、口數與停損點數，不放帳號與權益；token／網址不會出現在 log。
+  **推播是把這些資訊送到第三方服務**，通道由你自己設定，沒設定就不會送。
+- 測試：`python -m pytest tests/test_notify.py tests/test_protection.py tests/test_manual_restore.py tests/test_startup_protection.py tests/test_frontend_protection.py -q`。
+
+### 依波動的建議停損停利（只顯示、不碰下單；update.md 發現 33）
+
+**需重啟後端＋前端 build**。〈委託〉面板（期貨模式）的停損停利欄下方有〈建議停損停利（依波動）〉卡：選持有時間（5／15／30／60 分鐘），它用**最近 30 分鐘 1 分鐘收盤價變動的標準差 σ**（點／分鐘）算雜訊範圍 σ√T，給三組型態：
+高勝率型（停利 0.5σ√T／停損 2σ√T）、平衡（1／1.5）、高賺賠比型（1.5／1）——三組的停利＋停損一樣，所以「要比沒有技巧的勝率多贏幾個百分點才打平成本」（＝成本÷(停利＋停損)）一樣：**改比例只是把勝率換成賺賠比，期望值不變**。
+每組還有停損被雜訊掃到的機率（`core/stop_calibration.json` 的實測表）、單口停損虧多少（元、占權益 %）、單筆風險限額下最多幾口、（日盤 09:15 之後）停利是否比今天預期剩餘振幅的上緣還遠。「帶入」會把停損停利填進上面的欄位（還要自己按下單）。
+
+```bash
+curl -s "http://$H:8002/api/market/suggest?contract=TMF&horizon=15" | python3 -m json.tool | head -60   # contract：TMF／MXF／TXF；horizon：5／15／30／60
+python -m core.stop_calibration check-source    # TMF 真實成交的 σ 與 TXF 1 分 K 的 σ 一致嗎（中位數要在 0.9～1.1）
+python -m core.stop_calibration run             # 重算校準表並印報告（不加 --write 不會覆蓋 JSON）
+```
+- **參數**（`.env`，見 `.env.example`）：`SUGGEST_COST_PTS`（每筆來回成本，預設 4 點是**假設**，請改成自己的手續費＋稅＋滑價）、`SUGGEST_RISK_PCT`（單筆風險占權益上限，預設 1）。
+- **資料不夠就不給建議**：最近 30 分鐘有效的 1 分鐘變動少於 25 個（成交太少、休市）會寫原因、不給數字。σ 來自 `flow_1m`（TMF 真實成交的 1 分 K，後端記錄；重啟後端期間沒記到的分鐘就是缺值）。
+- **校準表是一次性的測量**：`core/stop_calibration.json` 是事先登記（update.md 發現 33）、跑一次的結果，**不要為了讓數字好看重算**；要重算（例如累積更多夜盤）請先重新登記標準。夜盤只有約 39 晚，一律標「樣本少」。
+- **這不是進場訊號**：進場沒有資訊時每筆期望值＝−成本，與停損停利怎麼放無關；高勝率型只是用大的風險換小的獲利。**在目前的波動下，把停損放在雜訊外，1 口微台就是權益的 1～2%**（卡片會直接寫「1 口就超過 1% 風險」）。
+- 測試：`python -m pytest tests/test_stop_calibration.py tests/test_stop_suggest.py tests/test_frontend_stop_suggest.py -q`。
+
 ### 備份與 tick 瘦身
 
 **自動備份**：每個交易日 `BACKUP_TIME`（預設 14:00）把 `market_state.db`、`trade_log.db` 備份到 `data/backup/日期/`（`BACKUP_DIR` 可改位置），
@@ -551,8 +599,8 @@ health 回傳：
 
 **說明**：
 - 這是**正常的自動恢復機制**，服務不用手動干預
-- ⚠ 但**持倉不會跟著恢復**：重啟後策略不會自動啟動、手動下單的停損停利監控也消失（update.md 發現 18）。
-  當時若有部位，服務回來後第一件事是看〈部位〉，再重新啟動策略（會接管部位並套用它的停損停利）或手動平倉
+- ⚠ 持倉的保護只恢復一半（update.md 發現 18、32）：**手動停損停利監控會落地、重啟後和券商部位對帳自動恢復**；**策略不會自動啟動**。
+  當時若有部位，服務回來後第一件事是看〈部位〉（有黃色「沒有停損保護」橫幅就要處理），再重新啟動策略（會接管部位並套用它的停損停利）或手動平倉；設定好推播通道的話，凍結與重啟時手機會收到通知（見下面〈持倉保護〉）
 - watchdog 每 15 秒檢查一次，連續 2 次失敗才重啟
 - 短命重啟（活不滿 10 分鐘）會自動延長重啟間隔（30s → 120s → 600s），保護永豐的登入額度限制
 

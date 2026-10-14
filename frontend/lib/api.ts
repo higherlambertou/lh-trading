@@ -46,6 +46,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 import type { BacktestInfo, BacktestJob, BacktestRequest } from "./backtest";
 import type { CalcBody, CloseBody, OptCalc, OptChain, OptClose } from "./options";
 import type { PmPreview, PmSnapshot, PmStatus } from "./premarket";
+import type { Unprotected } from "./protection";
+import type { Suggest } from "./stopSuggest";
 
 /** 把 req() 丟出的 `409 — {"detail":"…"}` 還原成後端給的那句說明（FastAPI 的錯誤主體是 JSON），不是 JSON 就原樣回傳。 */
 export function apiErrorDetail(e: unknown): string {
@@ -417,6 +419,7 @@ export const api = {
   market: {
     state: () => req<MarketState>("/market/state"),
     live: () => req<LiveState>("/market/live"),
+    suggest: (contract: string, horizon: number) => req<Suggest>(`/market/suggest?contract=${encodeURIComponent(contract)}&horizon=${horizon}`),
     replay: (q: Record<string, string | number | boolean>) =>
       req<Replay>(`/market/replay?${new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))}`),
     // POST 的回應刻意標成 unknown：呼叫端送出後要重抓 state()，不可把回應直接當 MarketState 用
@@ -468,7 +471,7 @@ export const api = {
     margin: () => req<Margin>("/position/margin"),
     pnl: () => req<ProfitLoss[]>("/position/pnl"),
     usage: () => req<Usage>("/position/usage"),
-    meta: () => req<{ updated_at: number; age_sec: number; positions_age_sec?: number; pnl_age_sec?: number }>("/position/meta"),
+    meta: () => req<{ updated_at: number; age_sec: number; positions_age_sec?: number; pnl_age_sec?: number; unprotected?: Unprotected[] }>("/position/meta"),
   },
   order: {
     place: (data: OrderRequest) =>

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, ArrowDown } from "lucide-react";
 import { api, isSimMode, notifyOrderPlaced } from "@/lib/api";
+import StopSuggestCard from "./StopSuggestCard";
 
 type Action = "Buy" | "Sell";
 type PriceType = "MKT" | "LMT";
@@ -638,6 +639,8 @@ export default function OrderPanel() {
           />
         </div>
       </div>
+
+      {!isOption && <StopSuggestCard contract={contract} onApply={(sl, tp) => { setStopLoss(sl); setTakeProfit(tp); }} />}
 
       {optErr && isOption && (
         <div className="mb-3 text-xs px-3 py-2 rounded border bg-[#ff1744]/10 text-[#ff1744] border-[#ff1744]/20">

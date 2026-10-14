@@ -163,3 +163,65 @@ def test_a_short_blip_does_not_log_a_warning(monkeypatch, caplog):
         sleeps, _ = run_loop(monkeypatch, [asyncio.TimeoutError(), [POS]], stop_after=5)
     assert sleeps[:4] == [3, 10, 5, 5]
     assert "連續失敗" not in caplog.text and "恢復" not in caplog.text    # 偶發的一次失敗不吵
+
+
+# ── 沒有停損保護的持倉（update.md 發現 18、32）────────────────────────
+
+class FakeMonitor:
+    def __init__(self, watches=()):
+        self._w = list(watches)
+
+    def list_watches(self):
+        return self._w
+
+
+def covering_watch(**kw):
+    w = {"id": "w1", "match_code": "TMF", "direction": "Buy", "quantity": 1, "remaining": 1, "stop_loss_pts": 50, "take_profit_pts": 0,
+         "is_option": False, "seen": True, "close_gave_up": False}
+    w.update(kw)
+    return w
+
+
+def test_meta_lists_the_positions_nobody_is_watching(monkeypatch):
+    monkeypatch.setitem(rp._cache, "positions", [POS])
+    monkeypatch.setattr(rp, "_strategy_running", lambda: False)
+    monkeypatch.setattr(rp, "manual_monitor", FakeMonitor())
+    assert rp.get_meta()["unprotected"] == [{"code": "TMFJ6", "direction": "Buy", "quantity": 1, "total": 1}]
+    monkeypatch.setattr(rp, "manual_monitor", FakeMonitor([covering_watch()]))
+    assert rp.get_meta()["unprotected"] == []                                          # 手動停損監控蓋住了
+    monkeypatch.setattr(rp, "manual_monitor", FakeMonitor([covering_watch(stop_loss_pts=0, take_profit_pts=30)]))
+    assert len(rp.get_meta()["unprotected"]) == 1                                      # 只有停利不算
+    monkeypatch.setattr(rp, "manual_monitor", FakeMonitor())
+    monkeypatch.setattr(rp, "_strategy_running", lambda: True)
+    assert rp.get_meta()["unprotected"] == []                                          # 策略在跑（微台）
+    monkeypatch.setitem(rp._cache, "positions", [])
+    assert rp.get_meta()["unprotected"] == []
+
+
+def test_the_refresh_loop_writes_the_position_state_file_for_the_watchdog(monkeypatch, tmp_path):
+    path = tmp_path / "state.json"
+    monkeypatch.setenv("POSITION_STATE_FILE", "true")
+    monkeypatch.setenv("POSITION_STATE_PATH", str(path))
+    monkeypatch.setattr(rp, "_strategy_running", lambda: False)
+    monkeypatch.setattr(rp, "manual_monitor", FakeMonitor())
+    run_loop(monkeypatch, [[POS]], stop_after=3)
+    from core.protection import load_position_state
+    d = load_position_state(path)
+    assert d["positions"] == [{"code": "TMFJ6", "direction": "Buy", "quantity": 1, "price": 100.0}] and d["mode"] in ("sim", "live")
+    assert d["unprotected"] == [{"code": "TMFJ6", "direction": "Buy", "quantity": 1, "total": 1}] and d["ts"] > 0
+
+
+def test_a_failed_refresh_does_not_touch_the_state_file(monkeypatch, tmp_path):
+    path = tmp_path / "state.json"
+    monkeypatch.setenv("POSITION_STATE_FILE", "true")
+    monkeypatch.setenv("POSITION_STATE_PATH", str(path))
+    monkeypatch.setattr(rp, "manual_monitor", FakeMonitor())
+    run_loop(monkeypatch, [asyncio.TimeoutError()], stop_after=3)
+    assert not path.exists()                                                           # 查不到部位：不能寫一個「沒有持倉」的檔案騙 watchdog
+
+
+def test_the_state_file_is_off_by_default_in_tests_and_can_be_disabled(monkeypatch, tmp_path):
+    path = tmp_path / "state.json"
+    monkeypatch.setenv("POSITION_STATE_PATH", str(path))                               # conftest 已設 POSITION_STATE_FILE=false
+    run_loop(monkeypatch, [[POS]], stop_after=3)
+    assert not path.exists()

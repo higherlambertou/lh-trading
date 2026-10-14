@@ -5,7 +5,7 @@ const path = require("path"), fs = require("fs"), os = require("os"), Module = r
 const ROOT = path.resolve(__dirname, "..", ".."), FRONT = path.join(ROOT, "frontend");
 process.env.NODE_PATH = path.join(FRONT, "node_modules"); Module._initPaths();
 const ts = require("typescript"), React = require("react");
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "daytrade-check-"));
+const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "daytrade-check-")));   // realpath：macOS 的 /var 是 /private/var 的連結，不然同一個模組會被載入兩份
 process.on("exit", () => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* 忽略 */ } });
 
 const transpile = (src, out) => {
@@ -22,8 +22,15 @@ global.__api_stub = { api: { order: { place: spy("place"), placeOption: spy("pla
                              quote: { last: () => Promise.resolve({}) } },
                       isSimMode: () => true, notifyOrderPlaced: () => {} };
 fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = global.__api_stub;");
+// 〈建議停損停利〉卡（StopSuggestCard）有自己的檢查（stop_suggest_check.js）：這裡換成替身，只驗證它放在哪裡、帶入會填哪兩格
+fs.writeFileSync(path.join(TMP, "suggest_stub.js"), "module.exports = { __esModule: true, default: function StopSuggestStub() { return null; } };");
 const orig = Module._resolveFilename;
-Module._resolveFilename = function (req, ...r) { return req === "@/lib/api" ? path.join(TMP, "api_stub.js") : orig.call(this, req, ...r); };
+Module._resolveFilename = function (req, ...r) {
+  if (req === "@/lib/api") return path.join(TMP, "api_stub.js");
+  if (req === "./StopSuggestCard") return path.join(TMP, "suggest_stub.js");
+  return orig.call(this, req, ...r);
+};
+const SuggestCard = require(path.join(TMP, "suggest_stub.js")).default;
 const Comp = transpile(path.join(FRONT, "components", "OrderPanel.tsx"), path.join(TMP, "panel.js")).default;
 
 // 狀態順序必須和元件裡 useState 的宣告順序一致
@@ -140,6 +147,19 @@ const lastPlace = () => [...calls].reverse().find((c) => c[0] === "place")?.[1];
     await submit(tree).props.onClick(); await tick();
     const o = calls.find((c) => c[0] === "placeOption");
     check("選擇權下單不帶 octype（就算 dayTrade 殘留 true）", !!o && !("octype" in o[1]), J(o));
+  }
+
+  // ── 〈建議停損停利〉卡：只在期貨模式、帶入會填停損與停利兩格 ──
+  for (const c of ["TMF", "MXF", "TXF"]) {
+    const { tree } = render({ contract: c });
+    const cards = find(tree, (e) => e.type === SuggestCard);
+    check(`${c}：期貨模式有建議停損停利卡，帶的是目前的合約`, cards.length === 1 && cards[0].props.contract === c, J(cards.map((x) => x.props.contract)));
+  }
+  check("選擇權模式沒有建議停損停利卡（權利金的停損停利不是這樣算的）", find(render({ mode: "option" }).tree, (e) => e.type === SuggestCard).length === 0);
+  {
+    const { tree, sets } = render({ contract: "TMF", stopLoss: "5", takeProfit: "6" });
+    find(tree, (e) => e.type === SuggestCard)[0].props.onApply("102", "68");
+    check("帶入：把建議的停損、停利填進兩個欄位（字串）", J(sets.filter(([n]) => n === "stopLoss" || n === "takeProfit")) === J([["stopLoss", "102"], ["takeProfit", "68"]]), J(sets));
   }
 
   console.log(fail ? `\n${fail} 項失敗` : "\n全部通過");

@@ -31,6 +31,7 @@ from api.routes_premarket import router as premarket_router
 from core.option_spread_log import spread_log_loop
 from core.premarket_log import premarket_log_loop
 from core.manual_monitor import manual_monitor
+from core.startup_protection import protect_after_start
 from core.tick_store import tick_recorder
 from core.flow_store import flow_recorder
 from core.trade_log import trade_log
@@ -86,6 +87,7 @@ async def lifespan(app: FastAPI):
     spread_task    = (loop.create_task(spread_log_loop(broker, quote_hub))      # 選擇權買賣價差的時段紀錄（只記錄；OPTION_SPREAD_LOG=false 關閉）
                       if os.getenv("OPTION_SPREAD_LOG", "true").lower() == "true" else None)
     premarket_task = loop.create_task(premarket_log_loop())               # 盤前跨市場資訊紀錄（只記錄、不影響交易；PREMARKET_LOG=false 關閉）
+    protect_task = loop.create_task(protect_after_start())                # 重啟後：恢復手動停損監控、報告沒有保護的持倉（自己等券商連上；不下單）
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
     startup_task.cancel()
@@ -96,6 +98,7 @@ async def lifespan(app: FastAPI):
     if spread_task:
         spread_task.cancel()
     premarket_task.cancel()
+    protect_task.cancel()
     tick_recorder.stop()
     flow_recorder.stop()
     backtest_manager.shutdown()          # 回測子行程不能變成孤兒繼續吃 CPU

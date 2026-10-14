@@ -214,6 +214,17 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   **面板與預覽**：前端〈市場〉分頁〈盤前跨市場快照〉（`PremarketPanel.tsx`、`lib/premarket.ts`；`tests/test_frontend_premarket.py` 用後端現算的資料渲染）。`GET /api/premarket/preview` 是『如果現在記』的試算：不寫入、60 秒快取、**會去抓外部來源，不要輪詢**（面板只在載入、按鈕、後端從失敗恢復時各呼叫一次）。
   `run_once` 的檢查順序固定：已記過 → **台股日曆（休市就 skipped）** → T 之前 → 13:45 之後；**日曆一定先於時間窗**，否則週末／假日重啟會誤報錯過。錯過只記 WARNING＋`premarket_errors`（`missed`），不算失敗警示；證交所日曆抓不到時 10 分鐘內不重試。
   **歷史預檢**（`python -m core.premarket_study fetch|sanity|run`，不連券商）：TX 日行情的**盤後列的交易日期＝它之後那個日盤的交易日**；對齊與特徵直接用 `premarket_log` 的函式（同一套定義）；判定標準事先寫在 update.md、只跑一次。結論：VIX（相對近 20 日平均）對日盤波動有增量，費半沒有；只決定要不要繼續記錄，不決定上線。
+- **持倉保護**（update.md 發現 18、32；`core/protection.py`、`core/notify.py`、`core/startup_protection.py`、`core/manual_monitor.py` 的落地與 `reconcile`）：停損停利以前只活在進程記憶體，凍結／重啟（watchdog 常態）就消失。
+  ① **手動停損監控落地**（`data/manual_watches_<mode>.json`，原子寫入，登記／修改／移除都存；測試預設關閉＝`state_path=None`，只有 `setup()` 才指定）；② **重啟後對帳恢復**：`main.py` 啟動時建一個 `protect_after_start()` 背景工作（自己等券商連上，最多 10 分鐘），用 `reconcile()` 把落地的監看和**券商現在的部位**對帳——
+  口數依建立先後分配、不超過部位、方向與代碼要對得上、**部位不在的舊監看一律丟掉（絕不能把舊停損掛到新部位）**，限價開倉單還掛著才留；連不上就保留檔案不動；③ **策略不自動恢復**（會下真單，刻意不做）；④ 〈部位〉橫幅＝`protection.unprotected()`（只有停損點數 > 0 且 `seen` 的監看、或策略在跑的微台算保護）；
+  ⑤ **推播**（`core/notify.py`，Telegram／ntfy／webhook，只用 urllib、背景執行緒、永不丟例外、秘密不進 log、冷卻跨進程記在 `data/notify_cooldown.json`、全部失敗會還冷卻）：啟動報告（有持倉才送）、連不上券商、watchdog 判定凍結／進程消失且**最後已知有持倉**
+  （後端每 5 秒寫 `data/position_state_<mode>.json`，watchdog 讀它；`python -m core.notify watchdog` 由 `run_live.sh`／`.ps1` 在 kill 之前背景呼叫，不能拖慢重啟）。**這些全部不下單**。新增會動 `ManualWatch` 的欄位時，記得決定要不要加進 `_SAVED_FIELDS`（暫時狀態不要存）。
+  測試的暫存目錄在 macOS 要 `fs.realpathSync`（`/var` 是 `/private/var` 的連結，否則 node 會把同一個模組載入兩份）。
+- **依波動的建議停損停利**（update.md 發現 33；`core/stop_calibration.py`、`core/stop_calibration.json`、`core/stop_suggest.py`、`GET /api/market/suggest`、前端〈委託〉面板的 `StopSuggestCard`）：**純顯示、不碰下單**。
+  σ＝進場前最近 30 個 1 分鐘收盤價變動的樣本標準差（至少 25 個有效）——**`stop_calibration.trailing_sigma` 與 `stop_suggest.sigma_from_closes` 定義必須一致**（`tests/test_stop_suggest.py` 有一致性測試），距離一律用 k·σ√T。
+  `core/stop_calibration.json` 是**事先登記、跑一次**的實測表（1,609 個日盤的 TXF 1 分 K、39 晚夜盤的 TMF `flow_1m`）：被雜訊掃到的機率（肥尾：3σ 實測 1.3%、常態公式 0.3%）、沒有技巧時 T 分鐘內停利先到／停損先到／都沒到；**不要為了數字好看重算，重算先重新登記**。
+  **勝率不是優勢**：進場沒有資訊時每筆期望值＝−成本（停止定理），與停損停利怎麼放無關；基準勝率＝停損÷(停利＋停損)（持有到碰到一邊為止）；要靠時機多贏成本÷(停利＋停損)個百分點才打平。有時間限制時已結算勝率偏向近的那邊，**不要拿公式值當 T 分鐘內的勝率**。
+  執行時 σ 來自 `flow_1m`（TMF 真實成交，與 TXF 的 σ 比值中位數 0.988）；端點只讀本機資料庫與記憶體、不查券商，成交太少就不給建議。新增持有時間或 k 倍數要同步 `stop_calibration` 的網格與 JSON。
 - **手動停損確認**（`core/manual_monitor.py`）：觸發後送出平倉單**不立刻移除監看**，用委託狀態確認——全數成交才移除、沒成交才重送
   （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
   動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。

@@ -5,7 +5,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from core import protection
 from core.broker import broker
+from core.manual_monitor import manual_monitor
+from core.trade_log import current_mode
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -83,14 +86,32 @@ async def refresh_pnl() -> bool:
     return True
 
 
-def _pnl_interval() -> float:
-    """策略執行中降頻：帳務查詢會佔住 worker，不要在 scalp 下單的時候搶時間。"""
+def _strategy_running() -> bool:
     try:
         from api.routes_strategy import strategy_engine
-        busy = any(s.state.is_running for s in strategy_engine.strategies.values())
+        return any(s.state.is_running for s in strategy_engine.strategies.values())
     except Exception:
-        busy = False
-    return PNL_REFRESH_BUSY_SEC if busy else PNL_REFRESH_IDLE_SEC
+        return False
+
+
+def _pnl_interval() -> float:
+    """策略執行中降頻：帳務查詢會佔住 worker，不要在 scalp 下單的時候搶時間。"""
+    return PNL_REFRESH_BUSY_SEC if _strategy_running() else PNL_REFRESH_IDLE_SEC
+
+
+def current_unprotected() -> list[dict[str, Any]]:
+    """沒有人看著停損的持倉（沒有策略在跑、也沒有手動停損監控）。只讀快取與記憶體，不查券商。"""
+    return protection.unprotected(_cache["positions"], manual_monitor.list_watches(), _strategy_running())
+
+
+def _write_position_state() -> None:
+    """每次部位刷新成功就寫一個小檔案：watchdog 在後端凍結時靠它知道「有沒有持倉」（問不到已凍結的後端）。失敗只記 log。"""
+    if not protection.state_enabled():
+        return
+    try:
+        protection.write_position_state(_cache["positions"], current_unprotected(), current_mode())
+    except Exception as e:  # noqa: BLE001
+        logger.debug("持倉狀態檔寫入失敗（略過）: %r", e)
 
 
 def next_delay(fails: int) -> float:
@@ -119,6 +140,7 @@ async def positions_refresh_loop() -> None:
                 if fails >= BACKOFF_NOTICE:
                     logger.info("部位刷新恢復（先前連續失敗 %d 次），間隔回到 %d 秒", fails, POSITION_REFRESH_SEC)
                 fails = 0
+                _write_position_state()
                 now = time.time()
                 if now - _pnl_try_at >= _pnl_interval():
                     _pnl_try_at = now
@@ -137,7 +159,7 @@ def get_positions() -> list[dict[str, Any]]:
 
 
 @router.get("/meta")
-def get_meta() -> dict[str, float]:
+def get_meta() -> dict[str, Any]:
     now = time.time()
 
     def age(t: float) -> float:
@@ -148,6 +170,7 @@ def get_meta() -> dict[str, float]:
         "age_sec": age(_cache["updated_at"]),                # 保證金快取的時效（原有欄位）
         "positions_age_sec": age(_cache["positions_at"]),    # 部位（-1 = 從未成功刷新）
         "pnl_age_sec": age(_cache["pnl_at"]),
+        "unprotected": current_unprotected(),               # 沒有停損保護的持倉（畫面的橫幅用；update.md 發現 32）
     }
 
 

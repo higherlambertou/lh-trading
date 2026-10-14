@@ -1,12 +1,15 @@
 import asyncio
 import logging
+import time
 from datetime import date
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from api.routes_position import _cache as position_cache
 from api.routes_strategy import strategy_engine
+from core import stop_suggest
 from core.broker import broker
 from core.daily_summary import TICK_SEC, market_state
 from core.live_state import FLOW_DOWN, FLOW_MARGIN, FLOW_UP
@@ -58,6 +61,28 @@ async def get_live() -> dict[str, Any]:
     """盤中即時狀態：真實成交的外/內盤比例、日盤振幅、與盤前判斷是否同向（純讀記憶體，僅供顯示）。
     用 async（跑在 event loop）讀取，與 tick 餵入同一執行緒，不需要鎖。"""
     return await market_state.live_snapshot()
+
+
+@router.get("/suggest")
+async def get_suggest(contract: str = "TMF", horizon: int = 15) -> dict[str, Any]:
+    """依波動的建議停損停利（update.md 發現 33）：最近 30 分鐘的 σ、持有時間 T 的雜訊範圍、三組停損停利與它們的基準勝率、要靠時機多贏幾個百分點才打平成本、
+    單口虧多少與單筆風險限額下最多幾口。只讀本機資料庫與記憶體，不對券商發查詢；只顯示，不碰下單。"""
+    contract = contract.upper()
+    if contract not in stop_suggest.POINT_VALUE:
+        raise HTTPException(422, "contract 要是 TMF／MXF／TXF")
+    if horizon not in stop_suggest.HORIZONS:
+        raise HTTPException(422, f"horizon 要是 {list(stop_suggest.HORIZONS)} 其中之一（分鐘）")
+    now = time.time()
+    rows = await asyncio.to_thread(market_state.store.flow_1m, "TMF", now - 3600)
+    live: Optional[dict[str, Any]] = None
+    try:
+        live = await market_state.live_snapshot()                       # 取今天的尺度（已走多少、預期還會走多少）；壞了不影響主要內容
+    except Exception:
+        logger.debug("suggest：取不到盤中時段脈絡（略過）", exc_info=True)
+    margin = position_cache.get("margin") or {}
+    equity = margin.get("equity")
+    return stop_suggest.suggest_now(rows, now, contract=contract, horizon=horizon, equity=float(equity) if equity else None,
+                                    table=stop_suggest.load_table(), ctx=(live or {}).get("ctx"))
 
 
 @router.post("/refresh")

@@ -9,7 +9,8 @@
 # 偵測到凍結就自動 kill -9 + 重啟。
 #
 # 重啟為什麼安全：啟動流程本身會自動對帳既有部位、清理殘留委託，帳不會亂。
-# 唯一代價是重啟那 ~10-30 秒沒人看盤，停損會延遲到重啟完成後補上。
+# 重啟那幾十秒到幾分鐘（重新登入）沒人看盤；手動停損停利現在會落地、重啟後和券商部位對帳恢復，
+# 持倉中出事會推播手機（update.md 發現 32）。策略不會自動重啟，有持倉但沒人保護時會推播警告。
 #
 # ⚠️ 這是「正式盤・真實下單・真錢」，啟動前請確認 .env 的 SIMULATION=false。
 #
@@ -37,6 +38,7 @@ fi
 echo $$ > "$LOCK_DIR/pid"
 
 PORT=8002
+PY=/Users/lambert/anaconda3/bin/python3.11
 # 正式盤 main.py 綁定 .env 的 BIND_HOST（多機部署用的 Tailscale IP），
 # 不是 localhost，所以健康檢查必須打同一個 host，否則會誤判「啟動失敗」而狂殺健康進程。
 BIND_HOST=$(grep -E '^BIND_HOST=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"' ")
@@ -68,6 +70,13 @@ cleanup() {
     exit 0
 }
 trap cleanup INT TERM
+
+# 持倉中出事就推播手機（update.md 發現 32）：凍結時問不到後端，所以讀後端每 5 秒寫一次的持倉狀態檔
+# （data/position_state_live.json）。沒有持倉、沒有狀態檔、或沒設定通道就什麼都不送（設定見 core/notify.py）。
+# 放背景執行：推播最多等幾秒的網路逾時，不能拖慢重啟（重啟越慢，持倉沒保護的時間越長）；失敗也不影響重啟。
+notify_trouble() {   # $1 = freeze | exit    $2 = down | nobroker | gone
+    ( "$PY" -m core.notify watchdog --event "$1" --detail "$2" --mode live >> "$APP_LOG" 2>&1 & ) 2>/dev/null
+}
 
 # 回傳健康狀態：
 #   healthy  = HTTP 200 且 broker_connected:True（真正可用）
@@ -123,7 +132,7 @@ while true; do
 
     free_port
     log "啟動 main.py（正式盤）…"
-    /Users/lambert/anaconda3/bin/python3.11 main.py >> "$APP_LOG" 2>&1 &
+    "$PY" main.py >> "$APP_LOG" 2>&1 &
     CHILD_PID=$!
     started=$(date +%s)
     ready=0
@@ -134,6 +143,7 @@ while true; do
         sleep "$CHECK_INTERVAL"
         if ! kill -0 "$CHILD_PID" 2>/dev/null; then
             log "進程已不存在（登入失敗或自行結束），重啟"
+            notify_trouble exit gone
             break
         fi
         state=$(health_state)
@@ -158,6 +168,7 @@ while true; do
         log "異常 state=${state}（連續 ${fails}/${FAIL_THRESHOLD}，elapsed=${elapsed}s）"
         if [ "$fails" -ge "$FAIL_THRESHOLD" ]; then
             log "判定故障(${state}) → kill -9 PID=${CHILD_PID} 並重啟（自動重連）"
+            notify_trouble freeze "$state"
             kill -9 "$CHILD_PID" 2>/dev/null
             sleep 3
             break
