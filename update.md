@@ -50,7 +50,7 @@
 | 選擇權買賣價差的盤中取樣 `core/option_spread_log.py` | ✅ **待重啟後端才開始記** | 每 10 分鐘（`OPTION_SPREAD_MINUTES`）向券商查一次整條鏈、依離平值距離分組存價差中位數到 `data/option_spread.db`（✋ 無法回補）；`python -m core.option_spread_log report`；`OPTION_SPREAD_LOG=false` 關閉 | bd7ab92 |
 | 盤前跨市場資訊紀錄 `core/premarket_log.py`、`api/routes_premarket.py` | ✅ **待重啟後端才開始記** | 每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照存 `trade_log.db`（`premarket_snapshots`／`premarket_errors`／`premarket_graveyard`，資料庫觸發器擋 UPDATE／DELETE）；美股日曆（NYSE 假日、補假、提早收盤）用 2,457 個真實交易日驗證逐日一致；來源 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX），失敗轉移＋429 後暫停 6 小時，Yahoo 轉接器預設關；台股休市用證交所日曆（快取）；`python -m core.premarket_log show\|run\|export\|status\|void\|correct`；`PREMARKET_LOG=false` 關閉。沒有任何策略或風控讀這些欄位（靜態檢查＋啟用前後重播訂單完全相同的測試） | 978438e |
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
-| watchdog 的位址檢查 `run_live.sh`（`noiface`）、`core/bind_check.py`、`main.py` 啟動前試綁 | ✅ **新版 watchdog 要重啟才生效** | Tailscale 位址不在本機時不判定故障、不殺後端、起不來就等位址回來並推播；啟動前先試綁，不白登入券商；修 `$_old_pid）` 地雷；等待改用可被打斷的 `isleep`，`pkill` 不再被 10 分鐘退避拖住（發現 36） | 待 commit |
+| watchdog 的位址檢查 `run_live.sh`（`noiface`）、`core/bind_check.py`、`main.py` 啟動前試綁 | ✅ **正式盤 watchdog 18:33 已重啟（有位址檢查；`isleep` 下次重啟才生效）** | Tailscale 位址不在本機時不判定故障、不殺後端、起不來就等位址回來並推播；啟動前先試綁，不白登入券商；修 `$_old_pid）` 地雷；等待改用可被打斷的 `isleep`，`pkill` 不再被 10 分鐘退避拖住（發現 36） | ee5df37 |
 | 盤前快照的事後補值 `core/premarket_log.py` 的 `backfill_*`、〈盤前跨市場快照〉面板的「已補值」標示 | ✅ **待重啟後端** | 美股欄位因來源比取樣時間晚更新而空著，之後來源有了自動補一筆 correction（原始那筆不動、補值時間記下來）；修了連續更正會互相覆蓋的 bug（發現 35） | 068eb38 |
 | 通知擴充 `core/margin_watch.py`、`core/fill_notify.py`、`core/reminders.py`、`core/manual_monitor.py` 的事件、`core/notify.py` 的模擬盤閘門 | ✅ **待重啟後端** | Telegram 通知：手動停損停利（觸發／完成／重送／放棄）、保證金風險、手動單成交、當沖倉位 13:15／13:25 收盤前提醒；模擬盤不推播；只通知、不動委託（發現 34；測試不能碰真實通道的防線） | 1a658aa |
 | 依波動的建議停損停利 `core/stop_calibration.py`、`core/stop_suggest.py`、`GET /api/market/suggest`、〈委託〉面板〈建議停損停利〉卡 | ✅ **待重啟後端＋前端重 build** | 依最近 30 分鐘波動 σ 與持有時間算雜訊範圍 σ√T；三組型態（高勝率／平衡／高賺賠比）附停損被雜訊掃到的機率（1,609 個日盤的實測表）、沒技巧時的基準勝率、要靠時機多贏幾個百分點才打平成本、單口虧多少與 1% 風險最多幾口；只顯示、不碰下單（發現 33） | c02ee50 |
@@ -681,7 +681,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-14（續 2）— Tailscale 位址不見 → 後端自己關了：watchdog 位址檢查（發現 36）— 待 commit
+### 2026-10-14（續 2）— Tailscale 位址不見 → 後端自己關了：watchdog 位址檢查（發現 36）— ee5df37
 - **起因**：你問系統怎麼自己關了。查出來是 Tailscale 位址 17:38 消失，舊 watchdog 把沒壞的後端當成凍結殺掉、重啟又綁不上位址、退避到每 10 分鐘試一次（約 17:39～18:25 沒有記錄資料）。
 - **修法**：`run_live.sh` 位址不在＝不殺後端、等位址回來再啟動並推播；`main.py` 啟動前試綁；修 `run_live.sh`／`run_sim.sh` 的 `$_old_pid）` 地雷；文件的 `nohup … >` 改 `>>`。
 - **測試**：+24 項；整支腳本用假的 ifconfig／curl／後端跑過 5 個情境。**新版 watchdog 要重啟才生效**（舊的還在跑也能自己恢復）。
