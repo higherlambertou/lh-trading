@@ -17,7 +17,7 @@ export interface PmField {
   fetched_at: number | null;
   missing_reason: string | null;
   flag: string | null;
-  detail: Record<string, number | string | null | undefined>;
+  detail: Record<string, number | string | boolean | null | undefined>;
 }
 
 export interface PmCalendar {
@@ -135,6 +135,15 @@ export function twSourceText(src: string | null | undefined): string {
   if (src === "twse_stale_cache") return "證交所（舊快取，這次沒抓到新的）";
   if (src === "fallback_weekday") return "只依週一至週五推算（證交所日曆抓不到）";
   return src || "—";
+}
+
+// 這筆紀錄的更正是不是「自動補值」（來源比 T 晚更新，後來才補進去的；後端 BACKFILL_NOTE）
+export const isBackfill = (r: Pick<PmSnapshot, "correction_note">): boolean => (r.correction_note ?? "").startsWith("自動補值");
+
+// 這個欄位是事後補進去的嗎？是的話回傳補值的時間（UTC epoch 秒）
+export function backfilledAt(f: PmField | undefined | null): number | null {
+  const t = f?.detail?.backfilled_at;
+  return f?.detail?.backfilled === true && typeof t === "number" && Number.isFinite(t) ? t : null;
 }
 
 // 一筆紀錄缺幾個欄位

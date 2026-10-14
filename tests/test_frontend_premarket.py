@@ -45,6 +45,18 @@ def make_fixtures(d: Path) -> dict:
         res = pm.run_once(day, now=datetime.combine(day, dtime(hh, mm, ss), tzinfo=pm.TPE), store=store, cal=cal, ticks_path=db, http=http, writer="live", force=True)
         assert res["status"] == "written", res
 
+    full = {k: list(v) for k, v in w.series.items()}
+
+    def set_sources(last):                                  # 來源（Nasdaq、Cboe）的資料停在 last；None＝全部上線
+        for k in ("sox", "tsm", "vix"):
+            w.series[k] = [b for b in full[k] if last is None or b.date <= last]
+        http.routes["/SOX/historical"], http.routes["/TSM/historical"], http.routes["VIX_History.csv"] = w.nasdaq("sox"), w.nasdaq("tsm"), w.cboe()
+
+    set_sources(date(2026, 10, 5))                         # 2026-10-08：來源比 T 晚更新（還停在 10-05，要 10-07）→ 先帶空值寫入
+    record(date(2026, 10, 8), date(2026, 10, 7))
+    set_sources(None)                                      # 來源後來更新了 → 自動補值
+    res = pm.backfill_once(date(2026, 10, 8), now=datetime(2026, 10, 8, 12, 16, tzinfo=pm.TPE), store=store, cal=cal, ticks_path=d / "ticks_2026-10-08.db", http=http)
+    assert res["status"] == "filled" and res["filled"] == ["sox", "tsm", "vix"], res
     record(date(2026, 10, 12), None)                       # 連假後第一個交易日、本機沒有夜盤紀錄 → 夜盤欄位 null
     record(date(2026, 10, 13), date(2026, 10, 12))
     record(date(2026, 5, 26), date(2026, 5, 25))          # 美股休市（陣亡將士紀念日）→ 三個美股欄位 null

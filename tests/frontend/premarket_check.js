@@ -77,7 +77,7 @@ function J(x) { return JSON.stringify(x); }
 const rows = fx("snapshots"), pvSame = fx("preview_same"), pvVoided = fx("preview_voided"), pvOther = fx("preview_other"), status = fx("status"), status0 = fx("status_empty"),
   statusOff = fx("status_disabled"), statusAlert = fx("status_alert");
 const byDate = Object.fromEntries(rows.map((r) => [r.trading_date, r]));
-check("後端現算的資料形狀：7 天裡有休市、補記、更正、作廢、缺值", rows.length === 6 && rows[0].trading_date === "2026-10-16" && byDate["2026-10-16"].voided && byDate["2026-10-15"].corrected
+check("後端現算的資料形狀：7 天裡有休市、補記、更正、作廢、缺值", rows.length === 7 && rows[0].trading_date === "2026-10-16" && byDate["2026-10-08"].corrected && L.isBackfill(byDate["2026-10-08"]) && byDate["2026-10-16"].voided && byDate["2026-10-15"].corrected
   && byDate["2026-10-14"].late_seconds > 6000 && byDate["2026-05-26"].calendar.us_closed && byDate["2026-10-12"].features.txf_night.value === null, rows.map((r) => r.trading_date));
 const ft = (r) => html(e(P.FeatureTable, { features: r.features, calendar: r.calendar }));
 {
@@ -98,15 +98,30 @@ const ft = (r) => html(e(P.FeatureTable, { features: r.features, calendar: r.cal
 {
   const t = html(e(P.RecentTable, { rows }));
   check("最近的紀錄：每一天一列、新到舊、日期都在", rows.every((r) => t.includes(r.trading_date)) && t.indexOf("2026-10-16") < t.indexOf("2026-10-15") && t.indexOf("2026-10-15") < t.indexOf("2026-10-14") && !BAD.test(t), t);
-  check("最近的紀錄：作廢（附原因）、已更正、缺幾欄有標示；只有真的補記的那天才標補記（平常晚幾秒不標）", t.includes("作廢：颱風假，期交所休市") && t.includes("已更正") && t.includes("缺 3 欄") && t.includes("缺 1 欄")
+  check("最近的紀錄：作廢（附原因）、已更正、缺幾欄有標示；只有真的補記的那天才標補記（平常晚幾秒不標）", t.includes("作廢：颱風假，期交所休市") && t.includes("已更正") && t.includes("已補值") && t.includes("缺 3 欄") && t.includes("缺 1 欄")
     && (t.match(/補記（晚了/g) || []).length === 1 && t.includes("補記（晚了 102 分鐘）"), t);
   const m = raw(e(P.RecentTable, { rows }));
   check("最近的紀錄：作廢那天變淡、缺值格子的 title 是原因", m.includes("opacity:0.45") && m.includes('title="美股休市：2026-05-25 陣亡將士紀念日"'), m.slice(0, 600));
 }
 {
   const t = html(e(P.StatusChips, { s: status }));
-  check("狀態晶片：有資料時顯示已記幾筆", t.includes("記錄中") && t.includes("T 08:30") && t.includes(`已記 ${status.snapshots} 筆`) && status.snapshots === 6 && !BAD.test(t), t);
+  check("狀態晶片：有資料時顯示已記幾筆", t.includes("記錄中") && t.includes("T 08:30") && t.includes(`已記 ${status.snapshots} 筆`) && status.snapshots === 7 && !BAD.test(t), t);
   check("狀態晶片：警示與錯過", html(e(P.StatusChips, { s: statusAlert })).includes("失敗警示 2") && html(e(P.StatusChips, { s: status })).includes("錯過 1 天"));
+}
+
+// ══ 事後補值（來源比取樣時間晚更新）═══════════════════════════════
+{
+  const bf = byDate["2026-10-08"], plain = byDate["2026-10-13"];
+  const at = bf.features.sox.detail.backfilled_at;
+  check("補值：後端現算的補值紀錄（三個美股欄位帶補值時間、夜盤欄位沒有、更正說明是自動補值）", bf.corrected && bf.correction_note === "自動補值（來源較晚更新）" && ["sox", "tsm", "vix"].every((k) => bf.features[k].detail.backfilled === true && bf.features[k].value != null)
+    && bf.features.txf_night.detail.backfilled == null && L.tpeTime(at) === "10-08 12:16", J(bf.features.sox.detail));
+  const t = ft(bf), n = (t.match(/補值於 10-08 12:16/g) || []).length;
+  check("補值：欄位表在三個美股欄位的來源旁寫「補值於 …」（台北時間），夜盤與正常的紀錄沒有", n === 3 && !ft(plain).includes("補值於") && !BAD.test(t), t);
+  const rt = html(e(P.RecentTable, { rows: [bf] }));
+  check("補值：紀錄表標「已補值」，不是「已更正」", rt.includes("已補值") && !rt.includes("已更正") && html(e(P.RecentTable, { rows: [byDate["2026-10-15"]] })).includes("已更正") && !html(e(P.RecentTable, { rows: [byDate["2026-10-15"]] })).includes("已補值"), rt);
+  check("補值：isBackfill／backfilledAt 的邊界", L.isBackfill({ correction_note: "自動補值（來源較晚更新）" }) && !L.isBackfill({ correction_note: "手動更正" }) && !L.isBackfill({ correction_note: null }) && !L.isBackfill({})
+    && L.backfilledAt({ detail: { backfilled: true, backfilled_at: 5 } }) === 5 && L.backfilledAt({ detail: { backfilled: true } }) === null && L.backfilledAt({ detail: { backfilled_at: 5 } }) === null
+    && L.backfilledAt({ detail: { backfilled: true, backfilled_at: NaN } }) === null && L.backfilledAt(null) === null && L.backfilledAt(undefined) === null && L.backfilledAt({ detail: {} }) === null);
 }
 
 // ══ 容器：hooks 換成替身，驗證載入、錯誤、空白、預覽 ═══════════════
@@ -264,7 +279,7 @@ const tick = () => new Promise((r) => setImmediate(r));
       && ["台指期夜盤", "費半 SOX", "台積電 ADR", "VIX"].every((n) => recRaw.includes(`title="${n}"`)) && (recRaw.match(/<tbody/g) || []).length === rows.length, recRaw.slice(0, 700));
     const chunks = recRaw.split("<tbody").slice(1);                       // 一天一組
     const hasNote = Object.fromEntries(chunks.map((c) => [/(\d{4}-\d{2}-\d{2})/.exec(c)[1], c.includes('colSpan="5"')]));
-    check("紀錄表：備註在整列寬的另一行（colSpan＝欄數）：有備註的 5 天有、沒有備註的 10-13 沒有", J(hasNote) === J({ "2026-10-16": true, "2026-10-15": true, "2026-10-14": true, "2026-10-13": false, "2026-10-12": true, "2026-05-26": true }), J(hasNote));
+    check("紀錄表：備註在整列寬的另一行（colSpan＝欄數）：有備註的 6 天有、沒有備註的 10-13 沒有", J(hasNote) === J({ "2026-10-16": true, "2026-10-15": true, "2026-10-14": true, "2026-10-13": false, "2026-10-12": true, "2026-10-08": true, "2026-05-26": true }), J(hasNote));
     const noNote = rows.filter((r) => !r.voided && !r.corrected && r.late_seconds < 60 && L.missingCount(r.features) === 0);
     const one = raw(e(P.RecentTable, { rows: noNote }));
     check("紀錄表：整天沒有任何備註時沒有備註那一行", noNote.length === 1 && !one.includes("colSpan"), one);

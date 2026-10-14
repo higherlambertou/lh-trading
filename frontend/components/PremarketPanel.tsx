@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Globe2 } from "lucide-react";
 import { api, apiErrorDetail, getBase } from "@/lib/api";
 import {
-  PM_KEYS, PM_LABEL, fmtValue, lateText, missingCount, nextText, reasonText, statusChips, tpeTime, twSourceText, usSessionText,
+  PM_KEYS, PM_LABEL, backfilledAt, fmtValue, isBackfill, lateText, missingCount, nextText, reasonText, statusChips, tpeTime, twSourceText, usSessionText,
   type PmCalendar, type PmField, type PmPreview, type PmSnapshot, type PmStatus,
 } from "@/lib/premarket";
 
@@ -50,7 +50,10 @@ export function FeatureTable({ features, calendar }: { features: Record<string, 
                     {why && <div className="text-[10px] font-sans text-[#ffc107] whitespace-normal max-w-[12rem] leading-snug">{why}</div>}
                   </td>
                   <td className={TD} style={{ color: f?.value == null ? MUTED : undefined }}>{fmtValue(k, f)}</td>
-                  <td className={TD} style={{ color: MUTED }}>{f?.source || "—"}</td>
+                  <td className={TD} style={{ color: MUTED }}>
+                    {f?.source || "—"}
+                    {backfilledAt(f) != null && <span className="text-[#404060]" title="來源比取樣時間晚更新，事後補進來的（資料本身的時間仍在取樣時間之前）">　補值於 {tpeTime(backfilledAt(f))}</span>}
+                  </td>
                   <td className={TD} style={{ color: MUTED }}>{tpeTime(f?.source_timestamp)}</td>
                 </tr>
               );
@@ -73,7 +76,7 @@ export function RecentTable({ rows }: { rows: PmSnapshot[] }) {
       <table className="w-full max-w-2xl">
         <thead><tr><th className={THS}>台股交易日</th>{PM_KEYS.map((k) => <th key={k} className={THS} title={PM_LABEL[k].name}>{PM_LABEL[k].short}</th>)}</tr></thead>
         {rows.map((r) => {
-          const notes = [r.voided ? `作廢：${r.void_reason ?? ""}` : "", r.corrected ? "已更正" : "", lateText(r.late_seconds), missingCount(r.features) > 0 ? `缺 ${missingCount(r.features)} 欄` : ""].filter(Boolean).join("、");
+          const notes = [r.voided ? `作廢：${r.void_reason ?? ""}` : "", r.corrected ? (isBackfill(r) ? "已補值" : "已更正") : "", lateText(r.late_seconds), missingCount(r.features) > 0 ? `缺 ${missingCount(r.features)} 欄` : ""].filter(Boolean).join("、");
           return (
             <tbody key={r.trading_date} className="border-t border-[#1e1e3a]" style={{ opacity: r.voided ? 0.45 : 1 }}>
               <tr>

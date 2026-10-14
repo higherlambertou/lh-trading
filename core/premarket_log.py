@@ -510,6 +510,12 @@ def _retryable(f: dict[str, Any]) -> bool:
     return r.startswith(("source_error", "stale_or_missing", "ticks_db_unavailable"))
 
 
+US_KEYS = tuple(f.key for f in FEATURES)               # 外部來源的美股欄位；夜盤報酬是本機資料，不在這裡補
+BACKFILL_NOTE = "自動補值（來源較晚更新）"
+BACKFILL_SEC = 600.0                                   # 每 10 分鐘掃一次最近的紀錄
+BACKFILL_DAYS = 5                                      # 掃最近幾天
+
+
 def build_snapshot(d: date, *, now: datetime, cal: TwCalendar, ticks_path: Path = TICKS_PATH, http: Callable[..., str] = http_get,
                    order: Optional[Sequence[str]] = None) -> dict[str, Any]:
     """交易日 d 的盤前快照（不寫入）。回傳的 retryable＝來源失敗、值得稍後重試的欄位。"""
@@ -628,10 +634,12 @@ class PremarketStore:
         return row
 
     def add_correction(self, d: date, patch: dict[str, dict[str, Any]], reason: str, writer: str = "") -> int:
-        """更正：新增一筆 correction（指向原紀錄），patch＝{特徵: {欄位: 新值}}；原紀錄不動。"""
+        """更正：新增一筆 correction（指向原紀錄），patch＝{特徵: {欄位: 新值}}；原紀錄不動。
+        以「目前的有效內容」（最新一筆更正，沒有更正就是原始快照）為底再套 patch——連續更正（手動、或自動補值分幾次）才會累積，不會把前一次的丟掉。"""
         with closing(self._conn()) as c:
             orig = self._original(c, d)
-            feats = json.loads(orig["features_json"])
+            last = c.execute("SELECT features_json FROM premarket_snapshots WHERE trading_date=? AND kind='correction' ORDER BY id DESC LIMIT 1", (d.isoformat(),)).fetchone()
+            feats = json.loads((last or orig)["features_json"])
             for k, fields in patch.items():
                 feats.setdefault(k, {}).update(fields)
             cur = c.execute("INSERT INTO premarket_snapshots(trading_date, kind, corrects_id, schema_version, snapshot_time_utc, fetched_at_utc, late_seconds, writer, "
@@ -792,11 +800,15 @@ async def premarket_log_loop() -> None:
     logger.info("盤前跨市場資訊紀錄已啟動：每個台股交易日 %s 記一筆 → trade_log.db（來源 %s）", snapshot_time().strftime("%H:%M"), ",".join(source_order()))
     done: set[date] = set()
     wait = 30.0
+    next_backfill = 0.0                                   # 啟動後第一圈就掃一次（今天的紀錄若是空值的，重啟後馬上補）
     while True:
         await asyncio.sleep(wait)
         wait = 30.0
         try:
             now = datetime.now(TPE)
+            if time.time() >= next_backfill:
+                next_backfill = time.time() + BACKFILL_SEC
+                await asyncio.to_thread(_backfill_tick, now)
             d = now.date()
             if d in done or now < t_of(d):
                 continue
@@ -890,6 +902,69 @@ def status(store: Optional[PremarketStore] = None, today: Optional[date] = None,
     return out
 
 
+# ── 事後補值（update.md 發現 35）──────────────────────────────────
+# 美股收盤是台北 04:00，但 Nasdaq 公開 API 與 Cboe 的 CSV 要到 08:46 之後（實測：12:16 已有）才有前一天的資料，
+# 而快照在 T＋15 分鐘（08:45）就得寫。來源後來有了就補一筆 correction：美股收盤本來就在 T 之前（資料時間戳不會晚於 T），
+# 所以補進去的值和 T 當下「已經存在」的資訊一致；補值的時間記在 detail.backfilled_at、更正說明寫「自動補值」，原始那筆（空值）一個字不動。
+
+def pending_backfill(store: "PremarketStore", today: date, days: int = BACKFILL_DAYS) -> list[date]:
+    """最近 days 天裡，美股欄位是「來源失敗／資料還沒更新」造成的空值的日子（休市、異常值、本機沒夜盤不算——那些補不回來）。"""
+    out = []
+    for r in store.effective(today - timedelta(days=days)):
+        if r["voided"]:
+            continue
+        if any((r["features"].get(k) or {}).get("value") is None and _retryable(r["features"].get(k) or {}) for k in US_KEYS):
+            out.append(date.fromisoformat(r["trading_date"]))
+    return out
+
+
+def backfill_once(d: date, *, now: Optional[datetime] = None, store: Optional["PremarketStore"] = None, cal: Optional[TwCalendar] = None,
+                  ticks_path: Path = TICKS_PATH, http: Callable[..., str] = http_get, order: Optional[Sequence[str]] = None) -> dict[str, Any]:
+    """d 這天的美股欄位還缺的，現在有了就補一筆 correction（只補它們；其他欄位不動）。status：no_record／nothing_to_do／still_missing／filled。"""
+    now = now or datetime.now(TPE)
+    store = store or default_store()
+    eff = next((r for r in store.effective(d - timedelta(days=1)) if r["trading_date"] == d.isoformat()), None)
+    if eff is None or eff["voided"]:
+        return {"status": "no_record"}
+    todo = [k for k in US_KEYS if (eff["features"].get(k) or {}).get("value") is None and _retryable(eff["features"].get(k) or {})]
+    if not todo:
+        return {"status": "nothing_to_do"}
+    rec = build_snapshot(d, now=now, cal=cal or TwCalendar(), ticks_path=ticks_path, http=http, order=order)
+    filled = {k: rec["features"][k] for k in todo if rec["features"][k].get("value") is not None}
+    if not filled:
+        return {"status": "still_missing", "missing": todo}
+    for f in filled.values():
+        f["detail"] = {**(f.get("detail") or {}), "backfilled": True, "backfilled_at": now.timestamp()}
+    store.add_correction(d, filled, BACKFILL_NOTE, writer="backfill")      # add_correction 以目前的有效內容為底，所以只要帶這次補到的欄位
+    return {"status": "filled", "filled": sorted(filled), "missing": [k for k in todo if k not in filled]}
+
+
+def backfill_pass(now: Optional[datetime] = None, *, store: Optional["PremarketStore"] = None, **kw: Any) -> list[dict[str, Any]]:
+    """掃最近的紀錄、能補的都補。任何例外只記 log 與 premarket_errors（不算失敗警示），不影響其他日子。"""
+    now = now or datetime.now(TPE)
+    store = store or default_store()
+    out = []
+    for d in pending_backfill(store, now.date()):
+        try:
+            res = backfill_once(d, now=now, store=store, **kw)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("盤前快照 %s 補值失敗（下次再試）：%r", d, e)
+            try:
+                store.log_error("backfill", f"{type(e).__name__}: {e}", d.isoformat())
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        if res["status"] == "filled":
+            logger.info("盤前快照 %s 補值：%s（來源較晚更新，現在才有）%s", d, "、".join(res["filled"]), f"；仍缺 {res['missing']}" if res["missing"] else "")
+        out.append({"date": d.isoformat(), **res})
+    return out
+
+
+def _backfill_tick(now: datetime) -> list[dict[str, Any]]:
+    """背景迴圈每 10 分鐘呼叫一次（獨立成函式，測試可以換掉）。"""
+    return backfill_pass(now)
+
+
 # ── 預覽（只算不寫）─────────────────────────────────────────────
 
 PREVIEW_TTL = 60.0
@@ -927,7 +1002,7 @@ def preview(d: Optional[date] = None, *, now: Optional[datetime] = None, store: 
 
 def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover
     ap = argparse.ArgumentParser(prog="python -m core.premarket_log", description="盤前跨市場資訊紀錄")
-    ap.add_argument("what", choices=("show", "run", "export", "status", "void", "correct"))
+    ap.add_argument("what", choices=("show", "run", "export", "status", "void", "correct", "backfill"))
     ap.add_argument("date", nargs="?", help="YYYY-MM-DD（show／run／void／correct 用；預設今天）")
     ap.add_argument("--reason", default="")
     ap.add_argument("--patch", default="", help='correct：JSON，例如 \'{"sox": {"value": 0.01}}\'')
@@ -948,6 +1023,8 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover
         print(json.dumps(status(store), ensure_ascii=False, indent=1, default=str))
     elif a.what == "void":
         print(store.add_void(d, a.reason or "手動作廢"))
+    elif a.what == "backfill":
+        print(json.dumps(backfill_once(d, store=store) if a.date else backfill_pass(store=store), ensure_ascii=False, default=str))
     elif a.what == "correct":
         print(store.add_correction(d, json.loads(a.patch), a.reason or "手動更正"))
     return 0

@@ -16,7 +16,7 @@ def _never_touch_the_real_backend(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_real_pushes_or_state_files(monkeypatch):
+def _no_real_pushes_or_state_files(monkeypatch, tmp_path):
     """推播、持倉狀態檔、手動停損落地（update.md 發現 32）：測試預設全部關閉——絕不送真的推播、不寫進 repo 的 data/。
     要測的測試自己指定暫存路徑與假通道。"""
     for k in ("NOTIFY_TELEGRAM_TOKEN", "NOTIFY_TELEGRAM_CHAT_ID", "NOTIFY_NTFY_URL", "NOTIFY_WEBHOOK_URL"):
@@ -39,6 +39,8 @@ def _no_real_pushes_or_state_files(monkeypatch):
     monkeypatch.setattr(nt, "REAL_HTTP_GET", nt._http_get, raising=False)
     monkeypatch.setattr(nt, "_http_post", _never)
     monkeypatch.setattr(nt, "_http_get", _never)
+    import core.premarket_log as pml                           # 盤前快照的預設資料庫（真的 data/trade_log.db）換成暫存的：沒傳 store 的呼叫也不能寫到真的紀錄
+    monkeypatch.setattr(pml, "_default_store", pml.PremarketStore(tmp_path / "default_premarket.db"))
 
 
 @pytest.fixture(autouse=True)

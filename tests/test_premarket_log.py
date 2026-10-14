@@ -41,7 +41,7 @@ def _clean(monkeypatch, tmp_path):
     pm._breaker.clear()
     pm._preview_cache.clear()
     pm.alerts.count, pm.alerts.last = 0, None
-    pm._default_store = None
+    pm._default_store = pm.PremarketStore(tmp_path / "default_trade_log.db")       # 預設的資料庫換成暫存的：任何沒傳 store 的呼叫都不能碰真的 data/trade_log.db（update.md 發現 35）
     monkeypatch.setattr(pm, "ERROR_FILE", tmp_path / "premarket_errors.jsonl")
     for k in ("PREMARKET_TIME", "PREMARKET_SOURCES", "PREMARKET_LOG", "PREMARKET_RANGE_NIGHT", "PREMARKET_RANGE_SOX", "PREMARKET_RANGE_TSM", "PREMARKET_RANGE_VIX"):
         monkeypatch.delenv(k, raising=False)
@@ -880,7 +880,7 @@ def test_preview_is_cached_for_a_minute_and_uses_the_default_day(tmp_path, monke
 
 # ── 背景迴圈 ──────────────────────────────────────────────────────
 
-def drive_loop(monkeypatch, results, dates, hhmm=dtime(8, 31)):
+def drive_loop(monkeypatch, results, dates, hhmm=dtime(8, 31), backfill=None):
     """跑 premarket_log_loop 幾圈：run_guarded 依序回傳 results、日期依序是 dates、現在時間固定是 hhmm；回傳 (呼叫次數, 每次睡多久)。"""
     sleeps, calls = [], []
     it_res, it_date = iter(results), iter(dates)
@@ -898,6 +898,7 @@ def drive_loop(monkeypatch, results, dates, hhmm=dtime(8, 31)):
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(pm, "datetime", FakeDT)
     monkeypatch.setattr(pm, "run_guarded", lambda d, **kw: calls.append(d) or next(it_res))
+    monkeypatch.setattr(pm, "_backfill_tick", backfill or (lambda now: []))                          # 測試不能碰真的資料庫與網路
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(pm.premarket_log_loop())
     return calls, sleeps
@@ -1101,3 +1102,199 @@ def test_enabling_the_recorder_does_not_change_the_orders_a_strategy_sends(tmp_p
     monkeypatch.setattr(w.store, "write_snapshot", lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")))       # 記錄器壞掉
     assert pm.run_guarded(date(2026, 11, 20), now=tpe(2026, 11, 20, 8, 31), force=True, **w.kw)["status"] == "error"
     assert replay() == baseline
+
+
+# ── 事後補值（update.md 發現 35）：來源比 T 晚更新 ───────────────────
+
+def stale_world(tmp_path, last=date(2026, 10, 12)):
+    """Nasdaq、Cboe 都還停在 last（還沒更新前一個美股交易日）。"""
+    w = World(tmp_path)
+    full = {k: list(v) for k, v in w.series.items()}
+    for k in ("sox", "tsm", "vix"):
+        w.series[k] = [b for b in full[k] if b.date <= last]
+    w.http.routes["/SOX/historical"], w.http.routes["/TSM/historical"], w.http.routes["VIX_History.csv"] = w.nasdaq("sox"), w.nasdaq("tsm"), w.cboe()
+    w.full = full
+    return w
+
+
+def publish(w, *keys):
+    """來源更新了：這幾個欄位的完整資料上線。"""
+    for k in keys:
+        w.series[k] = list(w.full[k])
+    w.http.routes["/SOX/historical"], w.http.routes["/TSM/historical"], w.http.routes["VIX_History.csv"] = w.nasdaq("sox"), w.nasdaq("tsm"), w.cboe()
+
+
+def test_backfill_fills_what_the_sources_published_late_and_leaves_the_original_row_alone(tmp_path):
+    w = stale_world(tmp_path)
+    d = date(2026, 10, 14)
+    assert pm.run_once(d, now=tpe(2026, 10, 14, 8, 46), **w.kw)["status"] == "written"
+    (orig,) = w.store.raw_rows()
+    eff = w.store.effective()[0]
+    assert [eff["features"][k]["value"] for k in ("sox", "tsm", "vix")] == [None, None, None] and all(eff["features"][k]["missing_reason"].startswith("stale_or_missing") for k in ("sox", "tsm", "vix"))
+    assert pm.pending_backfill(w.store, d) == [d]
+    publish(w, "sox", "tsm", "vix")
+    now = tpe(2026, 10, 14, 12, 16)
+    res = pm.backfill_once(d, now=now, **w.kw)
+    assert res == {"status": "filled", "filled": ["sox", "tsm", "vix"], "missing": []}
+    rows = w.store.raw_rows()
+    assert [r["kind"] for r in rows] == ["snapshot", "correction"] and rows[0] == orig and rows[1]["writer"] == "backfill" and rows[1]["corrects_id"] == orig["id"]    # 原始那筆一個字沒動
+    eff = w.store.effective()[0]
+    assert eff["corrected"] and eff["correction_note"] == pm.BACKFILL_NOTE == "自動補值（來源較晚更新）" and eff["fetched_at_utc"] == orig["fetched_at_utc"] and eff["late_seconds"] == orig["late_seconds"]
+    for k in ("sox", "tsm", "vix"):
+        f = eff["features"][k]
+        assert f["value"] is not None and f["missing_reason"] is None and f["detail"]["backfilled"] is True and f["detail"]["backfilled_at"] == now.timestamp() and f["fetched_at"] == now.timestamp()
+    assert eff["features"]["txf_night"]["value"] is not None and eff["features"]["txf_night"]["fetched_at"] != now.timestamp()          # 夜盤欄位沒被碰
+    want = {k: expected(w.series[k] if k == "vix" else [Bar(b.date, float(f"{b.close:.2f}"), b.source) for b in w.series[k]], date(2026, 10, 13), f_.kind)["value"]
+            for f_ in pm.FEATURES for k in (f_.key,)}
+    assert [eff["features"][k]["value"] for k in ("sox", "tsm", "vix")] == [pytest.approx(want[k]) for k in ("sox", "tsm", "vix")]                    # 補進去的值和當天算的一樣
+    assert pm.pending_backfill(w.store, d) == [] and pm.backfill_once(d, now=now, **w.kw) == {"status": "nothing_to_do"}                     # 補完就不再補
+
+
+def test_backfill_in_steps_accumulates_and_never_loses_an_earlier_fill(tmp_path):
+    w = stale_world(tmp_path)
+    d = date(2026, 10, 14)
+    pm.run_once(d, now=tpe(2026, 10, 14, 8, 46), **w.kw)
+    publish(w, "tsm")                                                                                       # 先只有 Nasdaq 的 TSM 更新（費半、VIX 還沒）
+    w.series["sox"] = [b for b in w.series["sox"] if b.date <= date(2026, 10, 12)]
+    w.series["vix"] = [b for b in w.series["vix"] if b.date <= date(2026, 10, 12)]
+    w.http.routes["/SOX/historical"], w.http.routes["VIX_History.csv"] = w.nasdaq("sox"), w.cboe()
+    r1 = pm.backfill_once(d, now=tpe(2026, 10, 14, 9, 0), **w.kw)
+    assert r1 == {"status": "filled", "filled": ["tsm"], "missing": ["sox", "vix"]}
+    assert pm.pending_backfill(w.store, d) == [d]                                                           # 還有欄位沒補到：繼續等
+    publish(w, "sox", "vix")
+    r2 = pm.backfill_once(d, now=tpe(2026, 10, 14, 10, 30), **w.kw)
+    assert r2 == {"status": "filled", "filled": ["sox", "vix"], "missing": []}
+    eff = w.store.effective()[0]
+    assert [eff["features"][k]["value"] is not None for k in ("sox", "tsm", "vix")] == [True, True, True]      # 第二次補值沒有把第一次的 TSM 弄丟
+    assert eff["features"]["tsm"]["detail"]["backfilled_at"] == tpe(2026, 10, 14, 9, 0).timestamp()           # 各欄位記各自補到的時間
+    assert eff["features"]["sox"]["detail"]["backfilled_at"] == tpe(2026, 10, 14, 10, 30).timestamp()
+    assert [r["kind"] for r in w.store.raw_rows()] == ["snapshot", "correction", "correction"]
+
+
+def test_successive_manual_corrections_accumulate_too(tmp_path):
+    w = written(tmp_path)
+    d = date(2026, 10, 14)
+    w.store.add_correction(d, {"sox": {"value": 0.01}}, "第一次")
+    w.store.add_correction(d, {"vix": {"value": 15.5}}, "第二次")
+    eff = w.store.effective()[0]
+    assert eff["features"]["sox"]["value"] == 0.01 and eff["features"]["vix"]["value"] == 15.5 and eff["correction_note"] == "第二次"     # 以前第二次會把第一次的蓋掉
+
+
+def test_backfill_when_the_sources_are_still_late_writes_nothing(tmp_path):
+    w = stale_world(tmp_path)
+    d = date(2026, 10, 14)
+    pm.run_once(d, now=tpe(2026, 10, 14, 8, 46), **w.kw)
+    res = pm.backfill_once(d, now=tpe(2026, 10, 14, 9, 0), **w.kw)
+    assert res == {"status": "still_missing", "missing": ["sox", "tsm", "vix"]} and [r["kind"] for r in w.store.raw_rows()] == ["snapshot"]
+
+
+def test_backfill_ignores_days_without_a_record_and_voided_days(tmp_path):
+    w = stale_world(tmp_path)
+    d = date(2026, 10, 14)
+    assert pm.backfill_once(d, **w.kw)["status"] == "no_record"
+    pm.run_once(d, now=tpe(2026, 10, 14, 8, 46), **w.kw)
+    w.store.add_void(d, "颱風假")
+    assert pm.pending_backfill(w.store, d) == [] and pm.backfill_once(d, **w.kw)["status"] == "no_record"
+
+
+def test_only_retryable_us_gaps_are_backfilled(tmp_path):
+    w = World(tmp_path, ticks=False)                                                                         # 夜盤報酬缺（沒有本機成交）：補不回來
+    d = date(2026, 10, 14)
+    pm.run_once(d, now=tpe(2026, 10, 14, 8, 50), **w.kw)
+    assert w.store.effective()[0]["features"]["txf_night"]["value"] is None
+    assert pm.pending_backfill(w.store, d) == [] and pm.backfill_once(d, **w.kw)["status"] == "nothing_to_do"          # 美股欄位都有值：什麼都不補
+    w2 = World(tmp_path / "us_closed", prev=date(2026, 5, 25)) if (tmp_path / "us_closed").mkdir() is None else None
+    pm.run_once(date(2026, 5, 26), now=tpe(2026, 5, 26, 8, 50), **w2.kw)                                      # 美股休市：欄位是 us_closed，不是來源慢
+    assert pm.pending_backfill(w2.store, date(2026, 5, 26)) == []
+    assert pm.backfill_once(date(2026, 5, 26), **w2.kw) == {"status": "nothing_to_do"} and [r["kind"] for r in w2.store.raw_rows()] == ["snapshot"]   # 休市的空值補不回來：連試都不試
+
+
+def test_pending_backfill_only_looks_at_recent_days(tmp_path):
+    w = stale_world(tmp_path)
+    pm.run_once(date(2026, 10, 14), now=tpe(2026, 10, 14, 8, 46), **w.kw)
+    assert pm.pending_backfill(w.store, date(2026, 10, 14)) == [date(2026, 10, 14)]
+    assert pm.BACKFILL_DAYS == 5
+    assert pm.pending_backfill(w.store, date(2026, 10, 14) + timedelta(days=5)) == [date(2026, 10, 14)]
+    assert pm.pending_backfill(w.store, date(2026, 10, 14) + timedelta(days=6)) == []                             # 太久以前的不再試
+
+
+def test_backfill_pass_keeps_going_after_a_failure_and_logs_it(tmp_path, caplog):
+    w = stale_world(tmp_path, last=date(2026, 10, 9))                                                       # 來源停在 10-09：10-13（要 10-12）、10-14（要 10-13）兩天都缺
+    for day, prev in ((date(2026, 10, 13), date(2026, 10, 12)), (date(2026, 10, 14), date(2026, 10, 13))):
+        make_ticks(w.db, session_ticks(prev))
+        pm.run_once(day, now=datetime.combine(day, dtime(8, 46), tzinfo=pm.TPE), **w.kw)
+    publish(w, "sox", "tsm", "vix")
+    real = pm.backfill_once
+
+    def flaky(d, **kw):
+        if d == date(2026, 10, 14):
+            raise RuntimeError("來源暫時壞掉")
+        return real(d, **kw)
+
+    pm_backfill = pm.backfill_once
+    try:
+        pm.backfill_once = flaky
+        with caplog.at_level("WARNING"):
+            out = pm.backfill_pass(tpe(2026, 10, 14, 12, 0), store=w.store, cal=w.cal, ticks_path=w.db, http=w.http)
+    finally:
+        pm.backfill_once = pm_backfill
+    assert [o["date"] for o in out] == ["2026-10-13"] and out[0]["status"] == "filled" and "補值失敗" in caplog.text
+    con = sqlite3.connect(w.store.path)
+    try:
+        assert con.execute("SELECT where_, trading_date, error FROM premarket_errors").fetchall() == [("backfill", "2026-10-14", "RuntimeError: 來源暫時壞掉")]
+    finally:
+        con.close()
+    assert pm.alerts.count == 0                                                                                # 記進 premarket_errors，不算失敗警示
+
+
+def test_the_loop_runs_a_backfill_pass_at_start_and_then_every_ten_minutes(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(pm.time, "time", lambda: clock[0])
+    seen = []
+    d1 = date(2026, 10, 14)
+
+    def tick(now):
+        seen.append(now)
+        return []
+
+    n = {"i": 0}
+
+    async def fake_sleep(s):
+        n["i"] += 1
+        clock[0] += 200.0                                                                                  # 每圈過 200 秒
+        if n["i"] > 6:
+            raise asyncio.CancelledError
+
+    class FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.combine(d1, dtime(7, 0), tzinfo=pm.TPE)                                        # 7:00：還沒到 T，主要邏輯什麼都不做
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(pm, "datetime", FakeDT)
+    monkeypatch.setattr(pm, "_backfill_tick", tick)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(pm.premarket_log_loop())
+    # 時鐘每圈 +200 秒：第 1 圈（t＝1200）掃一次，之後要等 600 秒＝第 4 圈（t＝1800）才再掃；第 2、3、5、6 圈不掃
+    assert len(seen) == 2 and all(isinstance(x, datetime) for x in seen)
+
+
+def test_the_loop_survives_a_failing_backfill_tick(monkeypatch, caplog):
+    def boom(now):
+        raise RuntimeError("補值壞了")
+
+    d1 = date(2026, 10, 14)
+    with caplog.at_level("ERROR"):
+        calls, _ = drive_loop(monkeypatch, [{"status": "written"}], [d1, d1, d1], backfill=boom)
+    assert "盤前跨市場資訊紀錄迴圈例外" in caplog.text                                                        # 例外被迴圈接住（不會讓整個迴圈死掉）
+
+
+def test_three_successive_corrections_all_accumulate(tmp_path):
+    w = written(tmp_path)
+    d = date(2026, 10, 14)
+    w.store.add_correction(d, {"sox": {"value": 0.01}}, "一")
+    w.store.add_correction(d, {"vix": {"value": 15.5}}, "二")
+    w.store.add_correction(d, {"tsm": {"value": -0.02}}, "三")
+    eff = w.store.effective()[0]
+    assert (eff["features"]["sox"]["value"], eff["features"]["vix"]["value"], eff["features"]["tsm"]["value"]) == (0.01, 15.5, -0.02) and eff["correction_note"] == "三"
+    assert [r["kind"] for r in w.store.raw_rows()] == ["snapshot", "correction", "correction", "correction"]

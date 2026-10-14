@@ -430,6 +430,8 @@ curl -s "http://$H:8002/api/premarket/snapshots?days=30" | python3 -m json.tool 
 curl -s http://$H:8002/api/premarket/snapshots.csv -o premarket.csv
 ```
 
+- **事後補值**（update.md 發現 35）：Nasdaq 公開 API 與 Cboe CSV 要到 08:46 之後才有前一個美股交易日的資料，所以快照常常先帶「資料還沒更新」的空值寫入（T＋15 分鐘）。後端每 10 分鐘掃最近 5 天，來源有了就補一筆 correction（只補那幾欄；原始那筆不動；畫面標「已補值」、來源旁寫「補值於 時間」；`detail.backfilled_at` 記實際補到的時間）。
+  休市、異常值、本機沒有夜盤成交造成的空值補不回來，不補。沒重啟後端就沒有自動補：`python -m core.premarket_log backfill [日期]` 手動補。**要排除「事後補的」做分析**，用 `detail.backfilled` 或 `corrected_at` 篩。
 - **畫面**：〈市場〉分頁最下方〈盤前跨市場快照〉（最新紀錄、預覽、最近 12 筆、CSV 下載；FRONTEND.md）。前端要 `npm run build` 才看得到；後端要重啟才有 `/preview` 與 `status` 的 `next_snapshot`／`missed_dates`（舊版後端畫面會寫「後端還沒有這個 API」）。**預覽每次會去抓外部來源（60 秒快取），不要寫腳本輪詢**。
 - 欄位：`txf_night`（夜盤收盤 ÷ 前一個交易日日盤收盤 − 1，本機 `ticks.db`）、`sox`／`tsm`（最近一個已收盤的美股交易日的對數報酬）、`vix`（收盤值；`detail.rel20`＝相對近 20 日平均）。每個欄位都有 `value`、`source`、`source_timestamp`（資料本身的時間，UTC）、`fetched_at`、`missing_reason`、`flag`、`detail`。
 - **null 不是 bug**：美股休市日隔天（`us_closed: …`）、來源失敗（`source_error: …`）、資料還沒更新（`stale_or_missing`）、後端那段時間沒開（`no_ticks`／`incomplete_session`）、異常值（`out_of_range`，原始數字在 `detail.raw_value`）。**不會用前一天的值或預設值補**。
