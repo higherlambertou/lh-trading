@@ -9,7 +9,7 @@
 #
 # 用法：
 #   ./run_sim.sh                                   # 前景執行（Ctrl+C 會一起關掉）
-#   nohup ./run_sim.sh > /tmp/lh_sim_watchdog.log 2>&1 &   # 背景執行
+#   nohup ./run_sim.sh >> /tmp/lh_sim_watchdog.log 2>&1 &  # 背景執行（用 >>，不要用 >：第二個 watchdog 被單例鎖擋下來時，> 會先把正在跑的那個的 log 清空）
 #
 set -u
 
@@ -19,8 +19,8 @@ LOCK_DIR="/tmp/lh_sim_watchdog.lock.d"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     _old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
     if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  已有另一個 run_sim.sh 在執行（PID=$_old_pid），本次拒絕啟動。"
-        echo "若確定要重開，先停掉它：kill $_old_pid"
+        echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  已有另一個 run_sim.sh 在執行（PID=${_old_pid}），本次拒絕啟動。"
+        echo "若確定要重開，先停掉它：kill ${_old_pid}"
         exit 1
     fi
     echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  偵測到陳舊鎖（前持有者 PID=${_old_pid:-未知} 已不存在），接管。"
@@ -40,11 +40,23 @@ STABLE_SECS=600
 consec_short=0
 
 CHILD_PID=""
+SLEEP_PID=""           # isleep 目前在睡的那個 sleep（cleanup 要一起收掉）
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  $*"; }
 
+# 可被結束訊號打斷的 sleep（update.md 發現 36）：bash 要等「前景指令」跑完才會執行 trap，
+# 所以直接 sleep 600（連續短命重啟的最後一檔退避）時，pkill／kill 最長 10 分鐘後才生效——這段時間 watchdog 還活著、
+# 單例鎖還在，別人重開會被擋下來（2026-10-14 實際發生）。改成背景 sleep + wait：訊號一到 wait 立刻返回、trap 立刻跑。
+isleep() {
+    sleep "$1" &
+    SLEEP_PID=$!
+    wait "$SLEEP_PID" 2>/dev/null
+    SLEEP_PID=""
+}
+
 cleanup() {
     log "收到結束訊號，關閉模擬盤 (PID=${CHILD_PID})…"
+    [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
     [ -n "$CHILD_PID" ] && kill "$CHILD_PID" 2>/dev/null
     sleep 2
     [ -n "$CHILD_PID" ] && kill -9 "$CHILD_PID" 2>/dev/null
@@ -88,7 +100,7 @@ while true; do
         wait_s=${BACKOFF_STEPS[$idx]}
         if [ "$wait_s" -gt 0 ]; then
             log "連續第 ${consec_short} 次短命重啟，退避等待 ${wait_s}s（保護登入額度）…"
-            sleep "$wait_s"
+            isleep "$wait_s"
         fi
     fi
 
@@ -102,7 +114,7 @@ while true; do
     log "已啟動 PID=${CHILD_PID}，登入中（寬限 ${GRACE_PERIOD}s）…"
 
     while true; do
-        sleep "$CHECK_INTERVAL"
+        isleep "$CHECK_INTERVAL"
         if ! kill -0 "$CHILD_PID" 2>/dev/null; then
             log "進程已不存在（登入失敗或自行結束），重啟"
             break

@@ -7,7 +7,7 @@
 ### 啟動正式盤（真錢交易）
 
 ```bash
-nohup ./run_live.sh > /tmp/lh_live_watchdog.log 2>&1 &
+nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &
 ```
 
 檢查是否啟動成功（等 20 秒後執行）：
@@ -23,7 +23,7 @@ curl http://100.127.125.13:8002/api/health
 ### 啟動模擬盤
 
 ```bash
-nohup ./run_sim.sh > /tmp/lh_sim_watchdog.log 2>&1 &
+nohup ./run_sim.sh >> /tmp/lh_sim_watchdog.log 2>&1 &
 ```
 
 檢查狀態：
@@ -34,8 +34,8 @@ curl http://localhost:8003/api/health
 ### 同時啟動兩個
 
 ```bash
-nohup ./run_live.sh > /tmp/lh_live_watchdog.log 2>&1 &
-nohup ./run_sim.sh > /tmp/lh_sim_watchdog.log 2>&1 &
+nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &
+nohup ./run_sim.sh >> /tmp/lh_sim_watchdog.log 2>&1 &
 ```
 
 ---
@@ -576,7 +576,7 @@ grep -i error /tmp/lh_live.log | tail -20
 ```bash
 pkill -f run_live.sh
 rm -rf /tmp/lh_live_watchdog.lock.d /tmp/lh_live.log
-nohup ./run_live.sh > /tmp/lh_live_watchdog.log 2>&1 &
+nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &
 ```
 
 ### 完全清理 + 重啟兩個
@@ -584,8 +584,8 @@ nohup ./run_live.sh > /tmp/lh_live_watchdog.log 2>&1 &
 ```bash
 pkill -f 'run_(live|sim).sh'
 rm -rf /tmp/lh_live_watchdog.lock.d /tmp/lh_sim_watchdog.lock.d /tmp/lh_live.log /tmp/lh_sim.log
-nohup ./run_live.sh > /tmp/lh_live_watchdog.log 2>&1 &
-nohup ./run_sim.sh > /tmp/lh_sim_watchdog.log 2>&1 &
+nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &
+nohup ./run_sim.sh >> /tmp/lh_sim_watchdog.log 2>&1 &
 ```
 
 ---
@@ -605,6 +605,15 @@ health 回傳：
 ```
 
 ---
+
+### ⚠️ Tailscale 位址不見了（state=noiface／log 出現 `Errno 49 can't assign requested address`）
+
+**現象**：dashboard 突然連不上、後端「自己關了」；`/tmp/lh_live.log` 出現 `[Errno 49] error while attempting to bind on address ('100.x.x.x', 8002): can't assign requested address`，或 `OSError: [Errno 49]`（websocket）。
+**原因**：後端只綁 Tailscale 的位址（`BIND_HOST`）；Tailscale 斷線、重新連線、睡眠喚醒時，這個位址會暫時從本機消失。**不是後端壞了。**（2026-10-14 17:38 發生：舊版 watchdog 把沒壞的後端當成凍結殺掉，重啟又綁不上位址，退避到每 10 分鐘試一次，那段時間沒有記錄 tick／外內盤／選擇權價差。）
+**現在的行為**（`run_live.sh`，update.md 發現 36）：位址不在 → 不判定故障、不殺後端；後端還在跑就讓它跑（資料照記、停損照看），起不來就先不啟動、每 5 秒看位址回來沒；推播一次「Tailscale 位址不見了」（Telegram；冷卻 30 分鐘）。
+**你要做**：把 Tailscale 連回去（選單列的 Tailscale 圖示→Connect；或 `tailscale up`）。檢查：`ifconfig | grep 'inet 100\.'`、`tailscale status`。位址回來後 watchdog 自己會繼續，不用重啟。
+**舊版 watchdog 還在跑的話**（2026-10-14 18:33 之前啟動的）：它在最後一檔 10 分鐘退避的 `sleep 600` 時**收不到結束訊號**——`kill`／`pkill -f run_live.sh` 要等睡完才生效，這段時間單例鎖還在、重開會被擋下來（2026-10-14 實際發生：結束訊號拖到 18:23:53 才處理）。要立刻起來：先看 `/tmp/lh_live_watchdog.log` 最後一行是『退避等待』（代表沒有後端在跑），`kill -9 <watchdog pid>`（`pgrep -f run_live.sh`），再 `nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &`（鎖是陳舊的，新腳本會接管）。新版（等待改用 `isleep`）的 `kill`／`pkill` 兩秒內就會結束。**新版 `run_live.sh` 要重啟 watchdog 才生效。**
+**資料缺口**：後端沒在跑的那段時間，tick 與選擇權價差補不回來；外／內盤分鐘統計可以用券商回補：`python -m core.indicator_history flow-fetch --days 3`（登入前會先檢查連線數）。持倉：停損停利監控在後端停著的時候不運作——有持倉時看 Telegram 警示。
 
 ### ❌ 服務凍結（state=down）
 
@@ -755,8 +764,8 @@ tail -100 /tmp/lh_live.log
 pkill -f 'run_(live|sim).sh'
 sleep 2
 rm -rf /tmp/lh_*_watchdog.lock.d /tmp/lh_*.log
-nohup ./run_live.sh > /tmp/lh_live_watchdog.log 2>&1 &
-nohup ./run_sim.sh > /tmp/lh_sim_watchdog.log 2>&1 &
+nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &
+nohup ./run_sim.sh >> /tmp/lh_sim_watchdog.log 2>&1 &
 echo "✓ 已啟動，監看中…"
 sleep 5
 curl http://100.127.125.13:8002/api/health && echo "" && curl http://localhost:8003/api/health

@@ -16,7 +16,7 @@
 #
 # 用法：
 #   ./run_live.sh                                   # 前景執行（Ctrl+C 會一起關掉）
-#   nohup ./run_live.sh > /tmp/lh_live_watchdog.log 2>&1 &   # 背景執行
+#   nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &  # 背景執行（用 >>，不要用 >：第二個 watchdog 被單例鎖擋下來時，> 會先把正在跑的那個的 log 清空）
 #
 set -u
 
@@ -29,8 +29,8 @@ LOCK_DIR="/tmp/lh_live_watchdog.lock.d"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     _old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
     if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog-live]  已有另一個 run_live.sh 在執行（PID=$_old_pid），本次拒絕啟動。"
-        echo "若確定要重開，先停掉它：kill $_old_pid"
+        echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog-live]  已有另一個 run_live.sh 在執行（PID=${_old_pid}），本次拒絕啟動。"
+        echo "若確定要重開，先停掉它：kill ${_old_pid}"
         exit 1
     fi
     echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog-live]  偵測到陳舊鎖（前持有者 PID=${_old_pid:-未知} 已不存在），接管。"
@@ -58,11 +58,23 @@ STABLE_SECS=600                # 子進程存活超過此秒數＝穩定，重�
 consec_short=0                 # 連續「短命」重啟計數
 
 CHILD_PID=""
+SLEEP_PID=""           # isleep 目前在睡的那個 sleep（cleanup 要一起收掉）
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog-live]  $*"; }
 
+# 可被結束訊號打斷的 sleep（update.md 發現 36）：bash 要等「前景指令」跑完才會執行 trap，
+# 所以直接 sleep 600（連續短命重啟的最後一檔退避）時，pkill／kill 最長 10 分鐘後才生效——這段時間 watchdog 還活著、
+# 單例鎖還在，別人重開會被擋下來（2026-10-14 實際發生）。改成背景 sleep + wait：訊號一到 wait 立刻返回、trap 立刻跑。
+isleep() {
+    sleep "$1" &
+    SLEEP_PID=$!
+    wait "$SLEEP_PID" 2>/dev/null
+    SLEEP_PID=""
+}
+
 cleanup() {
     log "收到結束訊號，關閉正式盤 (PID=${CHILD_PID})…"
+    [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
     [ -n "$CHILD_PID" ] && kill "$CHILD_PID" 2>/dev/null
     sleep 2
     [ -n "$CHILD_PID" ] && kill -9 "$CHILD_PID" 2>/dev/null
@@ -81,10 +93,12 @@ notify_trouble() {   # $1 = freeze | exit    $2 = down | nobroker | gone
 # 回傳健康狀態：
 #   healthy  = HTTP 200 且 broker_connected:True（真正可用）
 #   nobroker = HTTP 200 但 broker 沒連上券商（登入中 or 斷線）
+#   noiface  = BIND_HOST 這個位址不在本機（Tailscale 斷線）：不是後端的問題，不判定故障
 #   down     = 沒回應/逾時/非 200（凍結：threadpool 被卡死的 Solace 呼叫佔光，
 #              連 /health 都拿不到執行緒 → 0 bytes 逾時）
 health_state() {
     local resp code body
+    if ! iface_up; then echo "noiface"; return; fi            # 位址不在：打不到 health 不代表後端壞了
     resp=$(curl -s -m 5 -w $'\n%{http_code}' "$HEALTH_URL" 2>/dev/null)
     code=${resp##*$'\n'}
     body=${resp%$'\n'*}
@@ -93,6 +107,35 @@ health_state() {
         *'"broker_connected":"True"'*) echo "healthy" ;;
         *) echo "nobroker" ;;
     esac
+}
+
+# ── BIND_HOST（Tailscale 位址）在不在本機（update.md 發現 36）──────────────
+# Tailscale 斷線時，這個位址會從本機消失——這不是後端的問題。以前 health 打不到就當成「凍結」把後端殺掉，重啟又綁不上位址，
+# 一路退避到 10 分鐘，Tailscale 回來後還要再等；而且每次失敗的啟動都白登入一次券商。現在：位址不在＝不判定故障、不殺後端、
+# 起不來就等位址回來再啟動，並推播一次（不看有沒有持倉：dashboard 連不上你想知道）。
+iface_up() {   # BIND_HOST 是本機的某個位址嗎？（沒設、localhost、0.0.0.0 一律算有）
+    case "${BIND_HOST:-}" in ""|localhost|127.0.0.1|0.0.0.0) return 0 ;; esac
+    { ifconfig 2>/dev/null || ip addr 2>/dev/null; } | grep -qE "inet ${BIND_HOST//./\\.}( |/)"
+}
+
+notify_noiface() {   # 背景推播一次（冷卻 30 分鐘，跨進程）；沒設定通道就只寫 log
+    ( "$PY" -m core.notify send "⚠️ Tailscale 位址不見了" "正式盤後端的位址 ${BIND_HOST} 不在本機（Tailscale 斷線？），dashboard 連不上。後端若還在跑不會被當成故障殺掉；起不來的話會等位址回來再啟動。" \
+        --key "watchdog:noiface:live" --cooldown 1800 >> "$APP_LOG" 2>&1 & ) 2>/dev/null
+}
+
+wait_iface() {   # 位址不在就等（每 5 秒看一次）；不啟動後端、不登入券商、不累計退避
+    local n=0
+    while ! iface_up; do
+        n=$((n + 1))
+        if [ "$n" -eq 1 ]; then
+            log "BIND_HOST=${BIND_HOST} 不在本機（Tailscale 沒連上？）：先不啟動後端，等位址回來"
+            notify_noiface
+        fi
+        [ $((n % 12)) -eq 0 ] && log "還在等 ${BIND_HOST}…（已等約 $((n * 5)) 秒）"
+        isleep 5
+    done
+    [ "$n" -gt 0 ] && log "位址回來了（等了約 $((n * 5)) 秒），繼續啟動"
+    return 0
 }
 
 # 啟動前先清掉任何佔用 8002 的殘留進程，避免綁不上 port
@@ -126,10 +169,11 @@ while true; do
         wait_s=${BACKOFF_STEPS[$idx]}
         if [ "$wait_s" -gt 0 ]; then
             log "連續第 ${consec_short} 次短命重啟，退避等待 ${wait_s}s（保護登入額度）…"
-            sleep "$wait_s"
+            isleep "$wait_s"
         fi
     fi
 
+    wait_iface
     free_port
     log "啟動 main.py（正式盤）…"
     "$PY" main.py >> "$APP_LOG" 2>&1 &
@@ -137,10 +181,11 @@ while true; do
     started=$(date +%s)
     ready=0
     fails=0
+    noiface_n=0
     log "已啟動 PID=${CHILD_PID}，登入中（寬限 ${GRACE_PERIOD}s）…"
 
     while true; do
-        sleep "$CHECK_INTERVAL"
+        isleep "$CHECK_INTERVAL"
         if ! kill -0 "$CHILD_PID" 2>/dev/null; then
             log "進程已不存在（登入失敗或自行結束），重啟"
             notify_trouble exit gone
@@ -148,6 +193,20 @@ while true; do
         fi
         state=$(health_state)
         elapsed=$(( $(date +%s) - started ))
+
+        if [ "$state" = "noiface" ]; then          # Tailscale 位址不在：不計入失敗、不殺後端，等它回來
+            noiface_n=$((noiface_n + 1))
+            if [ "$noiface_n" -eq 1 ]; then
+                log "BIND_HOST=${BIND_HOST} 不在本機（Tailscale 斷線？）：後端還在跑，不當成故障，等位址回來"
+                notify_noiface
+            fi
+            continue
+        fi
+        if [ "$noiface_n" -gt 0 ]; then
+            log "位址回來了（約 $((noiface_n * CHECK_INTERVAL)) 秒）"
+            noiface_n=0
+            fails=0
+        fi
 
         if [ "$state" = "healthy" ]; then
             if [ "$ready" -eq 0 ]; then

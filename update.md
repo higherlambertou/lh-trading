@@ -50,6 +50,7 @@
 | 選擇權買賣價差的盤中取樣 `core/option_spread_log.py` | ✅ **待重啟後端才開始記** | 每 10 分鐘（`OPTION_SPREAD_MINUTES`）向券商查一次整條鏈、依離平值距離分組存價差中位數到 `data/option_spread.db`（✋ 無法回補）；`python -m core.option_spread_log report`；`OPTION_SPREAD_LOG=false` 關閉 | bd7ab92 |
 | 盤前跨市場資訊紀錄 `core/premarket_log.py`、`api/routes_premarket.py` | ✅ **待重啟後端才開始記** | 每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照存 `trade_log.db`（`premarket_snapshots`／`premarket_errors`／`premarket_graveyard`，資料庫觸發器擋 UPDATE／DELETE）；美股日曆（NYSE 假日、補假、提早收盤）用 2,457 個真實交易日驗證逐日一致；來源 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX），失敗轉移＋429 後暫停 6 小時，Yahoo 轉接器預設關；台股休市用證交所日曆（快取）；`python -m core.premarket_log show\|run\|export\|status\|void\|correct`；`PREMARKET_LOG=false` 關閉。沒有任何策略或風控讀這些欄位（靜態檢查＋啟用前後重播訂單完全相同的測試） | 978438e |
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
+| watchdog 的位址檢查 `run_live.sh`（`noiface`）、`core/bind_check.py`、`main.py` 啟動前試綁 | ✅ **新版 watchdog 要重啟才生效** | Tailscale 位址不在本機時不判定故障、不殺後端、起不來就等位址回來並推播；啟動前先試綁，不白登入券商；修 `$_old_pid）` 地雷；等待改用可被打斷的 `isleep`，`pkill` 不再被 10 分鐘退避拖住（發現 36） | 待 commit |
 | 盤前快照的事後補值 `core/premarket_log.py` 的 `backfill_*`、〈盤前跨市場快照〉面板的「已補值」標示 | ✅ **待重啟後端** | 美股欄位因來源比取樣時間晚更新而空著，之後來源有了自動補一筆 correction（原始那筆不動、補值時間記下來）；修了連續更正會互相覆蓋的 bug（發現 35） | 068eb38 |
 | 通知擴充 `core/margin_watch.py`、`core/fill_notify.py`、`core/reminders.py`、`core/manual_monitor.py` 的事件、`core/notify.py` 的模擬盤閘門 | ✅ **待重啟後端** | Telegram 通知：手動停損停利（觸發／完成／重送／放棄）、保證金風險、手動單成交、當沖倉位 13:15／13:25 收盤前提醒；模擬盤不推播；只通知、不動委託（發現 34；測試不能碰真實通道的防線） | 1a658aa |
 | 依波動的建議停損停利 `core/stop_calibration.py`、`core/stop_suggest.py`、`GET /api/market/suggest`、〈委託〉面板〈建議停損停利〉卡 | ✅ **待重啟後端＋前端重 build** | 依最近 30 分鐘波動 σ 與持有時間算雜訊範圍 σ√T；三組型態（高勝率／平衡／高賺賠比）附停損被雜訊掃到的機率（1,609 個日盤的實測表）、沒技巧時的基準勝率、要靠時機多贏幾個百分點才打平成本、單口虧多少與 1% 風險最多幾口；只顯示、不碰下單（發現 33） | c02ee50 |
@@ -610,6 +611,17 @@
     **驗證**：`test_premarket_log` +11 項（補值整個流程、分幾次補不會弄丟前一次、仍缺就不寫、作廢與休市與夜盤缺值不補、只看最近 5 天、一天失敗不影響其他天、迴圈每 10 分鐘掃一次、連續三次更正都累積）、前端 node 檢查 +4 項（48 → 52）；變異測試 21 個全抓到（一開始存活 6 個：取最舊的更正、休市的空值也試、錯誤記成一般錯誤、補值說明、補值天數，另一個——更正只帶這次補的——是等價的，改簡化了程式）。全套 1,478 項通過。
     **需要你**：重啟後端（空手時）才有自動補值；沒重啟的話明天 08:46 還是會寫空值，手動 `python -m core.premarket_log backfill` 可以補。
 
+
+36. **Tailscale 位址不見 → 後端「自己關了」：watchdog 把沒壞的後端殺掉、又起不來**（2026-10-14 17:38；你問「我剛剛系統怎麼了？怎麼自己關了？」）。
+    **經過**（app log 與 watchdog 行為還原）：13:41 起後端正常；17:3x websocket 出現 `OSError: [Errno 49] Can't assign requested address`（本機的 Tailscale 位址 100.127.125.13 消失）→ watchdog 的 health 檢查打這個位址、打不到，判定「凍結」，17:39:29 kill -9 後端並重啟 →
+      重啟時 uvicorn 綁不上位址（同樣的 Errno 49）→ 結束 → watchdog 再試 → 退避 30／120／600 秒，17:39、17:40、17:42、17:52、18:03、18:13 各失敗一次（**每次失敗的啟動都先登入一次券商才發現綁不上**）。18:20 位址已回來（`ifconfig`、`tailscale status` 確認），但舊 watchdog 還在 10 分鐘退避裡。
+      這段時間（約 17:39～18:25）沒有記錄 tick、外／內盤、選擇權價差；當時空倉（`position_state_live.json` 的 positions＝[]），沒有風險；watchdog 的警示因為空倉所以沒推播（設計如此）。
+    **根本原因（設計缺陷）**：後端綁 Tailscale 位址是刻意的（不能綁 0.0.0.0：有真錢下單端點），但 watchdog 沒把「位址不在本機」和「後端凍結」分開；後端沒壞時殺掉它不只多此一舉，還讓它起不來。另外 `/tmp/lh_live_watchdog.log` 被清空，因為你（或我給的指令）又用 `nohup ./run_live.sh > …` 啟動了第二個——它被單例鎖擋下來，但 shell 的 `>` 先把正在跑那個的 log 截掉了（所以看不到 watchdog 當時的判斷；而且擋下來時印訊息的那行有 `$_old_pid）` 的 bash 地雷，`set -u` 下直接 unbound variable）。
+    **修法**：① `run_live.sh` 新增 `noiface` 狀態：`BIND_HOST` 不在本機＝不計失敗、不殺後端，後端還在跑就讓它跑；啟動前先 `wait_iface`（每 5 秒看一次，不登入券商、不累計退避）；第一次發現推播「⚠️ Tailscale 位址不見了」（不看有沒有持倉，冷卻 30 分鐘）；
+      ② `main.py` 啟動最前面先試綁（`core/bind_check.py`，位址不在就結束碼 3），不先開 worker 登入券商；③ 修 `run_live.sh`／`run_sim.sh` 的 `$_old_pid）` 地雷（`${_old_pid}`），並加測試掃「變數後面緊接非 ASCII 字元」；④ 文件裡的 `nohup … >` 一律改成 `>>`。**用原子替換（新 inode）改 `run_live.sh`，正在跑的那份不會被改壞；新版要重啟 watchdog 才生效。**
+    **驗證**：`test_bind_check`（6）、`test_watchdog_scripts`（18：語法、地雷掃描、`iface_up` 的各種位址／前綴／點的萬用字元／Linux `ip addr`、`health_state` 位址不在就不打 curl、迴圈順序的靜態檢查）；**用假的 ifconfig／curl／後端把整支腳本跑過 5 個情境**（啟動時位址不在→等待且只推播一次；位址回來→啟動；運作中位址消失→不殺後端、pid 沒變；位址回來→沒有重啟；位址在但 health 失敗→2 次後殺掉重啟，舊行為不變）。
+    **限制**：`run_live.ps1` 沒有改（Windows，沒有環境測）；`noiface` 期間後端若真的凍結也看不出來（打不到 health）——位址回來後會照舊判斷；後端綁在已消失的位址上，位址回來後能不能繼續服務沒有驗證過（舊版因為把它殺了所以沒觀察到），若不行會在位址回來後被 health 判成 down 而重啟。
+
 ---
 
 ## 資料累積起點（無法回補的標 ✋）
@@ -668,6 +680,14 @@
 ---
 
 ## 更新紀錄（新 → 舊）
+
+### 2026-10-14（續 2）— Tailscale 位址不見 → 後端自己關了：watchdog 位址檢查（發現 36）— 待 commit
+- **起因**：你問系統怎麼自己關了。查出來是 Tailscale 位址 17:38 消失，舊 watchdog 把沒壞的後端當成凍結殺掉、重啟又綁不上位址、退避到每 10 分鐘試一次（約 17:39～18:25 沒有記錄資料）。
+- **修法**：`run_live.sh` 位址不在＝不殺後端、等位址回來再啟動並推播；`main.py` 啟動前試綁；修 `run_live.sh`／`run_sim.sh` 的 `$_old_pid）` 地雷；文件的 `nohup … >` 改 `>>`。
+- **測試**：+24 項；整支腳本用假的 ifconfig／curl／後端跑過 5 個情境。**新版 watchdog 要重啟才生效**（舊的還在跑也能自己恢復）。
+- **後來查到重開沒成功的原因（18:2x）**：`/tmp/lh_live_watchdog.log` 開頭那行 `_old_pid: unbound variable` 是『有人又啟動了一個 watchdog、被舊的單例鎖擋下來』時印的（舊 bug，連 PID 都印不出來），而 `>` 還把舊 watchdog 的 log 清空了；舊 watchdog 當時卡在最後一檔退避的 `sleep 600`，bash 要等前景指令跑完才執行 trap，所以結束訊號拖到 18:23:53（＝退避睡完）才處理，之後整個正式盤沒有 watchdog、也沒有後端。log 只看得出結束訊號的時間、看不出是誰送的；我自己那段時間的指令只有讀檔，不會送訊號——推測是你重開時下的 `pkill`／`kill`。
+- **修法**：兩支腳本的等待改用 `isleep`（背景 sleep + `wait`，結束訊號一到立刻返回，cleanup 把 sleep 子行程一起收掉）；腳本檔頭與 CLAUDE.md 範例的 `nohup … >` 全改 `>>`。實測整支腳本在 600 秒退避中送 TERM：新版 2 秒結束、鎖釋放、沒有殘留 sleep；舊版 12 秒後仍活著、鎖還在。測試 +5 項（共 23 項）；變異測試 5 個，存活 1 個（測試順序問題：孤兒 sleep 握著輸出管道，讓檢查看起來過關）已修成全抓到。
+- **現況**：18:33 空手（帳上沒有持倉）、位址已回來，用修過 `$_old_pid` 與位址檢查的版本重啟正式盤 watchdog（`isleep` 要下次重啟才生效）；18:33:10 券商連上。
 
 ### 2026-10-14（續）— 盤前快照的美股欄位事後補值（發現 35）— 068eb38
 - **起因**：你問今天的盤前為什麼沒有費半、TSM、VIX。查出來是我的設計假設錯了：Nasdaq／Cboe 在 08:30～08:46 還沒更新前一天的資料（12:16 已有），而快照在 08:45 就得寫。

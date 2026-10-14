@@ -158,7 +158,9 @@ def health() -> dict[str, str]:
 
 if __name__ == "__main__":
     import uvicorn
+    from core.bind_check import preflight
     dev_mode = os.getenv("DEV", "false").lower() == "true"
+    preflight(os.getenv("BIND_HOST", "0.0.0.0"), int(os.getenv("PORT", "8002")))    # Tailscale 位址不在就在這裡結束，不要先開 worker、登入券商（update.md 發現 36）
     uvicorn.run(
         "main:app",
         host=os.getenv("BIND_HOST", "0.0.0.0"),

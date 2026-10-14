@@ -25,10 +25,10 @@ shioaji 原生層在永豐 Solace session 不穩時會卡在 I/O 又不釋放 GI
 **Linux / macOS（家機部署）**
 ```bash
 # 模擬盤（port 8003，main_sim.py 強制 SIMULATION=true，綁 0.0.0.0）
-nohup ./run_sim.sh  > /tmp/lh_sim_watchdog.log  2>&1 &
+nohup ./run_sim.sh  >> /tmp/lh_sim_watchdog.log 2>&1 &
 
 # 正式盤（port 8002，main.py 依 .env，綁 BIND_HOST）— 真錢，啟動前確認 .env
-nohup ./run_live.sh > /tmp/lh_live_watchdog.log 2>&1 &
+nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &
 
 # 前端（port 3002）
 cd frontend && npm run dev      # 開發
@@ -53,9 +53,11 @@ cd frontend; npm run dev
 - 停止：在該視窗按 **Ctrl+C**，`finally` 會把 python 子進程一起關掉。
 - 想長期掛機正式交易，建議仍用 Linux 家機跑 `.sh`；`.ps1` 主要供 Windows 本地開發/測試。
 
-watchdog 行為（兩版一致，wall-clock 計時）：每 15s 檢查 `/health`，判斷三態——
+watchdog 行為（wall-clock 計時；`run_live.sh` 有位址檢查，`.ps1` 還沒有）：每 15s 檢查 `/health`，判斷四態——
 `healthy`(200+`broker_connected:True`)／`nobroker`(200 但沒連券商＝登入失敗或斷線)／
-`down`(逾時或非 200＝凍結，連 health 都拿不到 threadpool 執行緒)。
+`down`(逾時或非 200＝凍結，連 health 都拿不到 threadpool 執行緒)／**`noiface`(`BIND_HOST` 這個位址不在本機＝Tailscale 斷線：不是後端的問題，不計失敗、不殺後端；
+起不來就等位址回來再啟動，並推播一次；update.md 發現 36)**。`main.py` 啟動最前面也先試綁 `BIND_HOST`（`core/bind_check.py`），位址不在就結束碼 3，不先開 worker 登入券商。
+watchdog 的 log 要用 `>>` 附加：第二個 watchdog 被單例鎖擋下來時，`>` 會先把正在跑那個的 log 清空。bash 的變數後面緊接全形標點要寫 `${var}`（`tests/test_watchdog_scripts.py` 有掃）。等待（退避、檢查間隔）一律用 `isleep`（背景 sleep + wait）：bash 要等前景指令跑完才執行 trap，直接 `sleep 600` 會讓 `pkill -f run_live.sh` 被拖最長 10 分鐘、單例鎖一直在（2026-10-14 實際發生，同上測試有掃）。
 (重)啟動後有 `GRACE_PERIOD`(200s)寬限給永豐登入（可達 ~135s）；**一旦成功連上過，
 寬限即失效**，之後 `nobroker`/`down` 連續 2 次（≈30s）就 kill + 重啟＝**broker 斷線自動重連**。
 
