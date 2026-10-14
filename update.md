@@ -50,8 +50,8 @@
 | 選擇權買賣價差的盤中取樣 `core/option_spread_log.py` | ✅ **待重啟後端才開始記** | 每 10 分鐘（`OPTION_SPREAD_MINUTES`）向券商查一次整條鏈、依離平值距離分組存價差中位數到 `data/option_spread.db`（✋ 無法回補）；`python -m core.option_spread_log report`；`OPTION_SPREAD_LOG=false` 關閉 | bd7ab92 |
 | 盤前跨市場資訊紀錄 `core/premarket_log.py`、`api/routes_premarket.py` | ✅ **待重啟後端才開始記** | 每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照存 `trade_log.db`（`premarket_snapshots`／`premarket_errors`／`premarket_graveyard`，資料庫觸發器擋 UPDATE／DELETE）；美股日曆（NYSE 假日、補假、提早收盤）用 2,457 個真實交易日驗證逐日一致；來源 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX），失敗轉移＋429 後暫停 6 小時，Yahoo 轉接器預設關；台股休市用證交所日曆（快取）；`python -m core.premarket_log show\|run\|export\|status\|void\|correct`；`PREMARKET_LOG=false` 關閉。沒有任何策略或風控讀這些欄位（靜態檢查＋啟用前後重播訂單完全相同的測試） | 978438e |
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
-| 依波動的建議停損停利 `core/stop_calibration.py`、`core/stop_suggest.py`、`GET /api/market/suggest`、〈委託〉面板〈建議停損停利〉卡 | ✅ **待重啟後端＋前端重 build** | 依最近 30 分鐘波動 σ 與持有時間算雜訊範圍 σ√T；三組型態（高勝率／平衡／高賺賠比）附停損被雜訊掃到的機率（1,609 個日盤的實測表）、沒技巧時的基準勝率、要靠時機多贏幾個百分點才打平成本、單口虧多少與 1% 風險最多幾口；只顯示、不碰下單（發現 33） | 待 commit |
-| 持倉保護 `core/protection.py`、`core/notify.py`、`core/startup_protection.py`、`core/manual_monitor.py`（落地與對帳恢復）、〈部位〉橫幅 | ✅ **待重啟後端＋前端重 build＋（想要手機通知的話）設定通道** | 手動停損停利落地、重啟後和券商部位對帳恢復；沒有保護的持倉有橫幅；凍結／重啟／連不上券商時推播（Telegram／ntfy／webhook）；策略仍不自動恢復；不碰下單與風控（發現 18 處理一半、發現 32） | 待 commit |
+| 依波動的建議停損停利 `core/stop_calibration.py`、`core/stop_suggest.py`、`GET /api/market/suggest`、〈委託〉面板〈建議停損停利〉卡 | ✅ **待重啟後端＋前端重 build** | 依最近 30 分鐘波動 σ 與持有時間算雜訊範圍 σ√T；三組型態（高勝率／平衡／高賺賠比）附停損被雜訊掃到的機率（1,609 個日盤的實測表）、沒技巧時的基準勝率、要靠時機多贏幾個百分點才打平成本、單口虧多少與 1% 風險最多幾口；只顯示、不碰下單（發現 33） | c02ee50 |
+| 持倉保護 `core/protection.py`、`core/notify.py`、`core/startup_protection.py`、`core/manual_monitor.py`（落地與對帳恢復）、〈部位〉橫幅 | ✅ **待重啟後端＋前端重 build＋（想要手機通知的話）設定通道** | 手動停損停利落地、重啟後和券商部位對帳恢復；沒有保護的持倉有橫幅；凍結／重啟／連不上券商時推播（Telegram／ntfy／webhook）；策略仍不自動恢復；不碰下單與風控（發現 18 處理一半、發現 32） | c02ee50 |
 | 盤前跨市場資訊的歷史預檢 `core/premarket_study.py` | ✅ 離線分析，不需重啟 | TX 日行情的盤後列（2017-05 起）＋ Nasdaq／Cboe 日線；擴展視窗 OLS 樣本外＋Clark–West＋Newey–West；`fetch`（下載到 `data/premarket/`）／`sanity`／`run`；判定標準在跑之前寫進發現 31；變異測試 46 個 | 978438e |
 | 券商連線數保護 `core/broker_guard.py` | ✅ | 會另外登入的唯讀工具（`hurst_study fetch`、`flow-fetch`）登入前先問正式盤後端目前幾條連線，登入後最多 4 條（留 1 條給正式盤重啟） | 284c19e |
 | 盤中指標擴充 `core/intraday_context.py`、`core/live_state.py`、`core/shioaji_worker.py`、`core/tick_store.py`、〈盤中即時〉三張卡片 | ✅ 待重啟＋前端重 build | 報價事件本來就帶的五檔、交易所累計內外盤、均價、現貨指數不再被丟掉：價差／五檔失衡、VWAP、基差、時段脈絡（時段波動倍數、開盤後 30／60 分振幅 → 之後預期振幅、距收盤倒數、結算日提醒）；成交列另記盤口 12 欄（`RECORD_BOOK=false` 可關）；順手修漲跌欄位（`change_price` 不存在，改讀 `price_chg`）。判定標準事先寫定、5 個檢定只過 1 項（發現 28） | 46ebf3a |
@@ -640,13 +640,13 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-13（續 4）— 依波動的建議停損停利與雜訊掃到機率的校準（發現 33）— 待 commit
+### 2026-10-13（續 4）— 依波動的建議停損停利與雜訊掃到機率的校準（發現 33）— c02ee50
 - **起因**：你想根據區間波動、當日波動顯示建議的停損停利，目的是「找到勝率高的方式」。我先講清楚：勝率是停損停利比例的函數、不是優勢；要找的是比基準勝率高的時機，所以卡片同時顯示基準勝率與「要靠時機多贏幾個百分點才打平成本」。
 - **校準研究**（事先登記、只跑一次）：1,609 個日盤＋39 個夜盤；常態公式的掃到機率在 3σ 低估 4～5 倍（肥尾），實測表前後半差距 ≤ 1.2 個百分點；σ 當單位跨年代穩定。
 - **新增**：`core/stop_calibration.py`＋`.json`、`core/stop_suggest.py`、`GET /api/market/suggest`、前端〈建議停損停利〉卡。**需後端重啟＋前端 build**。
 - **測試**：後端 +55 項、前端 node 約 40 項；變異測試後端 55／前端 32 個全抓到；看過桌面與手機截圖。
 
-### 2026-10-13（續 3）— 持倉保護：手動停損落地與重啟恢復、凍結與重啟的手機通知（發現 32；發現 18 處理一半）— 待 commit
+### 2026-10-13（續 3）— 持倉保護：手動停損落地與重啟恢復、凍結與重啟的手機通知（發現 32；發現 18 處理一半）— c02ee50
 - **起因**：討論系統與策略時，我指出「停損只活在會凍結的 Python 行程」是目前最大的結構性風險（shioaji 1.5.3 沒有券商端觸價單）；你同意補保護與通知（「可以」）、不要手動單的行為護欄（「不用補」）。
 - **新增**：`core/protection.py`（誰沒有保護、持倉狀態檔、警示訊息）、`core/notify.py`（Telegram／ntfy／webhook、冷卻、CLI）、`core/startup_protection.py`、`core/manual_monitor.py` 的落地與 `reconcile`／`restore`；`api/routes_position.py`（`unprotected`、持倉狀態檔）；`main.py` 啟動時 `protect_after_start()`；
   `run_live.sh`／`run_live.ps1` 的推播掛鉤；前端 `UnprotectedBanner`、`lib/protection.ts`、`PositionPanel`；`.env.example`、QUICKSTART／OPERATION／FRONTEND／CLAUDE 文件。
