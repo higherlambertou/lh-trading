@@ -50,7 +50,7 @@
 | 選擇權買賣價差的盤中取樣 `core/option_spread_log.py` | ✅ **待重啟後端才開始記** | 每 10 分鐘（`OPTION_SPREAD_MINUTES`）向券商查一次整條鏈、依離平值距離分組存價差中位數到 `data/option_spread.db`（✋ 無法回補）；`python -m core.option_spread_log report`；`OPTION_SPREAD_LOG=false` 關閉 | bd7ab92 |
 | 盤前跨市場資訊紀錄 `core/premarket_log.py`、`api/routes_premarket.py` | ✅ **待重啟後端才開始記** | 每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照存 `trade_log.db`（`premarket_snapshots`／`premarket_errors`／`premarket_graveyard`，資料庫觸發器擋 UPDATE／DELETE）；美股日曆（NYSE 假日、補假、提早收盤）用 2,457 個真實交易日驗證逐日一致；來源 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX），失敗轉移＋429 後暫停 6 小時，Yahoo 轉接器預設關；台股休市用證交所日曆（快取）；`python -m core.premarket_log show\|run\|export\|status\|void\|correct`；`PREMARKET_LOG=false` 關閉。沒有任何策略或風控讀這些欄位（靜態檢查＋啟用前後重播訂單完全相同的測試） | 978438e |
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
-| 通知擴充 `core/margin_watch.py`、`core/fill_notify.py`、`core/reminders.py`、`core/manual_monitor.py` 的事件、`core/notify.py` 的模擬盤閘門 | ✅ **待重啟後端** | Telegram 通知：手動停損停利（觸發／完成／重送／放棄）、保證金風險、手動單成交、當沖倉位 13:15／13:25 收盤前提醒；模擬盤不推播；只通知、不動委託（發現 34；測試不能碰真實通道的防線） | 待 commit |
+| 通知擴充 `core/margin_watch.py`、`core/fill_notify.py`、`core/reminders.py`、`core/manual_monitor.py` 的事件、`core/notify.py` 的模擬盤閘門 | ✅ **待重啟後端** | Telegram 通知：手動停損停利（觸發／完成／重送／放棄）、保證金風險、手動單成交、當沖倉位 13:15／13:25 收盤前提醒；模擬盤不推播；只通知、不動委託（發現 34；測試不能碰真實通道的防線） | 1a658aa |
 | 依波動的建議停損停利 `core/stop_calibration.py`、`core/stop_suggest.py`、`GET /api/market/suggest`、〈委託〉面板〈建議停損停利〉卡 | ✅ **待重啟後端＋前端重 build** | 依最近 30 分鐘波動 σ 與持有時間算雜訊範圍 σ√T；三組型態（高勝率／平衡／高賺賠比）附停損被雜訊掃到的機率（1,609 個日盤的實測表）、沒技巧時的基準勝率、要靠時機多贏幾個百分點才打平成本、單口虧多少與 1% 風險最多幾口；只顯示、不碰下單（發現 33） | c02ee50 |
 | 持倉保護 `core/protection.py`、`core/notify.py`、`core/startup_protection.py`、`core/manual_monitor.py`（落地與對帳恢復）、〈部位〉橫幅 | ✅ **待重啟後端＋前端重 build＋（想要手機通知的話）設定通道** | 手動停損停利落地、重啟後和券商部位對帳恢復；沒有保護的持倉有橫幅；凍結／重啟／連不上券商時推播（Telegram／ntfy／webhook）；策略仍不自動恢復；不碰下單與風控（發現 18 處理一半、發現 32） | c02ee50 |
 | 盤前跨市場資訊的歷史預檢 `core/premarket_study.py` | ✅ 離線分析，不需重啟 | TX 日行情的盤後列（2017-05 起）＋ Nasdaq／Cboe 日線；擴展視窗 OLS 樣本外＋Clark–West＋Newey–West；`fetch`（下載到 `data/premarket/`）／`sanity`／`run`；判定標準在跑之前寫進發現 31；變異測試 46 個 | 978438e |
@@ -656,7 +656,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-14 — 通知擴充：停損停利事件、保證金風險、手動單成交、當沖倉位提醒（發現 34）— 待 commit
+### 2026-10-14 — 通知擴充：停損停利事件、保證金風險、手動單成交、當沖倉位提醒（發現 34）— 1a658aa
 - **起因**：你設好 Telegram bot、問「現在 tg 有什麼通知？你可以多加一些」。用你的 bot 實際送了測試訊息，成功。
 - **新增**：手動停損停利的觸發／完成／重送／放棄、保證金風險（追繳或權益÷維持保證金 < 150%／120%）、手動單成交（`NOTIFY_FILLS`）、當沖倉位 13:15／13:25 提醒；模擬盤不推播。全部只通知、不動委託。
 - **我的疏失**：跑測試時誤載入你的真 `.env`，可能有 1 則假警示（測試資料「TMFJ6 空 2 口」）送到 Telegram；已加兩道防線（`NOTIFY_SKIP_DOTENV`、測試裡 `_http_post`／`_http_get` 直接失敗）並加測試。
