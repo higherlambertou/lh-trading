@@ -50,7 +50,7 @@
 | 選擇權買賣價差的盤中取樣 `core/option_spread_log.py` | ✅ **待重啟後端才開始記** | 每 10 分鐘（`OPTION_SPREAD_MINUTES`）向券商查一次整條鏈、依離平值距離分組存價差中位數到 `data/option_spread.db`（✋ 無法回補）；`python -m core.option_spread_log report`；`OPTION_SPREAD_LOG=false` 關閉 | bd7ab92 |
 | 盤前跨市場資訊紀錄 `core/premarket_log.py`、`api/routes_premarket.py` | ✅ **待重啟後端才開始記** | 每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照存 `trade_log.db`（`premarket_snapshots`／`premarket_errors`／`premarket_graveyard`，資料庫觸發器擋 UPDATE／DELETE）；美股日曆（NYSE 假日、補假、提早收盤）用 2,457 個真實交易日驗證逐日一致；來源 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX），失敗轉移＋429 後暫停 6 小時，Yahoo 轉接器預設關；台股休市用證交所日曆（快取）；`python -m core.premarket_log show\|run\|export\|status\|void\|correct`；`PREMARKET_LOG=false` 關閉。沒有任何策略或風控讀這些欄位（靜態檢查＋啟用前後重播訂單完全相同的測試） | 978438e |
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
-| 盤前快照的事後補值 `core/premarket_log.py` 的 `backfill_*`、〈盤前跨市場快照〉面板的「已補值」標示 | ✅ **待重啟後端** | 美股欄位因來源比取樣時間晚更新而空著，之後來源有了自動補一筆 correction（原始那筆不動、補值時間記下來）；修了連續更正會互相覆蓋的 bug（發現 35） | 待 commit |
+| 盤前快照的事後補值 `core/premarket_log.py` 的 `backfill_*`、〈盤前跨市場快照〉面板的「已補值」標示 | ✅ **待重啟後端** | 美股欄位因來源比取樣時間晚更新而空著，之後來源有了自動補一筆 correction（原始那筆不動、補值時間記下來）；修了連續更正會互相覆蓋的 bug（發現 35） | 068eb38 |
 | 通知擴充 `core/margin_watch.py`、`core/fill_notify.py`、`core/reminders.py`、`core/manual_monitor.py` 的事件、`core/notify.py` 的模擬盤閘門 | ✅ **待重啟後端** | Telegram 通知：手動停損停利（觸發／完成／重送／放棄）、保證金風險、手動單成交、當沖倉位 13:15／13:25 收盤前提醒；模擬盤不推播；只通知、不動委託（發現 34；測試不能碰真實通道的防線） | 1a658aa |
 | 依波動的建議停損停利 `core/stop_calibration.py`、`core/stop_suggest.py`、`GET /api/market/suggest`、〈委託〉面板〈建議停損停利〉卡 | ✅ **待重啟後端＋前端重 build** | 依最近 30 分鐘波動 σ 與持有時間算雜訊範圍 σ√T；三組型態（高勝率／平衡／高賺賠比）附停損被雜訊掃到的機率（1,609 個日盤的實測表）、沒技巧時的基準勝率、要靠時機多贏幾個百分點才打平成本、單口虧多少與 1% 風險最多幾口；只顯示、不碰下單（發現 33） | c02ee50 |
 | 持倉保護 `core/protection.py`、`core/notify.py`、`core/startup_protection.py`、`core/manual_monitor.py`（落地與對帳恢復）、〈部位〉橫幅 | ✅ **待重啟後端＋前端重 build＋（想要手機通知的話）設定通道** | 手動停損停利落地、重啟後和券商部位對帳恢復；沒有保護的持倉有橫幅；凍結／重啟／連不上券商時推播（Telegram／ntfy／webhook）；策略仍不自動恢復；不碰下單與風控（發現 18 處理一半、發現 32） | c02ee50 |
@@ -669,7 +669,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-14（續）— 盤前快照的美股欄位事後補值（發現 35）— 待 commit
+### 2026-10-14（續）— 盤前快照的美股欄位事後補值（發現 35）— 068eb38
 - **起因**：你問今天的盤前為什麼沒有費半、TSM、VIX。查出來是我的設計假設錯了：Nasdaq／Cboe 在 08:30～08:46 還沒更新前一天的資料（12:16 已有），而快照在 08:45 就得寫。
 - **修法**：背景迴圈每 10 分鐘掃最近 5 天，來源有了就補一筆 correction（原始不動、記補值時間）；畫面標「已補值」；修了連續更正互相覆蓋的 bug；今天這筆已補上。
 - **測試**：+11 項（後端）、+4 項（前端）；變異測試 21 個全抓到；全套 1,478 項通過；加了「預設資料庫換成暫存」的全域防線。**需重啟後端**。
