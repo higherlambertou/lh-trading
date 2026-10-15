@@ -209,11 +209,23 @@ def test_ratio_threshold_from_env(monkeypatch):
     assert vw.ratio_threshold() == 2.0
 
 
-def test_no_futures_position_means_nothing_to_do():
-    assert assess(positions=[]) is None
-    assert assess(positions=None) is None
-    assert assess(positions=[{"code": "TXO20000J6", "direction": "Buy", "quantity": 1}]) is None       # 只持有選擇權買方：波動變大對你有利
-    assert assess(positions=[{"code": "TMFJ6", "direction": "Buy", "quantity": 0}]) is None
+@pytest.mark.parametrize("pos", [[], None, [{"code": "TXO20000J6", "direction": "Buy", "quantity": 1}], [{"code": "TMFJ6", "direction": "Buy", "quantity": 0}]])
+def test_flat_still_alerts_with_the_scale_but_no_stop_lines(pos):
+    """空手（或只有選擇權）也提醒（發現 39）：訊息講現在的尺度與建議的停利停損點數，不列「離停損還有幾點」。"""
+    a = assess(amp=3.0, ref=expected_sigma(1.0), positions=pos)
+    assert a["alert"] is True and a["held"] == [] and a["stops"] == []
+    title, body = vw.message(a)
+    assert "3.0 倍" in title
+    assert "目前沒有期貨持倉" in body and "如果現在要進場" in body and "不會動任何委託" in body
+    assert "平衡型停利" in body and "（平常是" in body
+    assert "離停損" not in body and "TMFJ6" not in body and "停損的意義變了" not in body
+
+
+def test_balanced_row_is_the_stop_card_row():
+    assert vw._balanced(2.0, "day", 30) == (11, 16)               # 2.0 × √30 = 10.95：停利 1.0×、停損 1.5×
+    a = assess(amp=3.0, ref=expected_sigma(1.0))
+    assert a["suggest"]["now"] == vw._balanced(a["sigma"], "day", 30) and a["suggest"]["usual"] == vw._balanced(a["ref"], "day", 30)
+    assert a["suggest"]["now"][1] > a["suggest"]["usual"][1]       # 波動放大 → 建議停損變遠
 
 
 def test_no_decision_without_sigma_or_baseline():
@@ -286,7 +298,7 @@ def test_message_content():
     title, body = vw.message(a)
     assert "3.0 倍" in title
     assert "TMFJ6 多 2 口" in body and "停損 40 點" in body and "離停損還有 40 點" in body
-    assert "不會動任何委託" in body
+    assert "不會動任何委託" in body and "停損的意義變了" in body and "以現在的波動，平衡型停利" in body
     b = assess(amp=3.0, ref=expected_sigma(1.0), watches=[])
     assert "沒有停損監控" in vw.message(b)[1]
 
@@ -364,11 +376,17 @@ class Spy:
         return []
 
 
-def test_watcher_does_not_touch_the_database_when_flat(rec):
-    spy = Spy()
-    assert run(vw.VolWatcher().check(NOW.timestamp(), [], WATCH, spy, table=TABLE)) is None
-    assert run(vw.VolWatcher().check(NOW.timestamp(), [{"code": "TXO20000J6", "direction": "Buy", "quantity": 1}], WATCH, spy, table=TABLE)) is None
-    assert spy.calls == []
+def test_watcher_alerts_even_when_flat(rec):
+    """空手也發（發現 39）：同樣的條件、同一個冷卻 key。"""
+    store = FakeStore(3.0)
+    a = run(vw.VolWatcher().check(NOW.timestamp(), [], WATCH, store, table=TABLE))
+    assert a["alert"] is True and a["held"] == []
+    assert len(rec.calls) == 1 and rec.calls[0]["key"] == "volwatch:day" and "目前沒有期貨持倉" in rec.calls[0]["message"]
+
+
+def test_watcher_flat_and_quiet_says_nothing(rec):
+    a = run(vw.VolWatcher().check(NOW.timestamp(), [], [], FakeStore(1.0), table=TABLE))
+    assert a["alert"] is False and rec.calls == []
 
 
 def test_watcher_outside_a_session_does_nothing(rec):

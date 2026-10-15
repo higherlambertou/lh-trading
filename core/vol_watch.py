@@ -1,16 +1,17 @@
-"""持倉中波動放大提醒（update.md 發現 37）：只通知、不動任何委託，也不給方向。
+"""波動放大提醒（update.md 發現 37、39）：只通知、不動任何委託，也不給方向。
 
 為什麼：停損是用「k 倍雜訊範圍」定的（core/stop_suggest.py：σ＝最近 30 個 1 分鐘收盤價變動的樣本標準差、雜訊範圍＝σ√T）。
-持倉期間 σ 變成 2 倍，同一個停損點數就只剩一半的 k——被雜訊掃到的機率從 5.4%（2σ）變 27.5%（1σ）（core/stop_calibration.json，日盤 T=30）。
-這個提醒只告訴你「停損的意義變了」；提醒之後怎麼做比較好沒有驗證過，所以訊息只列事實，決定留給你。
+σ 變成 2 倍，同一個停損點數就只剩一半的 k——被雜訊掃到的機率從 5.4%（2σ）變 27.5%（1σ）（core/stop_calibration.json，日盤 T=30）。
+持倉中：告訴你「停損的意義變了」；空手：告訴你「現在進場，停損要照現在的雜訊範圍放」（發現 39：空手也發）。
+提醒之後怎麼做比較好沒有驗證過，所以訊息只列事實，決定留給你。
 
-判斷（每分鐘一次；只在持有期貨部位時才做事；只讀本機資料庫與記憶體，不查券商）：
+判斷（每分鐘一次；有持倉沒持倉都做；只讀本機資料庫與記憶體，不查券商）：
   現在的 σ ÷「同一個時段（距該時段開始的第幾分鐘）最近 20 個時段 σ 的中位數」≥ VOL_ALERT_RATIO（預設 2.0）。
   用同時段比、不用全天平均：開盤本來就比較大，不這樣比每天開盤都會響。基準只用「當天以前」的時段（tests 有金絲雀）。
   日盤的基準來自 TXF 1 分 K（bars_1m，1,600 多個時段），夜盤來自 TMF 真實成交的 flow_1m（累積中，同一分鐘不到 MIN_SESSIONS 個時段有值就不判斷）。
   時段開始後 30 分鐘內算不出 σ，不判斷。σ 的定義與建議停損停利卡完全相同（直接呼叫 stop_suggest.sigma_from_closes）。
-頻率（TXF 日盤 1,614 天的描述統計，不是檢定；60 分鐘冷卻）：2× 約 23% 的日子至少一次、平均每個日盤 0.39 次；1.5× 是 1.17 次、3× 是 0.08 次。夜盤還沒量過。
-範圍：只看期貨部位（TMF／MXF／TXF）。選擇權買方波動變大對你有利，不在這裡提醒。"""
+頻率（TXF 日盤 1,614 天的描述統計，不是檢定；60 分鐘冷卻；與有沒有持倉無關）：2× 約 23% 的日子至少一次、平均每個日盤 0.39 次；1.5× 是 1.17 次、3× 是 0.08 次。夜盤還沒量過。
+持倉：只有期貨部位（TMF／MXF／TXF）會列「離停損還有幾點」；選擇權與沒有持倉的訊息只講現在的尺度。"""
 from __future__ import annotations
 
 import asyncio
@@ -196,13 +197,11 @@ def stop_exposure(held: list[dict[str, Any]], watches: Optional[list[dict[str, A
 
 def assess(now_ts: float, rows: list[dict[str, Any]], baseline: dict[int, float], session: str, idx: int, positions: Optional[list[dict[str, Any]]],
            watches: Optional[list[dict[str, Any]]], table: Optional[dict[str, Any]], horizon: int = HORIZON, ratio_th: Optional[float] = None) -> Optional[dict[str, Any]]:
-    """沒有期貨部位回 None；否則回 {alert, ratio, sigma, ref, stops, held, ...}（算不出 σ 或沒有基準時 alert=False、ratio=None）。"""
+    """回 {alert, ratio, sigma, ref, stops, held, suggest, ...}（算不出 σ 或沒有基準時 alert=False、ratio=None）。held 可能是空的（空手也提醒）。"""
     held = held_futures(positions)
-    if not held:
-        return None
     th = ratio_threshold() if ratio_th is None else ratio_th
     out: dict[str, Any] = {"alert": False, "ratio": None, "sigma": None, "ref": None, "session": session, "idx": idx, "horizon": horizon,
-                           "held": held, "stops": [], "threshold": th}
+                           "held": held, "stops": [], "suggest": None, "threshold": th}
     if idx < 1:
         return out
     sigma, _ = stop_suggest.sigma_from_closes(stop_suggest.closes_from_flow(rows, now_ts))
@@ -214,7 +213,14 @@ def assess(now_ts: float, rows: list[dict[str, Any]], baseline: dict[int, float]
     out["alert"] = out["ratio"] >= th
     if out["alert"]:
         out["stops"] = stop_exposure(held, watches, sigma, ref, horizon, session, table)
+        out["suggest"] = {"now": _balanced(sigma, session, horizon), "usual": _balanced(ref, session, horizon)}
     return out
+
+
+def _balanced(sigma: float, session: str, horizon: int) -> Optional[tuple[int, int]]:
+    """這個 σ 下「平衡」那組建議的 (停利, 停損) 點數（與建議停損停利卡同一個函式；點數不依賴實測表，所以不傳表）。"""
+    row = next((r for r in stop_suggest.build(sigma, 30, session=session, horizon=horizon, contract="TMF", table=None).get("rows", []) if r["name"] == "平衡"), None)
+    return (row["tp"], row["sl"]) if row else None
 
 
 def _pct(x: Optional[tuple[float, str]]) -> str:
@@ -238,14 +244,22 @@ def message(a: dict[str, Any]) -> tuple[str, str]:
         else:
             lines.append(f"{who}：停損 {s['stop']:.0f} 點，離停損還有 {s['dist']:.0f} 點＝現在雜訊範圍的 {s['k_now']:.1f} 倍，"
                          f"{T} 分鐘內被雜訊掃到的機率{_pct(s['p_now'])}（平常這個距離是 {s['k_ref']:.1f} 倍、{_pct(s['p_ref'])}）。")
-    lines.append("只是提醒停損的意義變了：拉遠停損、減碼或不動由你決定；這則通知不會動任何委託。")
+    if not a["stops"]:
+        lines.append("目前沒有期貨持倉。")
+    sg = a.get("suggest") or {}
+    if sg.get("now") and sg.get("usual"):
+        lines.append(f"以現在的波動，平衡型停利 {sg['now'][0]}／停損 {sg['now'][1]} 點（平常是 {sg['usual'][0]}／{sg['usual'][1]} 點）。")
+    if a.get("held"):
+        lines.append("只是提醒停損的意義變了：拉遠停損、減碼或不動由你決定；這則通知不會動任何委託。")
+    else:
+        lines.append("如果現在要進場，停損距離要照現在的雜訊範圍放，別沿用平常的點數；這則通知不會動任何委託。")
     return f"⚠️ 波動放大：現在是同時段的 {a['ratio']:.1f} 倍", "\n".join(lines)
 
 
 # ── 背景迴圈 ────────────────────────────────────────────────────
 
 class VolWatcher:
-    """每分鐘看一次：有期貨部位才讀資料庫、才建基準（基準一個時段只建一次，6 小時後重建）。所有例外吞掉，不影響任何交易路徑。"""
+    """每分鐘看一次：在連續交易時段內才讀資料庫、建基準（基準一個時段只建一次，6 小時後重建）；有沒有持倉都做。所有例外吞掉，不影響任何交易路徑。"""
 
     def __init__(self) -> None:
         self._base: Optional[tuple[str, str, float, dict[int, float]]] = None      # (時段, 時段代號, 建立時間, 基準)
@@ -269,9 +283,6 @@ class VolWatcher:
     async def check(self, now_ts: float, positions: Optional[list[dict[str, Any]]], watches: Optional[list[dict[str, Any]]], store: Any,
                     table: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
         try:
-            if not held_futures(positions):
-                self.last = None
-                return None
             pos = session_pos(datetime.fromtimestamp(now_ts, TAIPEI))
             if pos is None:
                 return None

@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
     fill_notify.install(trade_log)                                       # 手動單成交就推播（NOTIFY_FILLS=manual|all|off；只通知、不動委託）
     reminder_task = loop.create_task(reminder_loop(lambda: _position_cache["positions"], manual_monitor.list_watches))    # 當沖倉位收盤前提醒（13:15、13:25）
     protect_task = loop.create_task(protect_after_start())                # 重啟後：恢復手動停損監控、報告沒有保護的持倉（自己等券商連上；不下單）
-    vol_task = loop.create_task(vol_watch_loop(lambda: _position_cache["positions"], manual_monitor.list_watches, market_state.store))   # 持倉中波動放大提醒（只通知；VOL_WATCH=false 關閉）
+    vol_task = loop.create_task(vol_watch_loop(lambda: _position_cache["positions"], manual_monitor.list_watches, market_state.store))   # 波動放大提醒（有沒有持倉都發；只通知；VOL_WATCH=false 關閉）
     brief_task = loop.create_task(brief_loop(market_state.snapshot, market_state.store))   # 盤前摘要（只通知；DAILY_BRIEF=false 關閉）
     rollover_task = loop.create_task(rollover.rollover_loop(lambda: broker.resolved_codes))   # 近月合約結算後要求 watchdog 重啟換月（ROLLOVER_RESTART=false 關閉）
     logger.info("系統啟動完成（等待 worker 連線中…）")
