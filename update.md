@@ -50,6 +50,7 @@
 | 選擇權買賣價差的盤中取樣 `core/option_spread_log.py` | ✅ **待重啟後端才開始記** | 每 10 分鐘（`OPTION_SPREAD_MINUTES`）向券商查一次整條鏈、依離平值距離分組存價差中位數到 `data/option_spread.db`（✋ 無法回補）；`python -m core.option_spread_log report`；`OPTION_SPREAD_LOG=false` 關閉 | bd7ab92 |
 | 盤前跨市場資訊紀錄 `core/premarket_log.py`、`api/routes_premarket.py` | ✅ **待重啟後端才開始記** | 每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照存 `trade_log.db`（`premarket_snapshots`／`premarket_errors`／`premarket_graveyard`，資料庫觸發器擋 UPDATE／DELETE）；美股日曆（NYSE 假日、補假、提早收盤）用 2,457 個真實交易日驗證逐日一致；來源 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX），失敗轉移＋429 後暫停 6 小時，Yahoo 轉接器預設關；台股休市用證交所日曆（快取）；`python -m core.premarket_log show\|run\|export\|status\|void\|correct`；`PREMARKET_LOG=false` 關閉。沒有任何策略或風控讀這些欄位（靜態檢查＋啟用前後重播訂單完全相同的測試） | 978438e |
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
+| 波動放大冷卻改 10 分鐘 `core/vol_watch.py`（發現 40） | ✅ **需重啟後端** | `VOL_ALERT_COOLDOWN_MIN` 預設 10；日盤歷史平均 1.20 則／日盤（60 分鐘時 0.39），極端行情日會連發；對效能沒有影響 | 待 commit |
 | 波動放大提醒空手也發 `core/vol_watch.py`（發現 39） | ✅ **需重啟後端** | 原本只在持有期貨時才發；現在連續交易時段內有沒有持倉都發，空手講現在的雜訊範圍與平衡型停利停損點數（平常是多少），有持倉才多帶離停損還有幾點 | d442d19 |
 | 換月自動重啟 `core/rollover.py`、`run_live.sh`／`run_sim.sh` 的 `rollover` 態、`core/broker.py` 的 `resolved_codes`、worker `subscribe` 回報 `target_code` | ✅ **需重啟後端；watchdog 要重啟才生效** | 訂閱的近月合約過了結算日 13:30，後端在 health 帶 `restart_wanted`，watchdog 正常關閉並重啟；只在合約檔更新後的 14:46／17:16／隔天 07:51／08:01 各試一次，四次不成就通知放棄；成功也通知（發現 38） | 7c2bac2 |
 | 指標類通知：持倉中波動放大 `core/vol_watch.py`、合約到期提醒 `core/reminders.py`、盤前摘要 `core/daily_brief.py` | ✅ **待重啟後端才生效** | 只通知、不動委託、不放權益；不接進場訊號（買賣力道、Hurst 的檢驗沒過）。波動放大＝持有期貨、且最近 30 分鐘 σ ≥ 同時段近 20 個時段中位數的 2 倍；到期＝最後交易日前 1～3 天／當天 08:50／當天 12:30；摘要＝交易日 08:35 一則（發現 37） | 81c6c2c |
@@ -683,6 +684,12 @@
 ---
 
 ## 更新紀錄（新 → 舊）
+
+### 2026-10-15（續 3）— 波動放大的冷卻改 10 分鐘（發現 40）— 待 commit
+- **起因**：你要冷卻改 10 分鐘，也問對效能有沒有影響。**效能沒有影響**：檢查本來就是每分鐘一次、成本與冷卻無關；冷卻只決定「通知發不發」（`notify()` 每分鐘查一次冷卻檔，很小）。
+- **真正會變的是則數**（TXF 日盤 1,593 天的描述統計、2× 門檻）：冷卻 60 分鐘平均每個日盤 0.39 則；30 分鐘 0.53；**10 分鐘 1.20**；5 分鐘 2.14。有發的日子仍是 23% 的日子；10 分鐘時有發的日子裡中位數 3 則、90 分位 13 則、單日最多 27 則——極端行情日會連發。
+- **改法**：預設 10 分鐘，`VOL_ALERT_COOLDOWN_MIN` 可調（小於 1 或不是數字用預設）。沒有加單日上限；真的太吵再說（可以改回 30 或加每日上限）。夜盤還沒量過。
+- **測試**：+2 項；全套測試見提交。**需重啟後端**（和換月、空手也發同一次）。
 
 ### 2026-10-15（續 2）— 波動放大提醒空手也發（發現 39）— d442d19
 - **起因**：你問「為什麼要持倉才會發波動放大」。我原本的想法是「停損的意義變了」，所以綁在持倉上；但這個提醒對進場前一樣有用——空手時它是「現在進場，停損要放多遠」。你說空手也要發，改了。

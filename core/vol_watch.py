@@ -10,7 +10,9 @@
   用同時段比、不用全天平均：開盤本來就比較大，不這樣比每天開盤都會響。基準只用「當天以前」的時段（tests 有金絲雀）。
   日盤的基準來自 TXF 1 分 K（bars_1m，1,600 多個時段），夜盤來自 TMF 真實成交的 flow_1m（累積中，同一分鐘不到 MIN_SESSIONS 個時段有值就不判斷）。
   時段開始後 30 分鐘內算不出 σ，不判斷。σ 的定義與建議停損停利卡完全相同（直接呼叫 stop_suggest.sigma_from_closes）。
-頻率（TXF 日盤 1,614 天的描述統計，不是檢定；60 分鐘冷卻；與有沒有持倉無關）：2× 約 23% 的日子至少一次、平均每個日盤 0.39 次；1.5× 是 1.17 次、3× 是 0.08 次。夜盤還沒量過。
+頻率（TXF 日盤 1,593 天的描述統計，不是檢定；與有沒有持倉無關）：2× 約 23% 的日子至少一次。每個日盤平均幾則看冷卻：60 分鐘 0.39、30 分鐘 0.53、**10 分鐘 1.20**、5 分鐘 2.14；
+10 分鐘冷卻時，有發的日子裡中位數 3 則、90 分位 13 則、單日最多 27 則（極端行情日會連發）。1.5× 與 3× 在 60 分鐘冷卻下是 1.17 與 0.08 則。夜盤還沒量過。
+冷卻只擋「通知」；檢查本身每分鐘一次，成本與冷卻無關。VOL_ALERT_COOLDOWN_MIN（預設 10）可調。
 持倉：只有期貨部位（TMF／MXF／TXF）會列「離停損還有幾點」；選擇權與沒有持倉的訊息只講現在的尺度。"""
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ logger = logging.getLogger(__name__)
 POLL_SEC = 60.0
 N_SESSIONS = 20                 # 基準：最近幾個時段
 MIN_SESSIONS = 10               # 同一分鐘至少要有幾個時段有 σ，才拿來當基準
-COOLDOWN_SEC = 3600.0
+COOLDOWN_SEC = 600.0              # 預設冷卻（10 分鐘）；實際用 cooldown_sec()（VOL_ALERT_COOLDOWN_MIN 可調）
 HORIZON = 30                    # 把停損距離換算成「雜訊範圍」用的持有時間（分鐘）；要在 stop_suggest.HORIZONS 裡
 BASELINE_TTL = 6 * 3600.0
 FUT_PREFIX = ("TMF", "MXF", "TXF")
@@ -43,6 +45,15 @@ WINDOW = stop_suggest.WINDOW                   # 30
 
 def enabled() -> bool:
     return os.getenv("VOL_WATCH", "true").lower() != "false"
+
+
+def cooldown_sec() -> float:
+    """VOL_ALERT_COOLDOWN_MIN（分鐘，預設 10；小於 1 或不是數字就用預設）。"""
+    try:
+        v = float(os.getenv("VOL_ALERT_COOLDOWN_MIN", "10"))
+    except ValueError:
+        return COOLDOWN_SEC
+    return v * 60.0 if v >= 1.0 else COOLDOWN_SEC
 
 
 def ratio_threshold() -> float:
@@ -293,7 +304,7 @@ class VolWatcher:
             self.last = a
             if a and a["alert"]:
                 title, body = message(a)
-                notify(title, body, key=f"volwatch:{session}", cooldown=COOLDOWN_SEC, priority="high")
+                notify(title, body, key=f"volwatch:{session}", cooldown=cooldown_sec(), priority="high")
             return a
         except asyncio.CancelledError:
             raise

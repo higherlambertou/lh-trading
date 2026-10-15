@@ -192,6 +192,28 @@ def test_alert_when_ratio_reaches_the_threshold():
     assert b["alert"] is False and b["stops"] == []
 
 
+def test_cooldown_is_ten_minutes_by_default_and_configurable(monkeypatch):
+    monkeypatch.delenv("VOL_ALERT_COOLDOWN_MIN", raising=False)
+    assert vw.cooldown_sec() == 600.0
+    monkeypatch.setenv("VOL_ALERT_COOLDOWN_MIN", "30")
+    assert vw.cooldown_sec() == 1800.0
+    monkeypatch.setenv("VOL_ALERT_COOLDOWN_MIN", "1")
+    assert vw.cooldown_sec() == 60.0
+    for bad in ("0", "0.5", "-5", "abc", ""):
+        monkeypatch.setenv("VOL_ALERT_COOLDOWN_MIN", bad)
+        assert vw.cooldown_sec() == 600.0, bad
+
+
+def test_watcher_passes_the_configured_cooldown_to_notify(rec, monkeypatch):
+    monkeypatch.setenv("VOL_ALERT_COOLDOWN_MIN", "25")
+    run(vw.VolWatcher().check(NOW.timestamp(), POS, WATCH, FakeStore(3.0), table=TABLE))
+    assert rec.calls[0]["cooldown"] == 1500.0
+    rec.calls.clear()
+    monkeypatch.delenv("VOL_ALERT_COOLDOWN_MIN")
+    run(vw.VolWatcher().check(NOW.timestamp(), POS, WATCH, FakeStore(3.0), table=TABLE))
+    assert rec.calls[0]["cooldown"] == 600.0
+
+
 def test_the_threshold_itself_alerts():
     """邊界：比值剛好等於門檻就響（≥）。"""
     r = assess(amp=3.0, ref=expected_sigma(1.0))["ratio"]
