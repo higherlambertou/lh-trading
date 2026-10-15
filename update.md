@@ -50,7 +50,7 @@
 | 選擇權買賣價差的盤中取樣 `core/option_spread_log.py` | ✅ **待重啟後端才開始記** | 每 10 分鐘（`OPTION_SPREAD_MINUTES`）向券商查一次整條鏈、依離平值距離分組存價差中位數到 `data/option_spread.db`（✋ 無法回補）；`python -m core.option_spread_log report`；`OPTION_SPREAD_LOG=false` 關閉 | bd7ab92 |
 | 盤前跨市場資訊紀錄 `core/premarket_log.py`、`api/routes_premarket.py` | ✅ **待重啟後端才開始記** | 每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照存 `trade_log.db`（`premarket_snapshots`／`premarket_errors`／`premarket_graveyard`，資料庫觸發器擋 UPDATE／DELETE）；美股日曆（NYSE 假日、補假、提早收盤）用 2,457 個真實交易日驗證逐日一致；來源 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX），失敗轉移＋429 後暫停 6 小時，Yahoo 轉接器預設關；台股休市用證交所日曆（快取）；`python -m core.premarket_log show\|run\|export\|status\|void\|correct`；`PREMARKET_LOG=false` 關閉。沒有任何策略或風控讀這些欄位（靜態檢查＋啟用前後重播訂單完全相同的測試） | 978438e |
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
-| 指標類通知：持倉中波動放大 `core/vol_watch.py`、合約到期提醒 `core/reminders.py`、盤前摘要 `core/daily_brief.py` | ✅ **待重啟後端才生效** | 只通知、不動委託、不放權益；不接進場訊號（買賣力道、Hurst 的檢驗沒過）。波動放大＝持有期貨、且最近 30 分鐘 σ ≥ 同時段近 20 個時段中位數的 2 倍；到期＝最後交易日前 1～3 天／當天 08:50／當天 12:30；摘要＝交易日 08:35 一則（發現 37） | 待 commit |
+| 指標類通知：持倉中波動放大 `core/vol_watch.py`、合約到期提醒 `core/reminders.py`、盤前摘要 `core/daily_brief.py` | ✅ **待重啟後端才生效** | 只通知、不動委託、不放權益；不接進場訊號（買賣力道、Hurst 的檢驗沒過）。波動放大＝持有期貨、且最近 30 分鐘 σ ≥ 同時段近 20 個時段中位數的 2 倍；到期＝最後交易日前 1～3 天／當天 08:50／當天 12:30；摘要＝交易日 08:35 一則（發現 37） | 81c6c2c |
 | watchdog 的位址檢查 `run_live.sh`（`noiface`）、`core/bind_check.py`、`main.py` 啟動前試綁 | ✅ **正式盤 watchdog 18:33 已重啟（有位址檢查；`isleep` 下次重啟才生效）** | Tailscale 位址不在本機時不判定故障、不殺後端、起不來就等位址回來並推播；啟動前先試綁，不白登入券商；修 `$_old_pid）` 地雷；等待改用可被打斷的 `isleep`，`pkill` 不再被 10 分鐘退避拖住（發現 36） | ee5df37 |
 | 盤前快照的事後補值 `core/premarket_log.py` 的 `backfill_*`、〈盤前跨市場快照〉面板的「已補值」標示 | ✅ **待重啟後端** | 美股欄位因來源比取樣時間晚更新而空著，之後來源有了自動補一筆 correction（原始那筆不動、補值時間記下來）；修了連續更正會互相覆蓋的 bug（發現 35） | 068eb38 |
 | 通知擴充 `core/margin_watch.py`、`core/fill_notify.py`、`core/reminders.py`、`core/manual_monitor.py` 的事件、`core/notify.py` 的模擬盤閘門 | ✅ **待重啟後端** | Telegram 通知：手動停損停利（觸發／完成／重送／放棄）、保證金風險、手動單成交、當沖倉位 13:15／13:25 收盤前提醒；模擬盤不推播；只通知、不動委託（發現 34；測試不能碰真實通道的防線） | 1a658aa |
@@ -682,7 +682,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-15 — 指標類通知：持倉中波動放大、合約到期提醒、盤前摘要（發現 37）— 待 commit
+### 2026-10-15 — 指標類通知：持倉中波動放大、合約到期提醒、盤前摘要（發現 37）— 81c6c2c
 - **起因**：你問 Telegram 能不能接指標告警、要我想哪些有用。我的結論：買賣力道、Hurst 標籤的檢驗沒過（發現 14、6），接了只是雜訊，也不會提高勝率（進場沒有資訊時每筆期望值＝−成本）；
   所以只接「風險尺度變了」和「系統看不到了」。你選了波動放大、合約到期、盤前摘要，「資料過期／報價中斷」先不做（目前 `/health` 只看券商連線，沒有報價或持倉資料多久沒更新的檢查，這個缺口還在）。
 - **波動放大**（`core/vol_watch.py`）：持有期貨、且最近 30 分鐘 σ ÷ 同時段（距時段開始第幾分鐘）最近 20 個時段 σ 的中位數 ≥ 2.0（`VOL_ALERT_RATIO`）→ 通知，冷卻 60 分鐘。
