@@ -24,7 +24,7 @@ shioaji 原生層在永豐 Solace session 不穩時會卡在 I/O 又不釋放 GI
 
 **Linux / macOS（家機部署）**
 ```bash
-# 模擬盤（port 8003，main_sim.py 強制 SIMULATION=true，綁 0.0.0.0）
+# 模擬盤（port 8003，main_sim.py 強制 SIMULATION=true，綁 SIM_BIND_HOST／BIND_HOST／127.0.0.1，不再是 0.0.0.0）
 nohup ./run_sim.sh  >> /tmp/lh_sim_watchdog.log 2>&1 &
 
 # 正式盤（port 8002，main.py 依 .env，綁 BIND_HOST）— 真錢，啟動前確認 .env
@@ -56,7 +56,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 | `PORT` | 正式盤後端 port（預設 8002） |
 | `CORS_ORIGINS` | 允許的前端來源，逗號分隔 |
 
-> 模擬盤固定 port 8003、綁 `0.0.0.0`（見 `main_sim.py`），不受 `BIND_HOST`/`PORT` 影響。
+> 模擬盤固定 port 8003；綁 `SIM_BIND_HOST` → `BIND_HOST`（同一個 Tailscale 位址）→ `127.0.0.1`，**不再是 `0.0.0.0`**（後端沒有身分驗證，發現 41）；不受 `PORT` 影響。位址不在本機時 `main_sim.py` 啟動前就結束。
 
 **換機部署檢查清單（home machine pull 後）**
 1. 建 `.env`：填金鑰、`CA_PATH`、設該機自己的 `BIND_HOST` / `CORS_ORIGINS` / `PORT`。
@@ -84,7 +84,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 ## 架構重點（只留不能犯的規則；每個模組的細節、資料來源、研究結論在 [ARCHITECTURE.md](ARCHITECTURE.md)，動到之前先讀）
 
 ### 交易路徑與下單
-- **入口**：`main.py` 正式盤（依 `.env` 綁 `BIND_HOST:PORT`）；`main_sim.py` 強制 `SIMULATION=true`／`DEV=false`、綁 `0.0.0.0:8003`。
+- **入口**：`main.py` 正式盤（依 `.env` 綁 `BIND_HOST:PORT`）；`main_sim.py` 強制 `SIMULATION=true`／`DEV=false`、綁 `SIM_BIND_HOST`→`BIND_HOST`→`127.0.0.1` 的 8003（不再是 `0.0.0.0`）。
 - **`core/broker.py`**：用 `call`／`acall`（重連安全；`acall` 丟 executor）；登入有硬性逾時（`LOGIN_TIMEOUT` 25s）。**下單的合約解析仍是 R1，換月不要去動它**（真錢路徑、離線驗證不了）。
 - **委託回報**（`extract_order_event`／`to_mapping`）：shioaji 1.5.x 的回報是 `OrderEventDict`，**不是 dict 子類**，不要用 `isinstance(msg, dict)`；解析壞了 scalp 會認不出自己的成交而重複進場（update.md 發現 21）。
 - **`strategies/base.py`**：`_go()`／`_check_sl_tp()` **先改 state 再 await**（重入防護）；**平倉單一律 `reduce_only=True`**（不能靠部位方向推算，`tests/test_exit_not_blocked.py` 用 AST 檢查）；

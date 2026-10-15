@@ -29,6 +29,14 @@ def check_bind(host: str, port: int) -> Optional[str]:
         s.close()
 
 
+def sim_bind_host(env: Optional[dict] = None) -> str:
+    """模擬盤綁哪個位址（update.md 發現 41）：SIM_BIND_HOST → BIND_HOST（和正式盤同一個 Tailscale 位址）→ 127.0.0.1。
+    **不再預設 0.0.0.0**：同網路的任何人都連得到，而後端沒有身分驗證。要對外請明確設 SIM_BIND_HOST。"""
+    import os
+    e = os.environ if env is None else env
+    return (e.get("SIM_BIND_HOST") or "").strip() or (e.get("BIND_HOST") or "").strip() or "127.0.0.1"
+
+
 def preflight(host: str, port: int) -> None:
     """位址不在就印出原因並結束（結束碼 3）；在就什麼都不做。"""
     problem = check_bind(host, port)

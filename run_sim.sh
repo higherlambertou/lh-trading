@@ -28,7 +28,12 @@ fi
 echo $$ > "$LOCK_DIR/pid"
 
 PORT=8003
-HEALTH_URL="http://localhost:${PORT}/api/health"
+# 模擬盤綁 SIM_BIND_HOST → BIND_HOST（Tailscale 位址）→ 127.0.0.1（main_sim.py／core/bind_check.sim_bind_host；不再是 0.0.0.0），健康檢查要打同一個位址
+_env_val() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"' "; }
+HEALTH_HOST="$(_env_val SIM_BIND_HOST)"
+[ -z "$HEALTH_HOST" ] && HEALTH_HOST="$(_env_val BIND_HOST)"
+HEALTH_HOST="${HEALTH_HOST:-127.0.0.1}"
+HEALTH_URL="http://${HEALTH_HOST}:${PORT}/api/health"
 APP_LOG="/tmp/lh_sim.log"
 CHECK_INTERVAL=15      # 每幾秒檢查一次 health
 GRACE_PERIOD=200       # (重)啟動後容許「還沒登入完成」的寬限秒數（永豐 Solace 登入可達 ~135s）

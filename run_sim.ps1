@@ -12,7 +12,18 @@
 $ErrorActionPreference = "Stop"
 
 $Port            = 8003
-$HealthUrl       = "http://localhost:$Port/api/health"
+# 模擬盤綁 SIM_BIND_HOST → BIND_HOST → 127.0.0.1（update.md 發現 41），健康檢查打同一個位址
+function Get-EnvValue([string]$Name) {
+    if (Test-Path .env) {
+        $line = Get-Content .env | Where-Object { $_ -match "^$Name=" } | Select-Object -First 1
+        if ($line) { return ($line -replace "^$Name=", "").Trim().Trim('"').Trim("'") }
+    }
+    return $null
+}
+$HealthHost = Get-EnvValue "SIM_BIND_HOST"
+if (-not $HealthHost) { $HealthHost = Get-EnvValue "BIND_HOST" }
+if (-not $HealthHost) { $HealthHost = "127.0.0.1" }
+$HealthUrl       = "http://${HealthHost}:$Port/api/health"
 $AppLog          = Join-Path $env:TEMP "lh_sim.out.log"
 $ErrLog          = Join-Path $env:TEMP "lh_sim.err.log"
 $CheckInterval   = 15      # 每幾秒檢查一次 health

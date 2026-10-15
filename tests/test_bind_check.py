@@ -69,3 +69,45 @@ def test_the_socket_is_always_closed(monkeypatch):
 
     monkeypatch.setattr(bc.socket, "socket", lambda *a, **k: S())
     assert bc.check_bind("1.2.3.4", 1) is not None and closed == [True]
+
+
+# ── 模擬盤不再綁 0.0.0.0（update.md 發現 41）──────────────────────
+
+def test_sim_bind_host_precedence_and_default():
+    from core.bind_check import sim_bind_host
+    assert sim_bind_host({}) == "127.0.0.1"                                            # 什麼都沒設：只有本機
+    assert sim_bind_host({"BIND_HOST": "100.127.125.13"}) == "100.127.125.13"          # 跟正式盤同一個 Tailscale 位址
+    assert sim_bind_host({"BIND_HOST": "100.1.1.1", "SIM_BIND_HOST": "100.2.2.2"}) == "100.2.2.2"
+    assert sim_bind_host({"SIM_BIND_HOST": "  ", "BIND_HOST": " 100.1.1.1 "}) == "100.1.1.1"   # 空白當沒設、前後空白去掉
+
+
+def test_main_sim_never_hardcodes_a_wildcard_host():
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "main_sim.py").read_text(encoding="utf-8")
+    assert not re.search(r'host\s*=\s*["\']0\.0\.0\.0["\']', src)
+    assert "sim_bind_host()" in src and "preflight(" in src                             # 位址不在本機就先結束，不先登入券商
+
+
+def _health_url_from_run_sim(tmp_path, env_text):
+    """執行 run_sim.sh 裡算健康檢查位址的那幾行（PORT=8003 到 HEALTH_URL=…），回傳結果。"""
+    import subprocess
+    from pathlib import Path
+    text = (Path(__file__).resolve().parent.parent / "run_sim.sh").read_text(encoding="utf-8")
+    i, j = text.index("PORT=8003"), text.index('HEALTH_URL="http://${HEALTH_HOST}')
+    j = text.index("\n", j)
+    (tmp_path / ".env").write_text(env_text)
+    r = subprocess.run(["bash", "-c", "set -u\n" + text[i:j] + '\necho "$HEALTH_URL"'], cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+@pytest.mark.parametrize("env_text,expect", [
+    ("BIND_HOST=100.127.125.13\n", "http://100.127.125.13:8003/api/health"),
+    ("BIND_HOST=100.127.125.13\nSIM_BIND_HOST=100.9.9.9\n", "http://100.9.9.9:8003/api/health"),
+    ('BIND_HOST="100.127.125.13"\n', "http://100.127.125.13:8003/api/health"),             # 引號會去掉
+    ("SOMETHING=else\n", "http://127.0.0.1:8003/api/health"),
+    ("", "http://127.0.0.1:8003/api/health"),
+])
+def test_run_sim_health_check_follows_the_same_host_as_main_sim(tmp_path, env_text, expect):
+    assert _health_url_from_run_sim(tmp_path, env_text) == expect

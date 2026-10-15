@@ -25,15 +25,19 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True)
 
 import uvicorn  # noqa: E402
-from main import app  # noqa: E402  (app 已在 main.py 定義好)
+from main import app  # noqa: E402  (app 已在 main.py 定義好；它 import 時就載入了 .env)
+from core.bind_check import preflight, sim_bind_host  # noqa: E402
 
 if __name__ == "__main__":
+    # 綁 SIM_BIND_HOST → BIND_HOST（Tailscale 位址）→ 127.0.0.1；不再是 0.0.0.0（後端沒有身分驗證，update.md 發現 41）
+    _host = sim_bind_host()
     print("=" * 50)
-    print("  ⚡ 模擬盤模式  (SIMULATION=true, port=8003)")
+    print(f"  ⚡ 模擬盤模式  (SIMULATION=true, {_host}:8003)")
     print("=" * 50)
+    preflight(_host, 8003)         # 位址不在本機（Tailscale 斷線）就在這裡結束，不先開 worker 登入券商
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host=_host,
         port=8003,
         reload=False,
     )

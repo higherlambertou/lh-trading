@@ -58,7 +58,7 @@ shioaji 原生層在永豐 Solace session 不穩時會卡在 I/O 又不釋放 GI
 
 **Linux / macOS（家機部署）**
 ```bash
-# 模擬盤（port 8003，main_sim.py 強制 SIMULATION=true，綁 0.0.0.0）
+# 模擬盤（port 8003，main_sim.py 強制 SIMULATION=true，綁 0.0.0.0）  ← 2026-10-15 起改成綁 SIM_BIND_HOST／BIND_HOST／127.0.0.1（發現 41）
 nohup ./run_sim.sh  >> /tmp/lh_sim_watchdog.log 2>&1 &
 
 # 正式盤（port 8002，main.py 依 .env，綁 BIND_HOST）— 真錢，啟動前確認 .env
@@ -116,7 +116,7 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
 ## 架構重點
 
 - **`main.py`** — 正式盤入口，FastAPI app 定義處；依 `.env` 綁 `BIND_HOST:PORT`。
-- **`main_sim.py`** — 模擬盤入口，強制 `SIMULATION=true`/`DEV=false`，綁 `0.0.0.0:8003`，掛 faulthandler。
+- **`main_sim.py`** — 模擬盤入口，強制 `SIMULATION=true`/`DEV=false`，掛 faulthandler；**綁 `SIM_BIND_HOST`→`BIND_HOST`→`127.0.0.1` 的 8003（2026-10-15 起，原本是 `0.0.0.0:8003`，發現 41）**。
 - **`core/broker.py`** — shioaji 連線封裝。`call`（同步）/`acall`（丟 executor，非阻塞 event loop）為重連安全包裝。
   登入有硬性逾時（`LOGIN_TIMEOUT`，預設 25s）避免 Solace 卡死時 startup 無限懸住。
 - **委託回報解析**（`core/shioaji_worker.py` 的 `extract_order_event`／`to_mapping`）：shioaji 1.5.x 的回報是 `OrderEventDict`，**不是 dict 子類**，不要用 `isinstance(msg, dict)` 判斷；
