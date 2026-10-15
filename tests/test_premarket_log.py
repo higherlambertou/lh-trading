@@ -1038,8 +1038,13 @@ def test_no_strategy_or_risk_module_reads_the_premarket_fields():
              + [ROOT / "core" / n for n in ("manual_monitor.py", "ruin.py", "broker_guard.py", "broker.py", "quote_hub.py", "backtest.py")])
     offenders = [f"{f.name}: {w}" for f in files for w in FORBIDDEN if w in f.read_text(encoding="utf-8").lower()]
     assert len(files) >= 16 and not offenders, offenders
-    wired = [f.name for f in (ROOT / "core").glob("*.py") if "premarket_log" in f.read_text(encoding="utf-8") and f.name not in ("premarket_log.py", "premarket_study.py")]
+    notify_only = ("daily_brief.py", "reminders.py")                        # 只通知的模組（發現 37）：reminders 只借休市日曆、daily_brief 只借夜盤報酬與日曆來組摘要訊息
+    wired = [f.name for f in (ROOT / "core").glob("*.py") if "premarket_log" in f.read_text(encoding="utf-8")
+             and f.name not in ("premarket_log.py", "premarket_study.py") + notify_only]
     assert wired == [], wired                                                                                        # core 裡也沒有別的模組 import 它（只有 main.py 與自己的路由）
+    # 反方向：策略與風控模組不能 import 那兩個通知模組（否則盤前資料就繞一圈進到交易決策）
+    leaks = [f.name for f in files if any(w in f.read_text(encoding="utf-8") for w in ("daily_brief", "core.reminders", "import reminders", "from core import reminders"))]
+    assert leaks == [], leaks
 
 
 def test_enabling_the_recorder_does_not_change_the_orders_a_strategy_sends(tmp_path, monkeypatch):
