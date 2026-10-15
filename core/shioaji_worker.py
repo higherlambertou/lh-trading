@@ -414,7 +414,9 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
                 c = _get_futures_contract(cmd["contract_code"])
                 api.quote.subscribe(c, quote_type=sj.constant.QuoteType.Quote,
                                     version=sj.constant.QuoteVersion.v1)
-                result = True
+                # 回報「近月」實際解析成哪個合約（TMFR1 的 target_code 例如 TMFJ6）：換月檢查（core/rollover.py）要用；讀不到就是空字串
+                result = {"prefix": str(cmd["contract_code"]).upper(), "code": str(getattr(c, "code", "") or ""),
+                          "target_code": str(getattr(c, "target_code", "") or "")}
 
             elif method == "subscribe_option":
                 contract = _get_option_contract(

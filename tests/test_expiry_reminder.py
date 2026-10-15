@@ -125,7 +125,7 @@ def test_early_reminder_is_sent_once_for_several_days(rec):
     c = rec.calls[0]
     assert c["key"] == "expiry:2026-10-21:early" and c["cooldown"] == 5 * 86400.0 and c["priority"] == "high"
     assert "10/21（三）" in c["title"]
-    assert "改持下個月合約" in c["message"] and "重啟後端" in c["message"]            # 期貨：結算後要重啟換月
+    assert "改持下個月合約" in c["message"] and "自動重啟換月" in c["message"]         # 期貨：結算後後端會自動重啟換月
     # 隔天同一個 key（冷卻 5 天）→ 由 notify 的冷卻擋住，這裡 key 不變
     rem.check_expiry(tpe(2026, 10, 19, 10, 0), [pos()], ALWAYS_OPEN)
     assert rec.calls[1]["key"] == c["key"]
@@ -134,7 +134,7 @@ def test_early_reminder_is_sent_once_for_several_days(rec):
 def test_options_only_message_has_no_restart_advice(rec):
     rem.check_expiry(tpe(2026, 10, 21, 9, 0), [pos("TXO49800J6", "Buy", 1)], ALWAYS_OPEN)
     c = rec.calls[0]
-    assert c["key"] == "expiry:2026-10-21:today" and "重啟後端" not in c["message"] and "最後交易日" in c["title"]
+    assert c["key"] == "expiry:2026-10-21:today" and "重啟" not in c["message"] and "最後交易日" in c["title"]
 
 
 def test_nothing_to_say(rec):

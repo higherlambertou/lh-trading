@@ -37,6 +37,7 @@ class BrokerClient:
         self._order_callback: Callable | None = None
         self._reader_thread: threading.Thread | None = None
         self._known_subs: list[str] = []       # futures prefixes，重連後重新訂閱
+        self.resolved_codes: dict[str, str] = {}   # 前綴 → worker 實際訂閱的合約代碼（TMF → TMFJ6）；換月檢查用（core/rollover.py）
         self._known_opt_subs: list[dict] = []  # option params，重連後重新訂閱
 
     def setup(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -86,9 +87,10 @@ class BrokerClient:
             self._is_connected = True
             logger.info("Worker 已連線，重新訂閱 %d 個期貨 / %d 個選擇權",
                         len(self._known_subs), len(self._known_opt_subs))
+            self.resolved_codes.clear()                 # 新的 worker 會重新解析近月：舊的紀錄作廢，等重新訂閱的回覆再填
             for code in self._known_subs:
                 try:
-                    self._cmd_q.put_nowait({"method": "subscribe", "contract_code": code})
+                    self._cmd_q.put_nowait({"method": "subscribe", "contract_code": code, "req_id": f"resub:{code}"})
                 except Exception:
                     pass
             for opt in self._known_opt_subs:
@@ -118,6 +120,15 @@ class BrokerClient:
                 )
 
         elif mtype == "response":
+            res = msg.get("result")
+            if isinstance(res, dict) and res.get("prefix") and ("target_code" in res or "code" in res):
+                try:
+                    new = str(res.get("target_code") or res.get("code") or "")
+                    if self.resolved_codes.get(str(res["prefix"])) != new:
+                        logger.info("近月合約解析：%s → %s（code=%s）", res["prefix"], new, res.get("code"))
+                    self.resolved_codes[str(res["prefix"])] = new
+                except Exception:  # noqa: BLE001
+                    pass
             req_id = msg.get("req_id")
             fut = self._pending.pop(req_id, None)
             if fut and not fut.done() and self._loop:

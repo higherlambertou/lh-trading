@@ -486,7 +486,7 @@ python -m core.notify watchdog --event freeze --detail down --mode live   # watc
 
   設定（`.env`）：`NOTIFY_FILLS`、`NOTIFY_MARGIN_WARN`（預設 150）、`NOTIFY_MARGIN_URGENT`（預設 120）、`NOTIFY_SIM`（預設不在模擬盤推播）、`VOL_WATCH`／`VOL_ALERT_RATIO`（預設 2.0）、`DAILY_BRIEF`／`DAILY_BRIEF_TIME`（預設 0835）。同一件事有冷卻（警告 30 分鐘、緊急 10 分鐘、其他 1 小時），推播失敗會把冷卻還回去。
   **限制**：當沖提醒認得「手動下單勾了當沖、後端之後沒重啟」或「有掛停損停利的當沖部位」；券商的持倉資料不帶倉別。你自己在券商 App 平掉部位時，不會有「平倉完成」。
-  **指標類通知的限制**（update.md 發現 37）：波動放大只看期貨、夜盤基準只有累積中的夜盤時段（同一分鐘不到 10 個時段就不判斷）、時段開始後 30 分鐘內算不出；到期提醒不認得週選擇權的代碼；**合約結算後要重啟後端**（程式只在啟動時解析近月合約並訂閱，結算當天的實際行為沒有實測過）。
+  **指標類通知的限制**（update.md 發現 37）：波動放大只看期貨、夜盤基準只有累積中的夜盤時段（同一分鐘不到 10 個時段就不判斷）、時段開始後 30 分鐘內算不出；到期提醒不認得週選擇權的代碼；**換月靠後端偵測＋watchdog 重啟**（見下面〈換月〉）；沒有 watchdog 的話結算後要自己重啟後端。
   **測試不能碰真實通道**：`tests/conftest.py` 設 `NOTIFY_SKIP_DOTENV=1`、把 `core.notify._http_post`／`_http_get` 換成會直接失敗的替身（update.md 發現 34 的事故）；要測真函式用 `nt.REAL_HTTP_POST`。
 - **通道**：Telegram bot（私人、免費，建議）、ntfy（主題名稱就是密碼：用一長串隨機字或自架）、自訂 webhook。訊息只放合約、方向、口數與停損點數，不放帳號與權益；token／網址不會出現在 log。
   **推播是把這些資訊送到第三方服務**，通道由你自己設定，沒設定就不會送。
@@ -618,6 +618,16 @@ health 回傳：
 **你要做**：把 Tailscale 連回去（選單列的 Tailscale 圖示→Connect；或 `tailscale up`）。檢查：`ifconfig | grep 'inet 100\.'`、`tailscale status`。位址回來後 watchdog 自己會繼續，不用重啟。
 **舊版 watchdog 還在跑的話**（2026-10-14 18:33 之前啟動的）：它在最後一檔 10 分鐘退避的 `sleep 600` 時**收不到結束訊號**——`kill`／`pkill -f run_live.sh` 要等睡完才生效，這段時間單例鎖還在、重開會被擋下來（2026-10-14 實際發生：結束訊號拖到 18:23:53 才處理）。要立刻起來：先看 `/tmp/lh_live_watchdog.log` 最後一行是『退避等待』（代表沒有後端在跑），`kill -9 <watchdog pid>`（`pgrep -f run_live.sh`），再 `nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &`（鎖是陳舊的，新腳本會接管）。新版（等待改用 `isleep`）的 `kill`／`pkill` 兩秒內就會結束。**新版 `run_live.sh` 要重啟 watchdog 才生效。**
 **資料缺口**：後端沒在跑的那段時間，tick 與選擇權價差補不回來；外／內盤分鐘統計可以用券商回補：`python -m core.indicator_history flow-fetch --days 3`（登入前會先檢查連線數）。持倉：停損停利監控在後端停著的時候不運作——有持倉時看 Telegram 警示。
+
+### 🔄 換月（近月合約結算後自動重啟，update.md 發現 38）
+
+**為什麼**：後端只在啟動時把「近月」解析成實際合約並訂閱（shioaji 1.5.3 的合約檔也只在登入時下載）。跨過結算日不重啟，就停在已到期的舊合約：沒有報價、下單被拒。
+**做法**：後端每 30 秒檢查訂閱的合約是不是已經過了最後交易時間（結算日 13:30）；是的話 `/api/health` 會多一個 `"restart_wanted":"rollover"`，watchdog 看到就正常關閉並重啟（重新登入＝重新下載合約檔）。
+**什麼時候試**：官方文件沒寫近月何時換，只寫了合約檔每天的更新時間（07:50、08:00、14:45、17:15）。所以只在**結算日 14:46、17:16、隔天 07:51、08:01** 各試一次；四次後還是舊的就推播「🚨 換月失敗」並放棄。換成功會推播「✅ 換月完成」。
+**你會看到**：Telegram 的「🔄 換月重啟：TMFJ6 已結算（第 1/4 次）」→ 約 1～2 分鐘後「✅ 換月完成」；watchdog log 有「換月：後端要求重啟…」；app log 有「近月合約解析：TMF → TMFK6」。
+**沒換成功**：先看 app log 的「近月合約解析」行——如果寫的是 `TMFR1`（讀不到 `target_code`），自動換月不會動，請在結算後手動重啟（`kill <watchdog pid>` 後重開）。狀態在 `data/rollover_state_live.json`（刪掉＝從頭來）。
+**關閉**：`ROLLOVER_RESTART=false`。**注意**：這是有計畫的重啟——策略不會自動回來、手動停損監控重啟後會和券商部位對帳恢復；結算後舊合約的持倉已被期交所結算，不會再有舊合約的持倉。
+**沒實測**：結算當天的實際行為（R1 在哪個更新時間點換掉）沒有實測過；2026-10-21 要看 log 與通知確認。
 
 ### ❌ 服務凍結（state=down）
 

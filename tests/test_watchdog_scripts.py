@@ -215,3 +215,103 @@ def test_term_during_isleep_exits_promptly_and_leaves_no_sleep_behind(tmp_path, 
         for x in sleepers:
             if _alive(x):
                 os.kill(x, signal.SIGKILL)
+
+
+# ── 換月重啟（update.md 發現 38）：後端在 health 帶 restart_wanted=rollover，watchdog 正常關閉並重啟 ──────────
+
+@pytest.mark.skipif(not HAS_BASH, reason="需要 bash")
+@pytest.mark.parametrize("body,expect", [
+    ('{"status":"ok","broker_connected":"True"}', "healthy"),
+    ('{"status":"ok","broker_connected":"True","restart_wanted":"rollover"}', "rollover"),
+    ('{"status":"ok","broker_connected":"False","restart_wanted":"rollover"}', "nobroker"),        # 沒連上券商：先當斷線處理，不是換月
+    ('{"status":"ok","broker_connected":"True","restart_wanted":"something_else"}', "healthy"),
+])
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_health_state_understands_the_rollover_flag(tmp_path, script, body, expect):
+    bin_dir = stub_bin(tmp_path, curl=f"printf '%s\\n200' '{body}'", ifconfig=IFCONFIG_CMD)
+    fn = function_source("health_state", script)
+    r = run_bash(f'HEALTH_URL=http://x\nBIND_HOST=100.127.125.13\n{function_source("iface_up")}\n{fn}\nhealth_state', bin_dir)
+    assert r.stdout.strip() == expect, (r.stdout, r.stderr)
+
+
+IFCONFIG_CMD = "printf '\\tinet 100.127.125.13 --> 100.127.125.13 netmask 0xffffffff\\n'"
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_rollover_restart_is_planned_not_a_failure(script):
+    text = script.read_text(encoding="utf-8")
+    i = text.index('if [ "$state" = "rollover" ]; then')
+    assert i < text.index('if [ "$state" = "healthy" ]; then')                    # 先處理換月旗標，再走一般健康分支
+    branch = text[i:text.index('if [ "$state" = "healthy" ]; then')]
+    assert 'ROLLOVER_MIN_UPTIME' in branch and 'ROLLOVER_MIN_GAP' in branch and 'planned=1' in branch
+    assert 'kill "$CHILD_PID"' in branch and 'kill -9 "$CHILD_PID"' in branch      # 先正常關閉（worker 登出），逾時才 -9
+    assert re.search(r'if \[ "\$planned" -eq 1 \]; then\s+consec_short=0', text)    # 有計畫的重啟不算短命、不退避
+
+
+def _wait(cond, timeout, step=0.2):
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(step)
+    return cond()
+
+
+@pytest.mark.skipif(not HAS_BASH or shutil.which("pgrep") is None, reason="需要 bash")
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_rollover_flag_restarts_the_backend_once_without_backoff(tmp_path, script):
+    """整支腳本（常數縮短、路徑換成暫存、假的 curl／後端）：健康 → 後端要求換月 → watchdog 正常關閉並重啟一次；
+    旗標一直留著也不會連續重啟（最少間隔），而且不算短命重啟（沒有退避）。"""
+    work, sim = tmp_path / "work", tmp_path / "sim"
+    (sim / "bin").mkdir(parents=True)
+    work.mkdir()
+    for name, body in {
+        "ifconfig": IFCONFIG_CMD,
+        "lsof": "exit 0",
+        "curl": 'printf \'%s\\n200\' "$(cat "$SIM/health.body")"',
+        "stub_py": 'if [ "$1" = "main.py" ] || [ "$1" = "main_sim.py" ]; then echo "$$" >> "$SIM/backend_pids"; exec sleep 600; fi\nexit 0',
+    }.items():
+        p = sim / "bin" / name
+        p.write_text("#!/bin/sh\n" + body + "\n")
+        p.chmod(0o755)
+    stub = str(sim / "bin" / "stub_py")
+    text = script.read_text(encoding="utf-8")
+    for pat, repl in [
+        (r"(?m)^PY=.*$", f"PY={stub}"), (r"(?m)^LOCK_DIR=.*$", f'LOCK_DIR="{sim}/lock.d"'), (r"(?m)^APP_LOG=.*$", f'APP_LOG="{sim}/app.log"'),
+        (r"(?m)^PORT=\d+$", "PORT=18999"), (r"(?m)^CHECK_INTERVAL=\d+", "CHECK_INTERVAL=1"), (r"(?m)^GRACE_PERIOD=\d+", "GRACE_PERIOD=3"),
+        (r"(?m)^ROLLOVER_MIN_UPTIME=\d+", "ROLLOVER_MIN_UPTIME=2"), (r"(?m)^ROLLOVER_MIN_GAP=\d+", "ROLLOVER_MIN_GAP=60"),
+        (r"/Users/lambert/anaconda3/bin/python3\.11", stub),
+    ]:
+        text = re.sub(pat, repl, text)
+    (work / "wd.sh").write_text(text)
+    (work / ".env").write_text("BIND_HOST=100.127.125.13\n")
+    (work / "main.py").write_text("")
+    (work / "main_sim.py").write_text("")
+    (sim / "health.body").write_text('{"status":"ok","broker_connected":"True"}')
+    env = {**os.environ, "SIM": str(sim), "PATH": f"{sim / 'bin'}:{os.environ['PATH']}", "NOTIFY_SKIP_DOTENV": "1"}
+    log = open(sim / "wd.out", "w")
+    p = subprocess.Popen(["bash", "wd.sh"], cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    pids = lambda: [int(x) for x in (sim / "backend_pids").read_text().split()] if (sim / "backend_pids").exists() else []  # noqa: E731
+    try:
+        assert _wait(lambda: len(pids()) == 1, 15), "後端沒啟動"
+        first = pids()[0]
+        assert _wait(lambda: "進入正常監看" in (sim / "wd.out").read_text(), 15), "沒進入正常監看"
+        time.sleep(3)                                                        # 超過 ROLLOVER_MIN_UPTIME（2 秒）
+        (sim / "health.body").write_text('{"status":"ok","broker_connected":"True","restart_wanted":"rollover"}')
+        assert _wait(lambda: len(pids()) == 2, 20), "沒有因為換月旗標重啟"
+        assert not _alive(first), "舊的後端沒被關掉"
+        time.sleep(4)                                                        # 旗標還在、新後端也過了最少存活時間：最少間隔（60 秒）要擋住
+        assert len(pids()) == 2, "旗標一直在就連續重啟了"
+        out = (sim / "wd.out").read_text()
+        assert out.count("換月：後端要求重啟") == 1
+        assert "退避等待" not in out and "連續第" not in out, out
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        p.wait(timeout=15)
+        log.close()
+        for x in pids():
+            if _alive(x):
+                os.kill(x, signal.SIGKILL)

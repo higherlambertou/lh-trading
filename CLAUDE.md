@@ -55,7 +55,7 @@ cd frontend; npm run dev
 
 watchdog 行為（wall-clock 計時；`run_live.sh` 有位址檢查，`.ps1` 還沒有）：每 15s 檢查 `/health`，判斷四態——
 `healthy`(200+`broker_connected:True`)／`nobroker`(200 但沒連券商＝登入失敗或斷線)／
-`down`(逾時或非 200＝凍結，連 health 都拿不到 threadpool 執行緒)／**`noiface`(`BIND_HOST` 這個位址不在本機＝Tailscale 斷線：不是後端的問題，不計失敗、不殺後端；
+`down`(逾時或非 200＝凍結，連 health 都拿不到 threadpool 執行緒)／**`rollover`(健康、但後端在 health 帶 `restart_wanted=rollover`：近月合約已結算，要重新登入換月；update.md 發現 38)**／**`noiface`(`BIND_HOST` 這個位址不在本機＝Tailscale 斷線：不是後端的問題，不計失敗、不殺後端；
 起不來就等位址回來再啟動，並推播一次；update.md 發現 36)**。`main.py` 啟動最前面也先試綁 `BIND_HOST`（`core/bind_check.py`），位址不在就結束碼 3，不先開 worker 登入券商。
 watchdog 的 log 要用 `>>` 附加：第二個 watchdog 被單例鎖擋下來時，`>` 會先把正在跑那個的 log 清空。bash 的變數後面緊接全形標點要寫 `${var}`（`tests/test_watchdog_scripts.py` 有掃）。等待（退避、檢查間隔）一律用 `isleep`（背景 sleep + wait）：bash 要等前景指令跑完才執行 trap，直接 `sleep 600` 會讓 `pkill -f run_live.sh` 被拖最長 10 分鐘、單例鎖一直在（2026-10-14 實際發生，同上測試有掃）。
 (重)啟動後有 `GRACE_PERIOD`(200s)寬限給永豐登入（可達 ~135s）；**一旦成功連上過，
@@ -235,9 +235,10 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   執行時 σ 來自 `flow_1m`（TMF 真實成交，與 TXF 的 σ 比值中位數 0.988）；端點只讀本機資料庫與記憶體、不查券商，成交太少就不給建議。新增持有時間或 k 倍數要同步 `stop_calibration` 的網格與 JSON。
 - **指標類通知**（update.md 發現 37；全部只通知、不動委託、不放權益）：只接「風險尺度變了」與「系統看不到」，**不接進場訊號**（買賣力道、Hurst 標籤的檢驗沒過，接了只是雜訊）。
   ① **持倉中波動放大**（`core/vol_watch.py`，`VOL_WATCH`／`VOL_ALERT_RATIO`＝2.0）：持有期貨（TMF／MXF／TXF）、而且最近 30 分鐘 σ ÷「同時段（距時段開始第幾分鐘）最近 20 個時段 σ 的中位數」≥ 門檻才通知，冷卻 60 分鐘；訊息帶離停損還有幾點、是雜訊範圍（σ√30）的幾倍、被掃到的機率（`stop_calibration.json` 內插）。基準只用當天以前的時段（日盤＝TXF `bars_1m`、夜盤＝TMF `flow_1m`，同一分鐘不到 10 個時段就不判斷）；σ 與建議停損停利卡是同一個函式。**`bars_1m` 的 hhmm 是 K 棒「結束」時間（08:46～13:45）、`flow_1m` 的 ts 是分鐘「起點」，序號要差 1**（`tests/test_vol_watch.py` 有對照）。
-  ② **合約到期提醒**（`core/reminders.py` 的 `check_expiry`，掛在 `reminder_loop`）：持有的期貨／月選擇權在最後交易日（第三個週三，休市用證交所日曆順延）前 1～3 天、當天 08:50、當天 12:30（緊急）各一則；週選擇權等認不得的代碼不提醒。**結算後要重啟後端**：worker 只在第一次用到時解析近月合約（`_contracts` 快取）、`_startup_bg` 只在啟動時訂閱，結算當天的實際行為沒有實測過。
+  ② **合約到期提醒**（`core/reminders.py` 的 `check_expiry`，掛在 `reminder_loop`）：持有的期貨／月選擇權在最後交易日（第三個週三，休市用證交所日曆順延）前 1～3 天、當天 08:50、當天 12:30（緊急）各一則；週選擇權等認不得的代碼不提醒。**結算後會自動重啟換月**（見下一條〈換月〉）。
   ③ **盤前摘要**（`core/daily_brief.py`，`DAILY_BRIEF`／`DAILY_BRIEF_TIME`＝0835）：夜盤報酬、盤前市場狀態、R20、典型 σ→平衡型停利停損點數、今天是不是最後交易日；不放 VIX／費半（免費來源 12:16 才有資料）。一天一則（冷卻 key 跨重啟）、09:30 之後不補。
   三者都掛在 `main.py` 的 lifespan（`vol_watch_loop`、`reminder_loop`、`brief_loop`）。提醒之後怎麼做比較好**沒有驗證過**，訊息只列事實；頻率與判定在 update.md 發現 37。
+- **換月**（`core/rollover.py`，update.md 發現 38）：worker 把近月（`TMFR1`）解析成實際合約後快取（`_contracts`）、後端只在啟動時訂閱、shioaji 1.5.3 的合約檔只在登入時下載，所以後端跨過結算日不重啟就會一直停在已到期的舊合約（沒報價、下單被拒）。做法：worker 在 `subscribe` 的回覆帶 `target_code`，`broker.resolved_codes` 記著（重連時清掉重填）；`rollover_loop` 每 30 秒檢查「訂閱的合約是否已過最後交易時間（結算日 13:30）」，是的話在 `/api/health` 帶 `restart_wanted=rollover`；watchdog（`run_live.sh`／`run_sim.sh` 的 `rollover` 態）看到就**正常關閉**（TERM，逾時才 -9，worker 才會登出）並重啟，是有計畫的重啟：不算短命、不退避，後端至少活 `ROLLOVER_MIN_UPTIME`（60 秒）、兩次之間隔 `ROLLOVER_MIN_GAP`（300 秒）。**什麼時候試**：R1 何時換月官方文件沒寫，只寫了合約檔更新時間（07:50、08:00、14:45、17:15），所以只在結算日 14:46、17:16、隔天 07:51、08:01 各試一次（試過的時間點與更早的作廢），四次後還是舊的就推播「換月失敗」、放棄；換成功推播一次。狀態存 `data/rollover_state_<mode>.json`。target_code 讀不到（拿到 `TMFR1`）就什麼都不做、只留一行警告。`ROLLOVER_RESTART=false` 關閉。**沒有實測過結算日當天的行為**，2026-10-21 要看 log 與通知確認。
 - **手動停損確認**（`core/manual_monitor.py`）：觸發後送出平倉單**不立刻移除監看**，用委託狀態確認——全數成交才移除、沒成交才重送
   （冷卻 2s、選擇權限價逐次放寬、口數 = 監看剩餘口數與當下部位取小、結果不明先等 10s、最多 8 次）。
   動這段務必保留「先確認再重送」，否則會有重複平倉變成反向開倉的風險；測試在 `tests/test_manual_close.py`。

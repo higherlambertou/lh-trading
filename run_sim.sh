@@ -37,7 +37,10 @@ FAIL_THRESHOLD=2       # 寬限期過後，連續幾次異常才重啟（避免�
 # 重啟退避（保護永豐登入 1000 次/日 額度），詳見 run_live.sh 同段註解
 BACKOFF_STEPS=(0 30 120 600)
 STABLE_SECS=600
+ROLLOVER_MIN_UPTIME=60            # 換月重啟：後端啟動後至少這麼久才理會它的要求（登入、訂閱要時間；也防止壞掉的旗標讓行程一直被重開）
+ROLLOVER_MIN_GAP=300              # 兩次換月重啟之間至少隔這麼久
 consec_short=0
+last_rollover=0                # 上一次換月重啟的時間（epoch 秒）：太頻繁就忽略後端的要求
 
 CHILD_PID=""
 SLEEP_PID=""           # isleep 目前在睡的那個 sleep（cleanup 要一起收掉）
@@ -73,7 +76,12 @@ health_state() {
     body=${resp%$'\n'*}
     if [ "$code" != "200" ]; then echo "down"; return; fi
     case "$body" in
-        *'"broker_connected":"True"'*) echo "healthy" ;;
+        *'"broker_connected":"True"'*)
+            # restart_wanted=rollover：後端發現訂閱的近月合約已結算，要重新登入才會換到下個月（update.md 發現 38）
+            case "$body" in
+                *'"restart_wanted":"rollover"'*) echo "rollover" ;;
+                *) echo "healthy" ;;
+            esac ;;
         *) echo "nobroker" ;;
     esac
 }
@@ -111,6 +119,7 @@ while true; do
     started=$(date +%s)
     ready=0
     fails=0
+    planned=0                      # 這輪是有計畫的重啟（換月）：不算短命、不退避
     log "已啟動 PID=${CHILD_PID}，登入中（寬限 ${GRACE_PERIOD}s）…"
 
     while true; do
@@ -121,6 +130,24 @@ while true; do
         fi
         state=$(health_state)
         elapsed=$(( $(date +%s) - started ))
+
+        if [ "$state" = "rollover" ]; then          # 後端要求換月重啟：近月合約已結算，要重新登入才會取得下個月的合約
+            now_s=$(date +%s)
+            if [ "$elapsed" -ge "$ROLLOVER_MIN_UPTIME" ] && [ $((now_s - last_rollover)) -ge "$ROLLOVER_MIN_GAP" ]; then
+                log "換月：後端要求重啟（近月合約已結算）→ 正常關閉 PID=${CHILD_PID} 後重啟"
+                last_rollover=$now_s
+                planned=1
+                kill "$CHILD_PID" 2>/dev/null        # 先請它正常關閉（worker 才會登出券商、不留孤兒連線）
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    kill -0 "$CHILD_PID" 2>/dev/null || break
+                    sleep 1
+                done
+                kill -9 "$CHILD_PID" 2>/dev/null
+                sleep 3
+                break
+            fi
+            state="healthy"                          # 剛啟動或太頻繁：這次忽略旗標，照一般健康處理
+        fi
 
         if [ "$state" = "healthy" ]; then
             if [ "$ready" -eq 0 ]; then
@@ -147,7 +174,9 @@ while true; do
     done
 
     lifetime=$(( $(date +%s) - started ))
-    if [ "$lifetime" -lt "$STABLE_SECS" ]; then
+    if [ "$planned" -eq 1 ]; then
+        consec_short=0                 # 換月是有計畫的重啟：不算短命、不退避
+    elif [ "$lifetime" -lt "$STABLE_SECS" ]; then
         consec_short=$((consec_short + 1))
     else
         consec_short=0

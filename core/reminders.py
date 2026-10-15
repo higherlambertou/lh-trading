@@ -145,7 +145,7 @@ def expiry_message(stage: str, e: date, items: list[dict[str, Any]], now: dateti
     wd = _WD_ZH[e.weekday()]
     tail = "最後交易日 13:30 收盤後以最終結算價現金結算；要續抱請在那之前平倉、改持下個月合約（以期貨商規定為準）。"
     if any(i["is_future"] for i in items):
-        tail += "結算後建議重啟後端：程式只在啟動時解析近月合約並訂閱，不重啟會停在舊合約（結算當天的實際行為沒有實測過）。"
+        tail += "結算後後端會自動重啟換月（watchdog 在券商合約檔更新後的 14:46 起試，最多 4 次，換成功會再通知）；沒有 watchdog 的話請自己重啟。"
     if stage == "final":
         t = now.astimezone(daytrade.TAIPEI)
         left = max(0, 13 * 60 + 30 - (t.hour * 60 + t.minute))
@@ -180,6 +180,9 @@ def _is_open(d: date) -> bool:
         from core.premarket_log import TwCalendar
         _calendar = TwCalendar()
     return bool(_calendar.check(d)["open"])
+
+
+is_open_day = _is_open        # 換月（core/rollover.py）與到期提醒共用同一份日曆
 
 
 async def reminder_loop(get_positions: Callable[[], list[dict[str, Any]]], get_watches: Callable[[], list[dict[str, Any]]]) -> None:
