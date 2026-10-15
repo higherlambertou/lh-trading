@@ -50,7 +50,7 @@
 | 選擇權買賣價差的盤中取樣 `core/option_spread_log.py` | ✅ **待重啟後端才開始記** | 每 10 分鐘（`OPTION_SPREAD_MINUTES`）向券商查一次整條鏈、依離平值距離分組存價差中位數到 `data/option_spread.db`（✋ 無法回補）；`python -m core.option_spread_log report`；`OPTION_SPREAD_LOG=false` 關閉 | bd7ab92 |
 | 盤前跨市場資訊紀錄 `core/premarket_log.py`、`api/routes_premarket.py` | ✅ **待重啟後端才開始記** | 每個台股交易日 T（`PREMARKET_TIME`，預設 08:30）一筆快照存 `trade_log.db`（`premarket_snapshots`／`premarket_errors`／`premarket_graveyard`，資料庫觸發器擋 UPDATE／DELETE）；美股日曆（NYSE 假日、補假、提早收盤）用 2,457 個真實交易日驗證逐日一致；來源 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX），失敗轉移＋429 後暫停 6 小時，Yahoo 轉接器預設關；台股休市用證交所日曆（快取）；`python -m core.premarket_log show\|run\|export\|status\|void\|correct`；`PREMARKET_LOG=false` 關閉。沒有任何策略或風控讀這些欄位（靜態檢查＋啟用前後重播訂單完全相同的測試） | 978438e |
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
-| 換月自動重啟 `core/rollover.py`、`run_live.sh`／`run_sim.sh` 的 `rollover` 態、`core/broker.py` 的 `resolved_codes`、worker `subscribe` 回報 `target_code` | ✅ **需重啟後端；watchdog 要重啟才生效** | 訂閱的近月合約過了結算日 13:30，後端在 health 帶 `restart_wanted`，watchdog 正常關閉並重啟；只在合約檔更新後的 14:46／17:16／隔天 07:51／08:01 各試一次，四次不成就通知放棄；成功也通知（發現 38） | 待 commit |
+| 換月自動重啟 `core/rollover.py`、`run_live.sh`／`run_sim.sh` 的 `rollover` 態、`core/broker.py` 的 `resolved_codes`、worker `subscribe` 回報 `target_code` | ✅ **需重啟後端；watchdog 要重啟才生效** | 訂閱的近月合約過了結算日 13:30，後端在 health 帶 `restart_wanted`，watchdog 正常關閉並重啟；只在合約檔更新後的 14:46／17:16／隔天 07:51／08:01 各試一次，四次不成就通知放棄；成功也通知（發現 38） | 7c2bac2 |
 | 指標類通知：持倉中波動放大 `core/vol_watch.py`、合約到期提醒 `core/reminders.py`、盤前摘要 `core/daily_brief.py` | ✅ **待重啟後端才生效** | 只通知、不動委託、不放權益；不接進場訊號（買賣力道、Hurst 的檢驗沒過）。波動放大＝持有期貨、且最近 30 分鐘 σ ≥ 同時段近 20 個時段中位數的 2 倍；到期＝最後交易日前 1～3 天／當天 08:50／當天 12:30；摘要＝交易日 08:35 一則（發現 37） | 81c6c2c |
 | watchdog 的位址檢查 `run_live.sh`（`noiface`）、`core/bind_check.py`、`main.py` 啟動前試綁 | ✅ **正式盤 watchdog 18:33 已重啟（有位址檢查；`isleep` 下次重啟才生效）** | Tailscale 位址不在本機時不判定故障、不殺後端、起不來就等位址回來並推播；啟動前先試綁，不白登入券商；修 `$_old_pid）` 地雷；等待改用可被打斷的 `isleep`，`pkill` 不再被 10 分鐘退避拖住（發現 36） | ee5df37 |
 | 盤前快照的事後補值 `core/premarket_log.py` 的 `backfill_*`、〈盤前跨市場快照〉面板的「已補值」標示 | ✅ **待重啟後端** | 美股欄位因來源比取樣時間晚更新而空著，之後來源有了自動補一筆 correction（原始那筆不動、補值時間記下來）；修了連續更正會互相覆蓋的 bug（發現 35） | 068eb38 |
@@ -683,7 +683,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-15（續）— 結算後自動重啟換月（發現 38）— 待 commit
+### 2026-10-15（續）— 結算後自動重啟換月（發現 38）— 7c2bac2
 - **起因**：你說要讓 watchdog 在結算後自動重啟（發現 37 提到的 10/21 TMFJ6 結算）。查了才發現光「結算後重啟」不夠：shioaji 近月別名（TMFR1）什麼時候指向下個月，官方文件沒寫，只寫了合約檔每天的更新時間——07:50、08:00、**14:45**、17:15——
   盲目在 13:50 重啟，可能拿回同一個已到期的合約。
 - **做法**：決策放在後端（Python、可測、懂日曆），watchdog 只負責照辦。worker 的 `subscribe` 回覆多帶 `target_code`（官方文件：連續月合約的實際目標代碼），`broker.resolved_codes` 記著；
