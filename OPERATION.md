@@ -504,7 +504,7 @@ python -m core.stop_calibration check-source    # TMF 真實成交的 σ 與 TXF
 python -m core.stop_calibration run             # 重算校準表並印報告（不加 --write 不會覆蓋 JSON）
 ```
 - **參數**（`.env`，見 `.env.example`）：`SUGGEST_COST_PTS`（每筆來回成本，預設 4 點是**假設**，請改成自己的手續費＋稅＋滑價）、`SUGGEST_RISK_PCT`（單筆風險占權益上限，預設 1）。
-- **資料不夠就不給建議**：最近 30 分鐘有效的 1 分鐘變動少於 25 個（成交太少、休市）會寫原因、不給數字。σ 來自 `flow_1m`（TMF 真實成交的 1 分 K，後端記錄；重啟後端期間沒記到的分鐘就是缺值）。
+- **資料不夠就不給建議**：最近 30 分鐘有效的 1 分鐘變動少於 25 個（成交太少、休市）會寫原因、不給數字。σ 來自 `flow_1m`（TMF 真實成交的 1 分 K，後端記錄；重啟後端期間沒記到的分鐘就是缺值）。**重啟後要等缺口滑出 30 分鐘窗口（約 30 分鐘）才算得出來**，波動放大提醒也一樣；這種短缺口 `flow-fetch` 不會補。
 - **校準表是一次性的測量**：`core/stop_calibration.json` 是事先登記（update.md 發現 33）、跑一次的結果，**不要為了讓數字好看重算**；要重算（例如累積更多夜盤）請先重新登記標準。夜盤只有約 39 晚，一律標「樣本少」。
 - **這不是進場訊號**：進場沒有資訊時每筆期望值＝−成本，與停損停利怎麼放無關；高勝率型只是用大的風險換小的獲利。**在目前的波動下，把停損放在雜訊外，1 口微台就是權益的 1～2%**（卡片會直接寫「1 口就超過 1% 風險」）。
 - 測試：`python -m pytest tests/test_stop_calibration.py tests/test_stop_suggest.py tests/test_frontend_stop_suggest.py -q`。
@@ -617,7 +617,7 @@ health 回傳：
 **現在的行為**（`run_live.sh`，update.md 發現 36）：位址不在 → 不判定故障、不殺後端；後端還在跑就讓它跑（資料照記、停損照看），起不來就先不啟動、每 5 秒看位址回來沒；推播一次「Tailscale 位址不見了」（Telegram；冷卻 30 分鐘）。
 **你要做**：把 Tailscale 連回去（選單列的 Tailscale 圖示→Connect；或 `tailscale up`）。檢查：`ifconfig | grep 'inet 100\.'`、`tailscale status`。位址回來後 watchdog 自己會繼續，不用重啟。
 **舊版 watchdog 還在跑的話**（2026-10-14 18:33 之前啟動的）：它在最後一檔 10 分鐘退避的 `sleep 600` 時**收不到結束訊號**——`kill`／`pkill -f run_live.sh` 要等睡完才生效，這段時間單例鎖還在、重開會被擋下來（2026-10-14 實際發生：結束訊號拖到 18:23:53 才處理）。要立刻起來：先看 `/tmp/lh_live_watchdog.log` 最後一行是『退避等待』（代表沒有後端在跑），`kill -9 <watchdog pid>`（`pgrep -f run_live.sh`），再 `nohup ./run_live.sh >> /tmp/lh_live_watchdog.log 2>&1 &`（鎖是陳舊的，新腳本會接管）。新版（等待改用 `isleep`）的 `kill`／`pkill` 兩秒內就會結束。**新版 `run_live.sh` 要重啟 watchdog 才生效。**
-**資料缺口**：後端沒在跑的那段時間，tick 與選擇權價差補不回來；外／內盤分鐘統計可以用券商回補：`python -m core.indicator_history flow-fetch --days 3`（登入前會先檢查連線數）。持倉：停損停利監控在後端停著的時候不運作——有持倉時看 Telegram 警示。
+**資料缺口**：後端沒在跑的那段時間，tick 與選擇權價差補不回來；外／內盤分鐘統計可以用券商回補：`python -m core.indicator_history flow-fetch --days 3`（登入前會先檢查連線數）。**只補「整天」缺的日子**：日盤已有 ≥200 分鐘就算這天有了（`flow_days`），幾分鐘到十幾分鐘的缺口不會補，會回「沒有需要補的日子」（2026-10-15 實測）。持倉：停損停利監控在後端停著的時候不運作——有持倉時看 Telegram 警示。
 
 ### 🔄 換月（近月合約結算後自動重啟，update.md 發現 38）
 
@@ -628,6 +628,40 @@ health 回傳：
 **沒換成功**：先看 app log 的「近月合約解析」行——如果寫的是 `TMFR1`（讀不到 `target_code`），自動換月不會動，請在結算後手動重啟（`kill <watchdog pid>` 後重開）。狀態在 `data/rollover_state_live.json`（刪掉＝從頭來）。
 **關閉**：`ROLLOVER_RESTART=false`。**注意**：這是有計畫的重啟——策略不會自動回來、手動停損監控重啟後會和券商部位對帳恢復；結算後舊合約的持倉已被期交所結算，不會再有舊合約的持倉。
 **沒實測**：結算當天的實際行為（R1 在哪個更新時間點換掉）沒有實測過；2026-10-21 要看 log 與通知確認。
+
+### 🛑 後端突然停了（先看 watchdog log 是誰關的）
+
+**看哪裡**：`tail -30 /tmp/lh_live_watchdog.log`，再對照 `/tmp/lh_live.log` 最後幾行。
+
+| watchdog log 的那一行 | 意思 | 怎麼辦 |
+|---|---|---|
+| `收到結束訊號，關閉正式盤` | 有人對 watchdog 送了 TERM／INT：`pkill -f run_live.sh`、終端機按 Ctrl+C、關掉啟動它的終端機。app log 會有 `Shutting down`、`Worker 已登出`（正常關閉）。**不是當機、也不是記憶體殺的**。 | watchdog 結束後不會自己回來，要的話重新啟動（見〈啟動正式盤〉） |
+| `判定故障(down／nobroker) → kill -9 … 並重啟` | 凍結或斷線，watchdog 自己重啟了 | 見下面〈服務凍結〉〈無法連線券商〉 |
+| `進程已不存在（登入失敗或自行結束），重啟` | 後端自己結束，或被系統強制殺掉（記憶體不足時 macOS 用 SIGKILL，不會留下關閉訊息） | 看 app log 最後幾行；再看下一節的記憶體檢查 |
+| `換月：後端要求重啟` | 近月合約結算後的有計畫重啟 | 見〈換月〉 |
+| `BIND_HOST=… 不在本機` | Tailscale 位址不見 | 見〈Tailscale 位址不見了〉 |
+
+**口訣**：log 有「收到結束訊號」＋「Worker 已登出」＝人關的；log 突然斷在中間、沒有關閉訊息＝被殺（記憶體或 kill -9）。
+**停的時候有沒有風險**：`data/position_state_live.json` 是後端每 5 秒寫的最後一次持倉（`positions`、`unprotected`），空手就是空的；`data/manual_watches_live.json` 是落地的停損監看。
+（2026-10-15 17:06 的實例：log 是「收到結束訊號」＋正常關閉，Terminal.app 13 秒前有使用者操作；當時 Docker 的虛擬機吃光記憶體，但那次不是記憶體造成的。）
+
+### 🐢 機器很慢／記憶體吃緊（Docker、Chrome、VS Code）
+
+**為什麼會影響交易系統**：Docker Desktop 的虛擬機、Chrome、VS Code 和後端共用同一台 Mac 的記憶體、CPU 與 SSD。記憶體不夠時，macOS 會把後端的頁面壓縮、換到磁碟；event loop 一被拖住，`/health` 就逾時，watchdog 會當成凍結 kill -9 並重新登入券商。
+（2026-10-15 實例：Docker VM 吃到 23 GB、swap 96%、系統剩餘記憶體 35%；調小後降到 2.5 GB、swap 86%、剩餘 58%。）
+
+**檢查（都是唯讀）**
+```bash
+memory_pressure | tail -1                                  # System-wide memory free percentage（經驗值：低於 20% 就吃緊）
+sysctl vm.swapusage                                        # swap 用了多少（接近 total＝快沒了）
+top -l 1 -o cmprs -n 10 -stats pid,command,mem,cmprs,cpu   # 誰被壓縮／換出最多（Docker 的虛擬機是 qemu-system-aarch64）
+ps -axo pid,rss,etime,comm | sort -k2 -nr | head -15       # 誰的實體記憶體最大
+```
+**常見元兇與處理**
+- **Docker Desktop**：Settings → Resources → Memory 設上限（例如 4～6 GB），用完就關。它的**虛擬磁碟**滿了（例如 Postgres 塞滿）與 Mac 的磁碟無關（`df -h /` 看的才是 Mac）、不影響後端；但同一個 VM 的**記憶體**會。
+- **Chrome 的「Helper (Renderer)」很多個**：一個分頁（甚至一個網站、iframe）一個行程。Chrome 按 Shift+Esc 看哪個分頁／擴充功能最肥；設定 → 效能 → 開「記憶體節省模式」。
+- **VS Code 的 plugin helper**：關掉不用的視窗與擴充功能。
+**做法**：swap 持續超過八成就先關東西、再開交易系統；已經在跑的話，留意 watchdog log 有沒有出現 `down`。
 
 ### ❌ 服務凍結（state=down）
 
