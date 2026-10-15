@@ -52,7 +52,7 @@
 | 盤前跨市場快照面板 `frontend/components/PremarketPanel.tsx`、`frontend/lib/premarket.ts`、`GET /api/premarket/preview` | ✅ **待重啟後端＋前端重 build** | 〈市場〉分頁最下方：最新有效紀錄、「預覽」（如果現在記會長什麼樣，不寫入）、最近 12 筆（作廢／更正／補記／缺值標示）、CSV 下載；缺值原因顯示在欄位名稱下面；舊版後端顯示『後端還沒有這個 API』、恢復後自己重抓；桌面與手機寬度都看過截圖（發現 31 追加） | af08fd0 |
 | 波動放大冷卻改 10 分鐘 `core/vol_watch.py`（發現 40） | ✅ **需重啟後端** | `VOL_ALERT_COOLDOWN_MIN` 預設 10；日盤歷史平均 1.20 則／日盤（60 分鐘時 0.39），極端行情日會連發；對效能沒有影響 | 70d51b1 |
 | 波動放大提醒空手也發 `core/vol_watch.py`（發現 39） | ✅ **需重啟後端** | 原本只在持有期貨時才發；現在連續交易時段內有沒有持倉都發，空手講現在的雜訊範圍與平衡型停利停損點數（平常是多少），有持倉才多帶離停損還有幾點 | d442d19 |
-| 模擬盤不再綁 0.0.0.0 `main_sim.py`、`core/bind_check.sim_bind_host`、`run_sim.sh`／`run_sim.ps1`（發現 41） | ✅ **下次啟動模擬盤時生效** | 改綁 SIM_BIND_HOST→BIND_HOST→127.0.0.1，位址不在本機就先結束；健康檢查打同一個位址。後端沒有身分驗證，原本 0.0.0.0 讓同網路的人連得到 | 待 commit |
+| 模擬盤不再綁 0.0.0.0 `main_sim.py`、`core/bind_check.sim_bind_host`、`run_sim.sh`／`run_sim.ps1`（發現 41） | ✅ **下次啟動模擬盤時生效** | 改綁 SIM_BIND_HOST→BIND_HOST→127.0.0.1，位址不在本機就先結束；健康檢查打同一個位址。後端沒有身分驗證，原本 0.0.0.0 讓同網路的人連得到 | 20196a0 |
 | 換月自動重啟 `core/rollover.py`、`run_live.sh`／`run_sim.sh` 的 `rollover` 態、`core/broker.py` 的 `resolved_codes`、worker `subscribe` 回報 `target_code` | ✅ **需重啟後端；watchdog 要重啟才生效** | 訂閱的近月合約過了結算日 13:30，後端在 health 帶 `restart_wanted`，watchdog 正常關閉並重啟；只在合約檔更新後的 14:46／17:16／隔天 07:51／08:01 各試一次，四次不成就通知放棄；成功也通知（發現 38） | 7c2bac2 |
 | 指標類通知：持倉中波動放大 `core/vol_watch.py`、合約到期提醒 `core/reminders.py`、盤前摘要 `core/daily_brief.py` | ✅ **待重啟後端才生效** | 只通知、不動委託、不放權益；不接進場訊號（買賣力道、Hurst 的檢驗沒過）。波動放大＝持有期貨、且最近 30 分鐘 σ ≥ 同時段近 20 個時段中位數的 2 倍；到期＝最後交易日前 1～3 天／當天 08:50／當天 12:30；摘要＝交易日 08:35 一則（發現 37） | 81c6c2c |
 | watchdog 的位址檢查 `run_live.sh`（`noiface`）、`core/bind_check.py`、`main.py` 啟動前試綁 | ✅ **正式盤 watchdog 18:33 已重啟（有位址檢查；`isleep` 下次重啟才生效）** | Tailscale 位址不在本機時不判定故障、不殺後端、起不來就等位址回來並推播；啟動前先試綁，不白登入券商；修 `$_old_pid）` 地雷；等待改用可被打斷的 `isleep`，`pkill` 不再被 10 分鐘退避拖住（發現 36） | ee5df37 |
@@ -686,7 +686,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-15（續 5）— 模擬盤不再綁 0.0.0.0（發現 41）— 待 commit
+### 2026-10-15（續 5）— 模擬盤不再綁 0.0.0.0（發現 41）— 20196a0
 - **起因**：你問同網路的人連不連得到你的系統。查了實際綁定：正式盤只綁 Tailscale 位址（LAN 連不到，對的）；**模擬盤程式寫死 `0.0.0.0:8003`**——跑的時候同網路的任何人都連得到，而後端沒有任何身分驗證；macOS 防火牆也是關的。
   你說平常不啟動模擬盤、可以直接改。
 - **改法**：`main_sim.py` 改綁 `SIM_BIND_HOST` → `BIND_HOST`（跟正式盤同一個 Tailscale 位址）→ `127.0.0.1`（`core/bind_check.sim_bind_host`）；位址不在本機時啟動前就結束（`preflight`，不先登入券商）。
