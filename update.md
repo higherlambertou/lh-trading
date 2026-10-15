@@ -685,7 +685,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-15（續 4）— 文件整理：CLAUDE.md 瘦身、新增 ARCHITECTURE.md、OPERATION.md 補排錯（待 commit）
+### 2026-10-15（續 4）— 文件整理：CLAUDE.md 瘦身、新增 ARCHITECTURE.md、OPERATION.md 補排錯 — 4f142c3
 - **CLAUDE.md 45.5 KB → 14.5 KB（289 → 146 行）**：它每次對話都會載入，長的模組說明很貴。只留「不能犯的規則」（先改 state 再 await、`reduce_only=True`、通知規則、測試不能碰真通道、資料與記錄不影響交易…）、啟動方式、環境變數、event loop 鐵則、Shioaji 上限表。
 - **新增 ARCHITECTURE.md（42 KB）**：原本 CLAUDE.md 的模組細節**原文搬過去、一個字不改**（外加索引、啟動方式與 watchdog 的原文）。我用腳本檢查過：原文每一行（20 字以上）不是還在 CLAUDE.md 就是在 ARCHITECTURE.md，只有一句改寫（event loop 的歷史註記）已補回。
 - **OPERATION.md 補了兩節〈常見狀況〉**：〈後端突然停了（先看 watchdog log 是誰關的）〉（log 每一行的意思、「收到結束訊號」＝人關的、`position_state_live.json` 看有沒有風險）、〈機器很慢／記憶體吃緊（Docker、Chrome、VS Code）〉（檢查指令、為什麼會影響交易系統、2026-10-15 的實例）；
