@@ -124,6 +124,10 @@ class FlowRecorder:
             self._cur = MinuteAcc(minute)
         self._cur.add(price, volume, tick_type)
 
+    def current_row(self) -> dict[str, Any] | None:
+        """目前這一分鐘（還沒收完、還沒寫進資料庫）的彙總；走勢圖用來畫最後一根。只讀；要在 event loop 執行緒呼叫（與 feed 同一個）。"""
+        return self._cur.row() if self._cur is not None and self._cur.trades else None
+
     def flush_stale(self, now: float | None = None) -> None:
         """目前這分鐘已經過了 STALE_AFTER_SEC 還沒有下一筆成交（收盤、午休）→ 送出去。"""
         if self._cur is not None and (now if now is not None else time.time()) - self._cur.ts >= STALE_AFTER_SEC:

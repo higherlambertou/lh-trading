@@ -1,3 +1,4 @@
+import type { BarsResponse } from "./chart";
 // 後端位址依「載入此頁面的 host」自動推導，而不是寫死／烤進 bundle：
 // 本機開 localhost:3002 → 打 localhost:8002；手機開 100.97.169.26:3002 → 打 100.97.169.26:8002。
 // 一份 bundle 兩邊都正確，也避開「本機自連自己 Tailscale IP timeout」的問題。
@@ -419,6 +420,9 @@ export const api = {
   market: {
     state: () => req<MarketState>("/market/state"),
     live: () => req<LiveState>("/market/live"),
+    // 走勢圖的 1 分 K（微台真實成交）；第一次給 minutes、之後給 since 只抓增量
+    bars: (q: { minutes?: number; since?: number } = {}) =>
+      req<BarsResponse>(`/market/bars?${new URLSearchParams(Object.entries(q).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))}`),
     suggest: (contract: string, horizon: number) => req<Suggest>(`/market/suggest?contract=${encodeURIComponent(contract)}&horizon=${horizon}`),
     replay: (q: Record<string, string | number | boolean>) =>
       req<Replay>(`/market/replay?${new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))}`),

@@ -13,6 +13,7 @@ import IndicatorReplayPanel from "./IndicatorReplayPanel";
 import BacktestPanel from "./BacktestPanel";
 import OptionCalcPanel from "./OptionCalcPanel";
 import PremarketPanel from "./PremarketPanel";
+import PriceChart from "./PriceChart";
 
 type Tab = "trade" | "market" | "analysis";
 
@@ -77,6 +78,7 @@ export default function DashboardTabs() {
           <>
             <div className={tab === "trade" ? "space-y-4" : "hidden"}>
               <MarketStrip />
+              <PriceChart active={tab === "trade"} />
               <div className={GRID}>
                 <PositionPanel />
                 <StrategyPanel />

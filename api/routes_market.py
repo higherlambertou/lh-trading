@@ -12,6 +12,7 @@ from api.routes_strategy import strategy_engine
 from core import stop_suggest
 from core.broker import broker
 from core.daily_summary import TICK_SEC, market_state
+from core.flow_store import flow_recorder
 from core.live_state import FLOW_DOWN, FLOW_MARGIN, FLOW_UP
 from core.viz_replay import build_replay, validate as validate_replay
 
@@ -61,6 +62,40 @@ async def get_live() -> dict[str, Any]:
     """盤中即時狀態：真實成交的外/內盤比例、日盤振幅、與盤前判斷是否同向（純讀記憶體，僅供顯示）。
     用 async（跑在 event loop）讀取，與 tick 餵入同一執行緒，不需要鎖。"""
     return await market_state.live_snapshot()
+
+
+def _bar(r: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """flow_1m 的一列（或進行中的那一分鐘）→ 走勢圖的一根 K 棒；沒有價格的丟掉。v＝成交口數、b／s＝外盤／內盤口數、n＝成交筆數。"""
+    try:
+        o, h, lo, c = (float(r[k]) for k in ("open", "high", "low", "close"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (o > 0 and h > 0 and lo > 0 and c > 0):
+        return None
+    buy, sell, unk = int(r.get("buy_vol") or 0), int(r.get("sell_vol") or 0), int(r.get("unk_vol") or 0)
+    return {"t": int(r["ts"]), "o": o, "h": h, "l": lo, "c": c, "v": buy + sell + unk, "b": buy, "s": sell,
+            "n": int(r.get("buy_n") or 0) + int(r.get("sell_n") or 0) + int(r.get("unk_n") or 0)}
+
+
+@router.get("/bars")
+async def get_bars(minutes: int = Query(default=1500, ge=5, le=4000), since: Optional[float] = Query(default=None, ge=0)) -> dict[str, Any]:
+    """微台（TMF）真實成交的 1 分 K（走勢圖用，update.md 發現 42）：資料來自後端每分鐘記錄的 flow_1m（日盤＋夜盤），
+    加上目前這一分鐘（還沒寫進資料庫）的進行中那一根。只讀本機資料庫與記憶體，不查券商、不碰下單。
+    minutes＝往前看幾分鐘（預設 1,500＝約 25 小時）；since＝只要這個時間（epoch 秒）以後的（前端第一次抓全部、之後只抓增量）。
+    後端沒開著的分鐘沒有資料，K 棒會有缺口。"""
+    now = time.time()
+    lo = since if since is not None else now - minutes * 60
+    rows = await asyncio.to_thread(market_state.store.flow_1m, "TMF", lo)
+    bars = [b for b in (_bar(r) for r in rows) if b is not None]
+    live = None
+    try:
+        cur = flow_recorder.current_row()
+        live = _bar(cur) if cur else None
+    except Exception:  # noqa: BLE001
+        logger.debug("bars：取不到進行中的 K 棒（略過）", exc_info=True)
+    if live is not None and since is not None and live["t"] < since:
+        live = None
+    return {"contract": "TMF", "interval": 60, "now": now, "bars": bars, "live": live}
 
 
 @router.get("/suggest")

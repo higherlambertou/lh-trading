@@ -37,6 +37,8 @@ from core.reminders import reminder_loop
 from core.daily_summary import market_state
 from core.vol_watch import vol_watch_loop
 from core.daily_brief import brief_loop
+from core.signal_shadow import shadow_loop
+from api.routes_signals import router as signals_router
 from core import rollover
 from core.tick_store import tick_recorder
 from core.flow_store import flow_recorder
@@ -98,6 +100,7 @@ async def lifespan(app: FastAPI):
     protect_task = loop.create_task(protect_after_start())                # 重啟後：恢復手動停損監控、報告沒有保護的持倉（自己等券商連上；不下單）
     vol_task = loop.create_task(vol_watch_loop(lambda: _position_cache["positions"], manual_monitor.list_watches, market_state.store))   # 波動放大提醒（有沒有持倉都發；只通知；VOL_WATCH=false 關閉）
     brief_task = loop.create_task(brief_loop(market_state.snapshot, market_state.store))   # 盤前摘要（只通知；DAILY_BRIEF=false 關閉）
+    shadow_task = loop.create_task(shadow_loop(market_state.store))      # 順勢爆量訊號的影子模式（只記錄與通知、不下單；SIGNAL_SHADOW=false 關閉）
     rollover_task = loop.create_task(rollover.rollover_loop(lambda: broker.resolved_codes))   # 近月合約結算後要求 watchdog 重啟換月（ROLLOVER_RESTART=false 關閉）
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
@@ -114,6 +117,7 @@ async def lifespan(app: FastAPI):
     vol_task.cancel()
     brief_task.cancel()
     rollover_task.cancel()
+    shadow_task.cancel()
     tick_recorder.stop()
     flow_recorder.stop()
     backtest_manager.shutdown()          # 回測子行程不能變成孤兒繼續吃 CPU
@@ -156,6 +160,7 @@ app.include_router(risk_router,     prefix="/api/risk",     tags=["risk"])
 app.include_router(backtest_router, prefix="/api/backtest", tags=["backtest"])
 app.include_router(options_router,  prefix="/api/options",  tags=["options"])
 app.include_router(premarket_router, prefix="/api/premarket", tags=["premarket"])
+app.include_router(signals_router,  prefix="/api/signals",  tags=["signals"])
 
 
 @app.get("/api/health")
