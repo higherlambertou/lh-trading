@@ -705,6 +705,7 @@
   `tests/test_frontend_entry_label.py`＋`tests/frontend/entry_label_check.js`（用後端現算的資料渲染；抓到過我把方向寫成 `Buy`／`Sell`，後端其實是 `long`／`short`——是拿真實後端資料比對時發現的，現在有測試固定）。
   **故意弄壞**：後端 18 種、前端 18 種，全部會被測試擋下。
   全部測試 1,799 個通過（`live_state` 的 `session_flow` 多回一個 `ts`，兩個斷言整個 dict 的舊測試跟著補上）。
+- **重啟後補的洞**：升級前就寫好的列（欄位是 null、沒有原因）讀出時補「這張進場委託沒有記到內外盤…」（`NO_FLOW_REASON`，不改寫資料庫），維持「null 一定有原因」。
 - **待你**：① 後端重啟（**先確認空手**）＋前端 `npm run build`（先停掉 3002 的 `next start`）才看得到；② 第一筆手動單成交後看 `GET /api/tradelog/entries`：`flow_*` 有值、`flow_state_time` 與下單時間差幾秒內；③ 第一次用卡片標一筆，確認 `label_entered_at`；④ 待確認 7／10 要不要做；⑤ 樣本門檻與判斷標準請在看結果前先寫下來（需求文件待確認 11）。
 
 ### 2026-10-16（續 3）— 單一假設「日內弱順勢」在保留期驗證一次（發現 46）— 800d223

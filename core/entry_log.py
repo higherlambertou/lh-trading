@@ -58,6 +58,7 @@ MARKET_KEYS = ("hurst_value", "hurst_z", "hurst_window", "hurst_bar_period", "hu
                "iv_value", "iv_percentile", "state_timestamp", "state_date", "market_state")
 
 LABELS = ("multi", "short", "range", "none")                 # 多／空／盤整／無明確判斷（最後一項避免沒有看法卻被迫選一個，污染資料）
+NO_FLOW_REASON = "這張進場委託沒有記到內外盤（功能啟用前下的單，或記錄失敗）"
 MANUAL_STRATEGIES = {"manual", "manual_monitor", ""}          # 手動單才有「主觀趨勢判斷」；策略單不填
 NOTE_MAX = 200
 FLOW_COLS = (("flow_inside", "INTEGER"), ("flow_outside", "INTEGER"), ("flow_net_diff", "INTEGER"), ("flow_ratio", "REAL"),
@@ -441,7 +442,7 @@ class EntrySync:
         params = (st or {}).get("strategy_params")
         ts = ev.get("deal_ts") or ev["ts"]
         flow = (st or {}).get("order_flow") or {}
-        flow_missing = (st or {}).get("flow_missing_reason") if st and "order_flow" in st else "這張進場委託沒有記到內外盤（功能啟用前下的單，或記錄失敗）"
+        flow_missing = (st or {}).get("flow_missing_reason") if st and "order_flow" in st else NO_FLOW_REASON
         recent = flow.get("recent")
         self.conn.execute(
             "INSERT OR IGNORE INTO entry_snapshots(mode, trade_id, contract, strategy_name, strategy_type, direction, order_ts, entry_ts, "
@@ -563,7 +564,7 @@ def fetch_entries(path: Path | str, mode: str | None = None, since_ts: float | N
                 "flow_inside": s.get("flow_inside"), "flow_outside": s.get("flow_outside"), "flow_net_diff": s.get("flow_net_diff"),
                 "flow_ratio": s.get("flow_ratio"), "flow_accum_session": s.get("flow_accum_session"), "flow_accum_start": s.get("flow_accum_start"),
                 "flow_source": s.get("flow_source"), "flow_state_time": iso_taipei(s.get("flow_state_ts")), "flow_recent": s.get("flow_recent"),
-                "flow_missing_reason": s.get("flow_missing_reason"),
+                "flow_missing_reason": s.get("flow_missing_reason") or (NO_FLOW_REASON if s.get("flow_inside") is None and s.get("flow_ratio") is None else None),   # 升級前就寫好的列欄位是 null、沒有原因，讀出時補上（不改寫資料庫）
                 "trend_label": lab["trend_label"] if lab else None, "trend_note": lab["note"] if lab else None,
                 "label_entered_at": iso_taipei(lab["label_entered_at"]) if lab else None,
                 "label_after_exit": (first_exit is not None and lab["label_entered_at"] > first_exit) if lab else None,   # 已知結果之後才標的，可能被事後記憶影響

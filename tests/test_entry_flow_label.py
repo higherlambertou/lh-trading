@@ -301,3 +301,13 @@ def test_order_source_separates_manual_from_strategy_and_manual_has_no_strategy_
         c.close()
         z = one(p, "Z1")
         assert (z["order_source"], z["strategy_name"], z["strategy_type"], z["label_missing_reason"]) == ("manual", None, None, "not_entered")
+
+
+def test_a_snapshot_written_before_the_upgrade_still_reads_back_with_a_reason(db):
+    c = sqlite3.connect(db)
+    c.execute("UPDATE entry_snapshots SET flow_inside=NULL, flow_outside=NULL, flow_net_diff=NULL, flow_ratio=NULL, flow_missing_reason=NULL WHERE trade_id='M1'")   # 升級前寫好的列
+    c.commit()
+    c.close()
+    r = one(db, "M1")
+    assert r["flow_inside"] is None and r["flow_missing_reason"] == el.NO_FLOW_REASON                      # null 一定有原因
+    assert one(db, "S1")["flow_missing_reason"] is None and one(db, "S1")["flow_ratio"] is not None        # 有值的不會被補原因
