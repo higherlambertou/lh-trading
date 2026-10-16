@@ -47,6 +47,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 import type { BacktestInfo, BacktestJob, BacktestRequest } from "./backtest";
 import type { CalcBody, CloseBody, OptCalc, OptChain, OptClose } from "./options";
 import type { PmPreview, PmSnapshot, PmStatus } from "./premarket";
+import type { EntryRow, Trend } from "./entryLabel";
 import type { Unprotected } from "./protection";
 import type { Suggest } from "./stopSuggest";
 
@@ -446,6 +447,14 @@ export const api = {
     close: (body: CloseBody) => req<OptClose>("/options/close", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) }),
     chain: (deliveryMonth: string, category = "TXO") =>
       req<OptChain>(`/options/chain?delivery_month=${encodeURIComponent(deliveryMonth)}&category=${encodeURIComponent(category)}`),
+  },
+  // 進場紀錄與手動單的趨勢判斷標記（標記只新增一列、不影響任何下單）
+  tradelog: {
+    entries: (days = 3, limit = 40) => req<EntryRow[]>(`/tradelog/entries?days=${days}&limit=${limit}`),
+    label: (tradeId: string, trend: Trend, note?: string) =>
+      req<unknown>(`/tradelog/entries/${encodeURIComponent(tradeId)}/label`, {
+        method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ trend, note: note || null }),
+      }),
   },
   // 盤前跨市場快照（只讀；preview 會去抓外部資料，所以不要輪詢）
   premarket: {

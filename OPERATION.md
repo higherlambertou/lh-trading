@@ -185,6 +185,17 @@ curl -o entries.csv 'http://100.127.125.13:8002/api/tradelog/entries.csv'       
 curl http://100.127.125.13:8002/api/tradelog/entries/status | python3 -m json.tool          # 健康狀態
 ```
 
+**v2：內外盤快照與趨勢判斷標記**（需求文件 2026-10-16 版，update.md 發現 47；要重啟後端才生效）
+
+- **內外盤快照**：每筆進場（手動、策略都記）多記**委託送出當下**面板上那一組數字——`flow_inside`／`flow_outside`（交易所時段累計內盤／外盤口數）、`flow_net_diff`（外盤−內盤）、`flow_ratio`（外盤占比，就是面板上的比例）、
+  `flow_accum_start`（「日盤 08:45 重置」或「夜盤 15:00 重置」，累計值依賴起點，要一起看）、`flow_state_time`（這組數字是什麼時候算的，和 `entry_time` 差太多代表當時的資料是舊的）、`flow_recent`（最近 20／100／300 筆與 5／15／30 分鐘的外盤占比與筆數，JSON）。
+  取不到（後端剛啟動、交易所累計內外盤還沒收到）＝空值，原因在 `flow_missing_reason`，**不會是 0**。**功能啟用前下的單沒有這些欄位**（原因會寫明）。
+- **趨勢判斷標籤**（手動單才能標）：〈交易〉分頁最下面〈進場判斷標記〉卡，點「多／空／盤整／無明確判斷」（沒看法就選最後一個，不要硬選），備註選填。**不擋也不延遲下單**，進場後任何時候都能補、能改（改＝新增一版，舊的留著）；
+  **出場之後才補的會標成「事後標記」**（`label_after_exit`＝true，結果已知，可能被事後記憶影響——分析時要不要排除自己決定）。沒標的是空值（`label_missing_reason`＝`not_entered`）。
+  用指令標也可以：`curl -X POST http://100.127.125.13:8002/api/tradelog/entries/<trade_id>/label -H 'Content-Type: application/json' -d '{"trend":"multi","note":"突破前高"}'`（`trend`＝`multi`｜`short`｜`range`｜`none`；策略單回 422）。
+- `order_source`＝`manual`｜`strategy`；手動單的 `strategy_name`、`strategy_type` 是空的（不填預設策略）。CSV 多了 `order_source`、`flow_*`、`trend_*`、`label_*` 欄位。
+- 只記錄，沒有任何策略或風控會讀這些欄位。樣本門檻與判斷標準請在**看結果之前**先寫下來。
+
 `entries/status` 的 **`alerts` > 0** 代表記錄過程出過問題（**不影響下單**，但要看）：`last_alert` 是最近一次的原因，log 搜尋 `ENTRYLOG ALERT`，`entry_log_errors` 表有明細。常見的：
 `orphan_deal`（有成交回報但找不到委託紀錄，例如在券商 App 直接下的單）、`overfill`（同一張委託累計成交超過委託口數，多的當成重複送達略過）、`reconcile`（啟動時券商持倉和紀錄簿算出的對不上）。
 `pending_deals` 是還沒處理的成交回報數，平常 0，短暫非 0 正常。同一筆成交回報的同一種問題只通報一次（重啟不會再響）。

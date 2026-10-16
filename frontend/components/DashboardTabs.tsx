@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import PositionPanel from "./PositionPanel";
 import StrategyPanel from "./StrategyPanel";
+import EntryLabelCard from "./EntryLabelCard";
 import OrderPanel from "./OrderPanel";
 import TradesPanel from "./TradesPanel";
 import MarketStrip from "./MarketStrip";
@@ -85,6 +86,7 @@ export default function DashboardTabs() {
                 <LiveStatePanel compact />
                 <OrderPanel />
                 <TradesPanel />
+                <EntryLabelCard />
               </div>
             </div>
 

@@ -1,8 +1,9 @@
 import time
 from typing import Any, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from core import entry_log
 from core.trade_log import current_mode, trade_log
@@ -39,6 +40,23 @@ def get_entries_csv(days: float = 3650, limit: int = 20000) -> Response:
     body = "\ufeff" + entry_log.to_csv(rows)
     return Response(body, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="entries_{current_mode()}.csv"'})
+
+
+class LabelRequest(BaseModel):
+    trend: str = Field(description="multi（多）｜short（空）｜range（盤整）｜none（無明確判斷）")
+    note: Optional[str] = Field(default=None, max_length=entry_log.NOTE_MAX)
+
+
+@router.post("/entries/{trade_id}/label")
+def post_label(trade_id: str, body: LabelRequest) -> dict[str, Any]:
+    """手動單的主觀趨勢判斷標籤（update.md 發現 47）：進場後任何時候補填，**不阻擋、不延遲任何下單**；只新增一列（改標籤＝再新增，舊的留著）。
+    輸入時間晚於第一次出場會標 label_after_exit。策略單回 422（主觀欄位固定為空）。只供事後分析，沒有任何策略或風控讀取。"""
+    try:
+        return entry_log.add_label(trade_log.path, current_mode(), trade_id, body.trend, body.note)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
 
 @router.get("/entries/status")

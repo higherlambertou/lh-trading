@@ -327,7 +327,7 @@ class LiveState:
         if "bid_side_total_vol" not in ex or "ask_side_total_vol" not in ex:
             return None
         inside, outside = ex["bid_side_total_vol"], ex["ask_side_total_vol"]
-        return {"inside": inside, "outside": outside, "session": session_of(ex["hhmm"]),
+        return {"inside": inside, "outside": outside, "session": session_of(ex["hhmm"]), "ts": ex.get("ts"),
                 "share": round(outside / (inside + outside), 3) if inside + outside > 0 else None}
 
     def _vwap(self) -> dict[str, Any] | None:

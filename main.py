@@ -38,6 +38,8 @@ from core.daily_summary import market_state
 from core.vol_watch import vol_watch_loop
 from core.daily_brief import brief_loop
 from core.signal_shadow import shadow_loop
+from core import entry_log
+from core.live_state import live_state
 from api.routes_signals import router as signals_router
 from core import rollover
 from core.tick_store import tick_recorder
@@ -84,6 +86,7 @@ async def lifespan(app: FastAPI):
     quote_hub.setup(loop)
     manual_monitor.setup(loop)
 
+    entry_log.flow_provider = live_state.snapshot          # 進場快照要記的內外盤（面板上同一組數字；只讀記憶體，失敗只記 null 與原因）
     tick_recorder.start()
     flow_recorder.start()
     trade_log.start()

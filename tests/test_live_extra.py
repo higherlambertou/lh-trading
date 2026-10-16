@@ -89,7 +89,7 @@ def test_vwap_session_flow_and_basis_during_the_day():
     s = ls.snapshot()
     assert s["vwap"] == {"price": 49353.5, "diff": -53.5, "session": "day"}
     assert s["basis"] == {"spot": 49290.0, "value": 10.0, "valid": True}
-    assert s["session_flow"] == {"inside": 4000, "outside": 6000, "share": 0.6, "session": "day"}
+    assert s["session_flow"] == {"inside": 4000, "outside": 6000, "share": 0.6, "session": "day", "ts": ts(10, 0)}          # ts＝這組累計是什麼時候收到的（進場紀錄的 flow_state_ts 用）
 
 
 @pytest.mark.parametrize("h,m,valid", [(8, 50, False), (8, 59, False), (9, 0, True), (13, 29, True), (13, 30, False), (13, 40, False), (21, 0, False)])
@@ -106,7 +106,7 @@ def test_zero_values_do_not_overwrite_and_zero_cumulative_volume_is_legal():
     assert ls.snapshot()["vwap"]["price"] == 49353.5 and ls.snapshot()["basis"]["spot"] == 49290.0
     ls2 = LiveState()
     feed(ls2, ts(8, 46), bid_side_total_vol=0, ask_side_total_vol=0)
-    assert ls2.snapshot()["session_flow"] == {"inside": 0, "outside": 0, "share": None, "session": "day"}      # 時段剛開始：累計是 0
+    assert ls2.snapshot()["session_flow"] == {"inside": 0, "outside": 0, "share": None, "session": "day", "ts": ts(8, 46)}      # 時段剛開始：累計是 0
 
 
 def test_night_session_is_labelled_and_never_touches_the_day_range():

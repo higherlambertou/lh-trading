@@ -1,4 +1,4 @@
-"""進場市場狀態紀錄（需求文件/進場市場狀態紀錄_需求文件.md，v1）。
+"""進場市場狀態紀錄（需求文件/進場市場狀態紀錄_需求文件.md，v1；2026-10-16 版加上內外盤快照與手動單的趨勢判斷標籤）。
 
 只做一件事：**多記幾個欄位，不改變任何交易行為。** 每筆進場成交寫一筆「進場快照」（當下的 Hurst／IV 等市場狀態、策略與類型、
 停損價、口數），出場成交回填損益與出場原因；供日後驗證「市場狀態指標是否真的有用」。v1 不分析、不統計、不讓 Hurst 或 IV 影響任何決策。
@@ -34,7 +34,7 @@ from collections import deque
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,15 @@ EXIT_REASON = {"tp": "take_profit", "sl": "stop_loss", "trail": "trail_stop", "r
 MARKET_KEYS = ("hurst_value", "hurst_z", "hurst_window", "hurst_bar_period", "hurst_noise",
                "iv_value", "iv_percentile", "state_timestamp", "state_date", "market_state")
 
+LABELS = ("multi", "short", "range", "none")                 # 多／空／盤整／無明確判斷（最後一項避免沒有看法卻被迫選一個，污染資料）
+MANUAL_STRATEGIES = {"manual", "manual_monitor", ""}          # 手動單才有「主觀趨勢判斷」；策略單不填
+NOTE_MAX = 200
+FLOW_COLS = (("flow_inside", "INTEGER"), ("flow_outside", "INTEGER"), ("flow_net_diff", "INTEGER"), ("flow_ratio", "REAL"),
+             ("flow_accum_session", "TEXT"), ("flow_accum_start", "TEXT"), ("flow_source", "TEXT"), ("flow_state_ts", "REAL"),
+             ("flow_recent", "TEXT"), ("flow_missing_reason", "TEXT"))
+# 內外盤快照的來源：後端啟動時掛上（main.py：live_state.snapshot）；沒掛（測試、功能停用）就記 null 並寫原因
+flow_provider: Optional[Callable[[], Optional[dict[str, Any]]]] = None
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS entry_snapshots(
   mode TEXT NOT NULL, trade_id TEXT NOT NULL,
@@ -76,6 +85,10 @@ CREATE INDEX IF NOT EXISTS idx_exit_fills_trade ON exit_fills(mode, trade_id);
 CREATE TABLE IF NOT EXISTS entry_corrections(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mode TEXT NOT NULL, trade_id TEXT NOT NULL, field TEXT NOT NULL, old_value TEXT, new_value TEXT, reason TEXT, created_ts REAL);
+CREATE TABLE IF NOT EXISTS entry_labels(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode TEXT NOT NULL, trade_id TEXT NOT NULL, trend_label TEXT NOT NULL, note TEXT, label_entered_at REAL NOT NULL, created_ts REAL);
+CREATE INDEX IF NOT EXISTS idx_entry_labels_trade ON entry_labels(mode, trade_id);
 CREATE TABLE IF NOT EXISTS entry_log_meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS entry_log_errors(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, where_ TEXT, event_id INTEGER, trade_id TEXT, error TEXT);
@@ -116,9 +129,44 @@ def capture(tag: dict[str, Any] | None, ctx: dict[str, Any] | None) -> dict[str,
                                            else (snap.get("iv_note") or "沒有資料")))
         if snap.get("iv_value") is None:
             missing.append("IV 值：沒有資料")
+    flow, flow_missing = capture_flow()
     return {"market": market, "missing_reason": "；".join(missing) or None,
+            "order_flow": flow, "flow_missing_reason": flow_missing,
             "stop_price": ctx.get("stop_price"), "strategy_params": ctx.get("strategy_params"),
             "attempt": ctx.get("attempt"), "captured_at": time.time()}
+
+
+def flow_view(snap: Optional[dict[str, Any]]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """把即時狀態（live_state.snapshot）裡面板上看到的那組內外盤數字存下來：交易所的時段累計內盤／外盤口數、差（外盤−內盤）、比（外盤占比，定義與面板相同）、
+    累計起點（日盤 08:45／夜盤 15:00 各自重置）、來源與數值的計算時間；另外附上最近 N 筆／N 分鐘的外盤占比（短窗口版本，累計值越到後面越不敏感）。
+    取不到就是 (None, 原因)，不補 0。"""
+    if not snap:
+        return None, "即時狀態沒有提供（服務剛啟動、功能停用，或讀取失敗）"
+    sf = snap.get("session_flow")
+    if not sf:
+        return None, "交易所累計內外盤尚未收到（重啟後第一筆報價之前，或這個時段沒有）"
+    inside, outside = sf.get("inside"), sf.get("outside")
+    if inside is None or outside is None:
+        return None, "交易所累計內外盤欄位不完整"
+    sess = sf.get("session")
+    recent: dict[str, Any] = {}
+    for n, w in (snap.get("flow") or {}).items():                       # 最近 20／100／300 筆真實成交：外盤口數占比與筆數
+        recent[f"trades{n}"] = {"vol_share": w.get("vol_share"), "n": w.get("n")}
+    for m, row in (((snap.get("xc") or {}).get("windows")) or {}).items():   # 微台最近 5／15／30 分鐘的外盤口數占比
+        tmf = (row or {}).get("TMF") or {}
+        recent[f"min{m}"] = {"vol_share": tmf.get("share"), "n": tmf.get("n")}
+    return {"inside_volume": inside, "outside_volume": outside, "net_diff": outside - inside, "ratio": sf.get("share"),
+            "accum_session": sess, "accum_start": {"day": "日盤 08:45 重置", "night": "夜盤 15:00 重置"}.get(sess, "其他時段"),
+            "source": "交易所報價事件的時段累計內盤／外盤口數（與面板的『時段累計』同一來源、同一定義）",
+            "state_timestamp": sf.get("ts"), "recent": recent}, None
+
+
+def capture_flow() -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    try:
+        snap = flow_provider() if flow_provider else None
+    except Exception as e:                                               # noqa: BLE001  讀不到不能擋下單
+        return None, f"讀取即時狀態失敗：{type(e).__name__}"
+    return flow_view(snap)
 
 
 # ── 失敗通報 ───────────────────────────────────────────────────────
@@ -178,6 +226,11 @@ class EntrySync:
     # ── 起點與重放 ────────────────────────────────────────────────
     def init(self) -> None:
         self.conn.executescript(SCHEMA)
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(entry_snapshots)").fetchall()}
+        for col, typ in FLOW_COLS:                                      # 2026-10-16 版新增的內外盤欄位：舊資料庫補上（舊列是 NULL）
+            if col not in have:
+                self.conn.execute(f"ALTER TABLE entry_snapshots ADD COLUMN {col} {typ}")
+        self.conn.commit()
         row = self.conn.execute("SELECT value FROM entry_log_meta WHERE key=?", (self._meta("start_event_id"),)).fetchone()
         if row is None:
             # 功能第一次啟用：從現有的最後一筆成交回報之後開始。不回補歷史（當時的市場狀態無法確定就不補）
@@ -387,17 +440,24 @@ class EntrySync:
         missing = (st or {}).get("missing_reason") if st else "這張進場委託沒有記到市場狀態（功能啟用前下的單，或記錄失敗）"
         params = (st or {}).get("strategy_params")
         ts = ev.get("deal_ts") or ev["ts"]
+        flow = (st or {}).get("order_flow") or {}
+        flow_missing = (st or {}).get("flow_missing_reason") if st and "order_flow" in st else "這張進場委託沒有記到內外盤（功能啟用前下的單，或記錄失敗）"
+        recent = flow.get("recent")
         self.conn.execute(
             "INSERT OR IGNORE INTO entry_snapshots(mode, trade_id, contract, strategy_name, strategy_type, direction, order_ts, entry_ts, "
             "entry_time, entry_price, signal_price, stop_price, lots, hurst_value, hurst_z, hurst_window, hurst_bar_period, hurst_noise, "
-            "iv_value, iv_percentile, state_timestamp, state_date, market_state, missing_reason, strategy_params, created_ts) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "iv_value, iv_percentile, state_timestamp, state_date, market_state, missing_reason, strategy_params, created_ts, "
+            "flow_inside, flow_outside, flow_net_diff, flow_ratio, flow_accum_session, flow_accum_start, flow_source, flow_state_ts, flow_recent, flow_missing_reason) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (ev["mode"], ev["trade_id"], od["contract"], od["strategy"], strategy_type(od["strategy"]), "long" if side > 0 else "short",
              od["ts"], ts, iso_taipei(ts), price, od["signal_price"], (st or {}).get("stop_price"), od["qty"],
              market.get("hurst_value"), market.get("hurst_z"), market.get("hurst_window"), market.get("hurst_bar_period"),
              market.get("hurst_noise"), market.get("iv_value"), market.get("iv_percentile"), market.get("state_timestamp"),
              market.get("state_date"), market.get("market_state"), missing,
-             json.dumps(params, ensure_ascii=False) if params is not None else None, time.time()))
+             json.dumps(params, ensure_ascii=False) if params is not None else None, time.time(),
+             flow.get("inside_volume"), flow.get("outside_volume"), flow.get("net_diff"), flow.get("ratio"), flow.get("accum_session"),
+             flow.get("accum_start"), flow.get("source"), flow.get("state_timestamp"),
+             json.dumps(recent, ensure_ascii=False) if recent is not None else None, flow_missing))
 
     # ── 與券商持倉對帳 ────────────────────────────────────────────
     def reconcile(self, mode: str, positions: list[dict[str, Any]]) -> None:
@@ -434,10 +494,13 @@ class EntrySync:
 # ── 讀取／匯出（任何執行緒，自己的連線）─────────────────────────────
 
 CSV_FIELDS = (
-    "trade_id", "mode", "contract", "strategy_name", "strategy_type", "direction", "entry_time", "entry_price", "entry_price_avg",
+    "trade_id", "mode", "contract", "order_source", "strategy_name", "strategy_type", "direction", "entry_time", "entry_price", "entry_price_avg",
     "order_lots", "filled_lots", "signal_price", "stop_price",
     "hurst_value", "hurst_z", "hurst_window", "hurst_bar_period", "hurst_noise", "iv_value", "iv_percentile",
     "state_timestamp", "state_age_sec", "market_state", "missing_reason", "strategy_params",
+    "flow_inside", "flow_outside", "flow_net_diff", "flow_ratio", "flow_accum_session", "flow_accum_start", "flow_source", "flow_state_time",
+    "flow_recent", "flow_missing_reason",
+    "trend_label", "trend_note", "label_entered_at", "label_after_exit", "label_versions", "label_missing_reason",
     "status", "exit_lots", "exit_time", "exit_price_avg", "pnl_points", "pnl_ntd", "exit_reason", "corrections")
 
 
@@ -478,9 +541,18 @@ def fetch_entries(path: Path | str, mode: str | None = None, since_ts: float | N
             corr = [dict(r) for r in c.execute(
                 "SELECT field, old_value, new_value, reason, created_ts FROM entry_corrections WHERE mode=? AND trade_id=? ORDER BY id",
                 (s["mode"], s["trade_id"])).fetchall()]
+            try:
+                labs = [dict(r) for r in c.execute("SELECT trend_label, note, label_entered_at FROM entry_labels WHERE mode=? AND trade_id=? ORDER BY id",
+                                                   (s["mode"], s["trade_id"])).fetchall()]
+            except sqlite3.OperationalError:
+                labs = []                                                  # 資料表還沒建
+            lab = labs[-1] if labs else None                               # 最新一筆是目前的標籤；舊的留著（只新增不改寫）
+            first_exit = min((e["exit_ts"] for e in exits if e["exit_ts"]), default=None)
+            manual = (s["strategy_name"] or "") in MANUAL_STRATEGIES
             out.append({
-                "trade_id": s["trade_id"], "mode": s["mode"], "contract": s["contract"], "strategy_name": s["strategy_name"],
-                "strategy_type": s["strategy_type"], "direction": s["direction"], "entry_time": s["entry_time"],
+                "trade_id": s["trade_id"], "mode": s["mode"], "contract": s["contract"],
+                "order_source": "manual" if manual else "strategy",            # 需求文件 2026-10-16：手動單的策略名稱與類型是 null（資料庫裡仍存原始值，只在讀出時換成 null）
+                "strategy_name": None if manual else s["strategy_name"], "strategy_type": None if manual else s["strategy_type"], "direction": s["direction"], "entry_time": s["entry_time"],
                 "entry_price": s["entry_price"], "entry_price_avg": round(avg, 4) if avg is not None else None,
                 "order_lots": s["lots"], "filled_lots": filled, "signal_price": s["signal_price"], "stop_price": s["stop_price"],
                 "hurst_value": s["hurst_value"], "hurst_z": s["hurst_z"], "hurst_window": s["hurst_window"],
@@ -488,6 +560,14 @@ def fetch_entries(path: Path | str, mode: str | None = None, since_ts: float | N
                 "iv_percentile": s["iv_percentile"], "state_timestamp": iso_taipei(s["state_timestamp"]),
                 "state_age_sec": round(s["entry_ts"] - s["state_timestamp"]) if s["state_timestamp"] and s["entry_ts"] else None,
                 "market_state": s["market_state"], "missing_reason": s["missing_reason"], "strategy_params": s["strategy_params"],
+                "flow_inside": s.get("flow_inside"), "flow_outside": s.get("flow_outside"), "flow_net_diff": s.get("flow_net_diff"),
+                "flow_ratio": s.get("flow_ratio"), "flow_accum_session": s.get("flow_accum_session"), "flow_accum_start": s.get("flow_accum_start"),
+                "flow_source": s.get("flow_source"), "flow_state_time": iso_taipei(s.get("flow_state_ts")), "flow_recent": s.get("flow_recent"),
+                "flow_missing_reason": s.get("flow_missing_reason"),
+                "trend_label": lab["trend_label"] if lab else None, "trend_note": lab["note"] if lab else None,
+                "label_entered_at": iso_taipei(lab["label_entered_at"]) if lab else None,
+                "label_after_exit": (first_exit is not None and lab["label_entered_at"] > first_exit) if lab else None,   # 已知結果之後才標的，可能被事後記憶影響
+                "label_versions": len(labs), "label_missing_reason": None if lab else ("not_entered" if manual else "strategy_order"),
                 "status": "closed" if filled and xl >= filled else ("partial" if xl else "open"),
                 "exit_lots": xl, "exit_time": iso_taipei(exits[-1]["exit_ts"]) if exits else None,
                 "exit_price_avg": round(xavg, 4) if xavg is not None else None,
@@ -518,6 +598,31 @@ def add_correction(path: Path | str, mode: str, trade_id: str, field: str, new_v
                         (mode, trade_id, field, None if row is None else str(row[0]), str(new_value), reason, time.time()))
         c.commit()
         return int(cur.lastrowid)
+
+
+def add_label(path: Path | str, mode: str, trade_id: str, trend: str, note: Optional[str] = None, now: Optional[float] = None) -> dict[str, Any]:
+    """手動單的主觀趨勢判斷（多／空／盤整／無明確判斷）。只新增一列、不改寫舊的：改標籤＝再新增一列，最新一列是目前的標籤、舊的留著。
+    可以在進場後任何時候補填，不擋下單；記下輸入時間，輸入時間晚於第一次出場就是 label_after_exit（讀取時判斷）。策略單不能標（主觀欄位是 null）。
+    驗證失敗丟 ValueError（訊息給使用者看）。"""
+    if trend not in LABELS:
+        raise ValueError(f"趨勢判斷要是 {list(LABELS)} 其中之一")
+    note = (note or "").strip() or None
+    if note and len(note) > NOTE_MAX:
+        raise ValueError(f"備註最多 {NOTE_MAX} 字")
+    ts = time.time() if now is None else now
+    with closing(sqlite3.connect(path, timeout=10)) as c:
+        c.executescript(SCHEMA)
+        snap = c.execute("SELECT strategy_name FROM entry_snapshots WHERE mode=? AND trade_id=?", (mode, trade_id)).fetchone()
+        if snap is None:
+            raise LookupError("找不到這筆進場")
+        if (snap[0] or "") not in MANUAL_STRATEGIES:
+            raise ValueError("只有手動單可以標記趨勢判斷（策略單的主觀欄位固定是空的）")
+        cur = c.execute("INSERT INTO entry_labels(mode, trade_id, trend_label, note, label_entered_at, created_ts) VALUES(?,?,?,?,?,?)",
+                        (mode, trade_id, trend, note, ts, time.time()))
+        first_exit = c.execute("SELECT MIN(exit_ts) FROM exit_fills WHERE mode=? AND trade_id=?", (mode, trade_id)).fetchone()[0]
+        c.commit()
+        return {"id": int(cur.lastrowid), "trade_id": trade_id, "trend_label": trend, "note": note, "label_entered_at": iso_taipei(ts),
+                "label_after_exit": bool(first_exit is not None and ts > first_exit)}
 
 
 def status(path: Path | str, mode: str | None = None) -> dict[str, Any]:

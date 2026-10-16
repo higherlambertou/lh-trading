@@ -197,6 +197,9 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   失敗不擋下單：`ENTRYLOG ALERT` ERROR log＋`entry_log.alerts` 計數＋`entry_log_errors`＋`GET /api/tradelog/entries/status`。
   策略類型 `STRATEGY_TYPES` 是人工定義的表，新增策略要記得補。**沒有任何策略或風控模組可以讀這些欄位**（`tests/test_entry_log.py` 靜態檢查）。
   `GET /api/tradelog/entries`、`entries.csv`（UTF-8 含 BOM）、`entries/status`。
+  **v2（需求文件 2026-10-16 版，update.md 發現 47）**：委託送出時 `capture()` 多抓一份內外盤——`entry_log.flow_provider`（`main.py` 指到 `live_state.snapshot`，**同一份、不重算**）經 `flow_view()` 轉成 `entry_snapshots.flow_*` 十欄（外盤占比＝面板同一個數、`外盤−內盤`、累計起點、短窗口 `flow_recent`；讀不到＝null＋`flow_missing_reason`，不補 0；provider 出錯包在 try/except，不擋下單）。
+  手動單的趨勢判斷標籤存 `entry_labels`（只新增；`add_label`、`POST /api/tradelog/entries/{trade_id}/label`；不阻擋下單，記 `label_entered_at`，`label_after_exit` 在讀出時比第一次出場時間；策略單不能標）。`fetch_entries` 的 `order_source`：手動單（`MANUAL_STRATEGIES`＝`manual`／`manual_monitor`／空）讀出時策略名稱與類型是 null、資料庫仍存原始值。
+  前端〈交易〉分頁的〈進場判斷標記〉卡（`EntryLabelCard.tsx`）。**新欄位只被寫入與顯示，沒有任何策略／風控／下單／券商模組可以讀**（`tests/test_entry_flow_label.py` 靜態檢查 `NEW_WORDS`）；新增欄位時記得同步 `CSV_FIELDS`、`FLOW_COLS`（舊資料庫的 ALTER 補欄位）。
 - **手動下單的當沖**（`core/daytrade.py`、`api/routes_order.py`、`OrderPanel`，update.md 發現 26）：期交所保證金減半只給 TX／TE／TF／MTX 的日盤，**微台 TMF 不在內**；所以只有手動下單的小台 MXF、大台 TXF 能勾當沖（倉別 `DayTrade`），
   後端擋 TMF 勾當沖與日盤（週一～五 08:45~13:45）以外勾當沖；`manual_monitor` 的平倉單沿用當沖（日盤以外退回 `Auto`）。**策略一律 `Auto`**（`tests/test_daytrade_order.py` 掃 `strategies/` 不得出現 `DayTrade`）。
   永豐沒寫當沖單的開平倉怎麼標，「兩邊都標」是常見做法、未實測，第一次先用 1 口小台確認。
