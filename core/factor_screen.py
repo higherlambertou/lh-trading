@@ -177,6 +177,16 @@ def format_report(r: dict[str, Any]) -> str:
 
 def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover
     a = list(sys.argv[1:] if argv is None else argv)
+    if a and a[0] == "vwap":
+        if VWAP_RESULT_PATH.exists() and "--rerun" not in a:
+            print("（已經跑過，只跑一次；以下是存的結果）\n")
+            print(format_vwap_report(json.loads(VWAP_RESULT_PATH.read_text(encoding="utf-8"))))
+            return 0
+        from core.market_store import MarketStore
+        res = vwap_trend(MarketStore().bars_1m("TXF"), end=a[a.index("--end") + 1] if "--end" in a else None)
+        VWAP_RESULT_PATH.write_text(json.dumps(res, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
+        print(format_vwap_report(res))
+        return 0
     if not a or a[0] != "run":
         print(__doc__)
         return 2
@@ -189,6 +199,91 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover
     RESULT_PATH.write_text(json.dumps(res, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
     print(format_report(res))
     return 0
+
+
+
+# ── 發現 46：單一假設「日內弱順勢」在保留期驗證一次 ───────────────────
+
+VWAP_RESULT_PATH = ROOT / "data" / "vwap_trend_result.json"
+T_SINGLE = 1.645
+RP_HI, RP_LO = 0.8, 0.2
+COSTS_PTS = {"micro": 4.0, "mini": 1.5, "large": 0.5}
+
+
+def direction_of(vwap_dev: float, range_pos: float) -> int:
+    """VWAP 之上且在當日區間上 20% → +1；VWAP 之下且在下 20% → −1；其他 0。"""
+    if vwap_dev > 0 and range_pos >= RP_HI:
+        return 1
+    if vwap_dev < 0 and range_pos <= RP_LO:
+        return -1
+    return 0
+
+
+def single_pass(n: int, t: float, h1: float, h2: float, gross: float, always_long: float) -> bool:
+    """登記的四個條件：n ≥ 100、t ≥ 1.645、前後兩半淨報酬都 > 0、毛報酬 > 同一批進場一律做多的毛報酬。"""
+    return bool(n >= 100 and np.isfinite(t) and t >= T_SINGLE and h1 > 0 and h2 > 0 and gross > always_long)
+
+
+def vwap_trend(rows: Sequence[dict[str, Any]], end: Optional[str] = None, seed: int = 7) -> dict[str, Any]:
+    """保留期（SPLIT 之後）每天最多一筆：第一個滿足「VWAP 之上且在當日區間上 20% → 多／VWAP 之下且在下 20% → 空」的決策時點，下一分鐘開盤進場、持有到最後一分鐘收盤。"""
+    p = build_panel(rows, end=end)
+    f = features(p)
+    D = len(p.dates)
+    start = next((i for i, d in enumerate(p.dates) if d >= SPLIT), D)
+    ev: list[tuple[int, int, int, float]] = []
+    for d in range(start, D):
+        for m in POINTS_M:
+            vd, rp = f["vwap_dev"][d, m], f["range_pos"][d, m]
+            if not (np.isfinite(vd) and np.isfinite(rp)):
+                continue
+            direction = direction_of(vd, rp)
+            if direction == 0:
+                continue
+            e, x = p.o[d, m + 1], p.c[d, N_MIN - 1]
+            if np.isfinite(e) and np.isfinite(x) and e > 0:
+                ev.append((d, m, direction, float(x / e - 1)))
+            break
+    res: dict[str, Any] = {"version": 1, "dates": [p.dates[start], p.dates[-1]] if start < D else [], "n_days": D - start, "t_crit": T_SINGLE, "tests": {}}
+    if not ev:
+        res.update(n=0, passes=False, verdict="保留期沒有事件")
+        return res
+    d_arr = np.array([e[0] for e in ev])
+    dire = np.array([e[2] for e in ev])
+    ret = np.array([e[3] for e in ev])
+    gross = dire * ret
+    cost = COSTS_PTS["micro"] / sr.REF_PRICE
+    net = gross - cost
+    mu, t, nd = cluster_t(net, d_arr)
+    med = float(np.median(d_arr))
+    h1, h2 = float(net[d_arr <= med].mean()), float(net[d_arr > med].mean())
+    base = float(ret.mean())
+    rng = np.random.default_rng(seed)
+    ctrl = float(((np.where(rng.random(len(ret)) < 0.5, 1, -1) * ret) - cost).mean())
+    res.update(n=int(len(ev)), days=nd, mean_net_pts=mu * sr.REF_PRICE, t=t, half1_pts=h1 * sr.REF_PRICE, half2_pts=h2 * sr.REF_PRICE,
+               mean_gross_pts=float(gross.mean()) * sr.REF_PRICE, always_long_gross_pts=base * sr.REF_PRICE,
+               net_pts_by_contract={k: float((gross - c / sr.REF_PRICE).mean()) * sr.REF_PRICE for k, c in COSTS_PTS.items()},
+               long={"n": int((dire > 0).sum()), "mean_gross_pts": float(gross[dire > 0].mean()) * sr.REF_PRICE if (dire > 0).any() else None},
+               short={"n": int((dire < 0).sum()), "mean_gross_pts": float(gross[dire < 0].mean()) * sr.REF_PRICE if (dire < 0).any() else None},
+               control_net_pts=ctrl * sr.REF_PRICE, mean_entry_min=float(np.mean([e[1] + 1 for e in ev])),
+               per_year={y: {"n": int(sum(1 for e in ev if p.dates[e[0]][:4] == y)), "mean_net_pts": float(np.mean([g - cost for g, e in zip(gross, ev) if p.dates[e[0]][:4] == y])) * sr.REF_PRICE}
+                         for y in sorted({p.dates[e[0]][:4] for e in ev})})
+    res["passes"] = single_pass(res["n"], t, h1, h2, res["mean_gross_pts"], res["always_long_gross_pts"])
+    res["verdict"] = "有線索（仍需前向驗證）" if res["passes"] else "沒有過關"
+    return res
+
+
+def format_vwap_report(r: dict[str, Any]) -> str:
+    if not r.get("n"):
+        return "保留期沒有事件"
+    n = r["net_pts_by_contract"]
+    return "\n".join([
+        f"日內弱順勢（保留期 {r['dates'][0]} ～ {r['dates'][1]}，{r['n_days']} 個日盤，{r['n']} 筆，每天最多一筆，持有到收盤）",
+        f"判定（登記於跑之前）：淨報酬（微台 4 點）t ≥ {r['t_crit']}、n ≥ 100、前後兩半都 > 0、毛報酬 > 同一批進場一律做多的毛報酬",
+        f"  微台淨 {r['mean_net_pts']:+.2f} 點  t={r['t']:+.2f}  前半 {r['half1_pts']:+.2f}／後半 {r['half2_pts']:+.2f}  毛 {r['mean_gross_pts']:+.2f}  一律做多的毛 {r['always_long_gross_pts']:+.2f}",
+        f"  （描述）小台 1.5 點淨 {n['mini']:+.2f}、大台 0.5 點淨 {n['large']:+.2f}；對照(隨機方向) {r['control_net_pts']:+.2f}；平均第 {r['mean_entry_min']:.0f} 分鐘進場",
+        f"  做多 {r['long']['n']} 筆（毛 {r['long']['mean_gross_pts'] if r['long']['mean_gross_pts'] is None else round(r['long']['mean_gross_pts'], 2)}）、做空 {r['short']['n']} 筆（毛 {r['short']['mean_gross_pts'] if r['short']['mean_gross_pts'] is None else round(r['short']['mean_gross_pts'], 2)}）",
+        "  每年：" + "、".join(f"{y} n={v['n']} 淨 {v['mean_net_pts']:+.1f}" for y, v in r["per_year"].items()),
+        "", f"結論：{r['verdict']}"])
 
 
 if __name__ == "__main__":  # pragma: no cover

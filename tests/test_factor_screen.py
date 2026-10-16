@@ -125,3 +125,89 @@ def test_runs_only_once(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(ms, "MarketStore", Boom)
     assert fs.main(["run"]) == 0 and "只跑一次" in capsys.readouterr().out
+
+
+# ── 發現 46：單一假設 ─────────────────────────────────────────
+
+def drift_walk(n_days, seed, drift=0.0, start=date(2024, 11, 1), sigma=0.0004):
+    """每分鐘報酬加 drift（整體上漲的漂移）的隨機漫步。"""
+    rows = synth(n_days, seed, 0.0, sigma, start)
+    if drift:
+        by, px, last = {}, 47000.0, None
+        for r in rows:
+            by.setdefault(r["date"], []).append(r)
+        k = 0
+        for ds, rs in by.items():
+            for r in rs:
+                f = (1 + drift) ** k
+                for key in ("open", "high", "low", "close"):
+                    r[key] *= f
+                k += 1
+    return rows
+
+
+def test_registered_single_hypothesis_constants():
+    assert fs.T_SINGLE == 1.645 and (fs.RP_HI, fs.RP_LO) == (0.8, 0.2) and fs.COSTS_PTS == {"micro": 4.0, "mini": 1.5, "large": 0.5}
+
+
+def test_a_planted_intraday_trend_passes():
+    res = fs.vwap_trend(synth(600, seed=11, momentum=1.0, sigma=0.00012))
+    assert res["passes"] and res["mean_gross_pts"] > res["always_long_gross_pts"] and res["t"] >= 1.645
+    assert res["net_pts_by_contract"]["mini"] > res["net_pts_by_contract"]["micro"] > res["control_net_pts"]
+    assert "有線索" in res["verdict"] and "保留期" in fs.format_vwap_report(res)
+    json.dumps(res, default=float)
+
+
+def test_a_random_walk_does_not_pass():
+    assert fs.vwap_trend(synth(420, seed=12))["passes"] is False
+
+
+def test_a_market_drift_alone_is_not_a_factor():
+    """整體上漲的漂移會讓『做多』賺錢；規則的毛報酬沒有超過一律做多，就不能算過關。"""
+    res = fs.vwap_trend(drift_walk(420, seed=13, drift=0.00002))
+    assert res["always_long_gross_pts"] > 20 and res["passes"] is False
+
+
+def test_one_trade_per_day_held_to_the_close():
+    res = fs.vwap_trend(synth(420, seed=14, momentum=0.4))
+    assert res["n"] <= res["n_days"] and 1 <= res["mean_entry_min"] <= 285
+
+
+def test_vwap_runs_only_once(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "v.json"
+    monkeypatch.setattr(fs, "VWAP_RESULT_PATH", path)
+    path.write_text(json.dumps(fs.vwap_trend(synth(420, seed=15, momentum=0.4)), default=float))
+    import core.market_store as ms
+
+    class Boom:
+        def __init__(self, *a, **k):
+            raise AssertionError("不該再讀資料庫")
+
+    monkeypatch.setattr(ms, "MarketStore", Boom)
+    assert fs.main(["vwap"]) == 0 and "只跑一次" in capsys.readouterr().out
+
+
+def test_direction_truth_table():
+    d = fs.direction_of
+    assert d(0.001, 0.8) == 1 and d(0.001, 0.79) == 0 and d(-0.001, 0.2) == -1 and d(-0.001, 0.21) == 0
+    assert d(0.001, 0.1) == 0 and d(-0.001, 0.9) == 0 and d(0.0, 0.9) == 0                      # 位置與 VWAP 方向不一致、或剛好等於 VWAP：不進
+
+
+def test_every_registered_condition_is_required():
+    ok = dict(n=100, t=1.645, h1=1.0, h2=1.0, gross=5.0, always_long=4.0)
+    assert fs.single_pass(**ok) is True
+    for k, bad in dict(n=99, t=1.64, h1=0.0, h2=-1.0, gross=4.0).items():
+        assert fs.single_pass(**{**ok, k: bad}) is False, k
+    assert fs.single_pass(**{**ok, "t": float("nan")}) is False
+
+
+def test_the_primary_net_uses_the_micro_cost():
+    r = fs.vwap_trend(synth(600, seed=11, momentum=1.0, sigma=0.00012))
+    assert r["mean_net_pts"] == pytest.approx(r["mean_gross_pts"] - 4.0, abs=1e-6)
+    assert r["net_pts_by_contract"]["micro"] == pytest.approx(r["mean_net_pts"]) and r["net_pts_by_contract"]["large"] - r["net_pts_by_contract"]["micro"] == pytest.approx(3.5)
+
+
+def test_the_entry_point_is_at_the_end_of_the_module():
+    """入口放在中間會在後面的常數定義之前就執行（python -m 時 NameError）——測試用 import 看不出來。"""
+    src = open(fs.__file__, encoding="utf-8").read()
+    assert src.rstrip().endswith("sys.exit(main())") and src.count('if __name__ == "__main__"') == 1
