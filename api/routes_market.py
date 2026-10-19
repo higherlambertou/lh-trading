@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from api.routes_position import _cache as position_cache
 from api.routes_strategy import strategy_engine
-from core import stop_suggest
+from core import range_suggest, stop_suggest
 from core.broker import broker
 from core.daily_summary import TICK_SEC, market_state
 from core.flow_store import flow_recorder
@@ -118,6 +118,20 @@ async def get_suggest(contract: str = "TMF", horizon: int = 15) -> dict[str, Any
     equity = margin.get("equity")
     return stop_suggest.suggest_now(rows, now, contract=contract, horizon=horizon, equity=float(equity) if equity else None,
                                     table=stop_suggest.load_table(), ctx=(live or {}).get("ctx"))
+
+
+@router.get("/range")
+async def get_range() -> dict[str, Any]:
+    """機率範圍帶（update.md 發現 48）：以最新成交價為中心，T＝5／15／30／60 分鐘與「到收盤」的 50%／80%／95% 範圍（落點與期間兩種），
+    用最近 30 分鐘的 σ 與歷史實測表（core/range_calibration.json）算。**只說會走多遠、不說往哪個方向**；只讀本機資料庫與記憶體，不對券商發查詢；只顯示，不碰下單。"""
+    now = time.time()
+    rows = await asyncio.to_thread(market_state.store.flow_1m, "TMF", now - 3600)
+    live_row = None
+    try:
+        live_row = flow_recorder.current_row()                          # 進行中的那一分鐘（還沒寫進資料庫）；壞了不影響主要內容
+    except Exception:  # noqa: BLE001
+        logger.debug("range：取不到進行中的 K 棒（略過）", exc_info=True)
+    return range_suggest.range_now(rows, now, live_row=live_row, table=range_suggest.load_table())
 
 
 @router.post("/refresh")

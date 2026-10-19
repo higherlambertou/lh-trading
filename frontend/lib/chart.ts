@@ -1,6 +1,7 @@
 // 走勢圖的純邏輯（update.md 發現 42）：合併 K 棒、換週期、均線、VWAP、場次水位、持倉／停損線。
 // 不碰 DOM、不碰 lightweight-charts，所以可以用 node 直接測（tests/frontend/chart_check.js）。
 import type { Position, Watch } from "./api";
+import { isBandKey, type BandKey, type Kind } from "./range";
 
 export interface Bar {
   t: number;   // 分鐘起點（epoch 秒）
@@ -163,13 +164,21 @@ export interface Toggles {
   vwap: boolean;
   levels: boolean;
   position: boolean;
+  band: boolean;     // 機率範圍帶（update.md 發現 48）
 }
 
-export const DEFAULT_TOGGLES: Toggles = { ma5: false, ma20: true, ma60: false, vwap: true, levels: true, position: true };
+export const DEFAULT_TOGGLES: Toggles = { ma5: false, ma20: true, ma60: false, vwap: true, levels: true, position: true, band: false };
+
+export interface Prefs {
+  interval: Interval;
+  toggles: Toggles;
+  bandKey: BandKey;     // 範圍帶看哪個時間（5／15／30／60 分鐘或到收盤）
+  bandKind: Kind;       // 落點範圍或期間範圍
+}
 
 /** 從 localStorage 讀回來的字串還原成設定；壞掉或缺欄位的用預設。 */
-export function parseToggles(raw: string | null): { interval: Interval; toggles: Toggles } {
-  const base = { interval: 1 as Interval, toggles: { ...DEFAULT_TOGGLES } };
+export function parseToggles(raw: string | null): Prefs {
+  const base: Prefs = { interval: 1 as Interval, toggles: { ...DEFAULT_TOGGLES }, bandKey: "15", bandKind: "term" };
   if (!raw) return base;
   try {
     const o = JSON.parse(raw);
@@ -178,7 +187,7 @@ export function parseToggles(raw: string | null): { interval: Interval; toggles:
     for (const k of Object.keys(DEFAULT_TOGGLES) as (keyof Toggles)[]) {
       if (typeof o?.toggles?.[k] === "boolean") toggles[k] = o.toggles[k];
     }
-    return { interval, toggles };
+    return { interval, toggles, bandKey: isBandKey(o?.bandKey) ? o.bandKey : "15", bandKind: o?.bandKind === "path" ? "path" : "term" };
   } catch {
     return base;
   }

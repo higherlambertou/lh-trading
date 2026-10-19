@@ -232,6 +232,10 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   新增通知一律走 `notify()`（背景執行緒、永不丟例外、有冷卻 key）；在交易路徑上呼叫要再包 try/except，**通知壞了不能影響平倉**。
   **測試絕不能碰真實通道**：`.env` 有真的 Telegram token 之後，任何會載入 `.env`、或呼叫真的 `_http_post`／`_http_get` 的測試都會把假警示送到使用者手機（發現 34 的事故）——`tests/conftest.py` 已設 `NOTIFY_SKIP_DOTENV=1`、把兩個 HTTP 函式換成會直接失敗的替身；`tests/test_notify.py` 有測試守住它。
   測試的暫存目錄在 macOS 要 `fs.realpathSync`（`/var` 是 `/private/var` 的連結，否則 node 會把同一個模組載入兩份）。
+- **機率範圍帶**（update.md 發現 48；`core/range_calibration.py`、`core/range_calibration.json`、`core/range_suggest.py`、`GET /api/market/range`、前端〈建議停損停利〉卡內的〈機率範圍〉與走勢圖〈範圍帶〉）：**純顯示、不碰下單、不是進場訊號**。回答「T 分鐘後（或到收盤）價格有 50／80／95% 的機率落在現價 ± 多少點」。
+  **不做模擬、不假設分配，直接量歷史**：σ 與發現 33 共用（`stop_calibration.trailing_sigma`／`stop_suggest.sigma_from_closes`，定義必須一致），進場點同發現 33；落點 z＝|收盤(t+T)−收盤(t)|÷σ√T、期間 z＝期間最遠離現價÷σ√T，取分位數 q，範圍＝現價 ± q·σ√T（落點用絕對值，對稱，不把樣本期間的漲勢當偏向）；
+  到收盤依剩餘分鐘分四組（15~30、31~60、61~120、121~270）各一張表。**事先登記、跑一次**：2025-01-01 前算表、後量涵蓋率，48 格過 44 格；沒過的格子與前後半差 > 10% 的格子在 JSON 與畫面標 unstable，不拿掉。**`range_calibration.json` 不要為了數字好看重算，重算先重新登記**（`python -m core.range_calibration run --write`）。
+  夜盤只有 43 晚（TMF 真實成交），只算表、標 few。接近收盤時外推偏窄（尾盤的涵蓋率只有 73~79%）。`tests/test_range_suggest.py` 靜態檢查策略／風控／下單／券商模組沒有引用範圍帶模組。
 - **依波動的建議停損停利**（update.md 發現 33；`core/stop_calibration.py`、`core/stop_calibration.json`、`core/stop_suggest.py`、`GET /api/market/suggest`、前端〈委託〉面板的 `StopSuggestCard`）：**純顯示、不碰下單**。
   σ＝進場前最近 30 個 1 分鐘收盤價變動的樣本標準差（至少 25 個有效）——**`stop_calibration.trailing_sigma` 與 `stop_suggest.sigma_from_closes` 定義必須一致**（`tests/test_stop_suggest.py` 有一致性測試），距離一律用 k·σ√T。
   `core/stop_calibration.json` 是**事先登記、跑一次**的實測表（1,609 個日盤的 TXF 1 分 K、39 晚夜盤的 TMF `flow_1m`）：被雜訊掃到的機率（肥尾：3σ 實測 1.3%、常態公式 0.3%）、沒有技巧時 T 分鐘內停利先到／停損先到／都沒到；**不要為了數字好看重算，重算先重新登記**。

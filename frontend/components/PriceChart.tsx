@@ -10,6 +10,7 @@ import {
   type Bar, type Interval, type Toggles,
 } from "@/lib/chart";
 import type { Position, Watch } from "@/lib/api";
+import { BAND_KEYS, KINDS, bandLines, bandText, edge, fmt as fmtP, hasClose, pickBand, type BandKey, type Kind, type RangeData } from "@/lib/range";
 
 const STORE_KEY = "lh_chart_prefs";
 const POLL_MS = 3000;
@@ -26,7 +27,16 @@ const TOGGLE_LABEL: { key: keyof Toggles; label: string; color: string }[] = [
   { key: "vwap", label: "VWAP", color: "#ffffff" },
   { key: "levels", label: "開高低昨收", color: "#9090c0" },
   { key: "position", label: "持倉／停損", color: "#ff9800" },
+  { key: "band", label: "範圍帶", color: "#80cbc4" },
 ];
+
+const BAND_POLL_MS = 10000;                                          // 範圍帶只讀本機資料庫與記憶體
+// 50%／80%／95%：離現價越遠、線越稀疏越淡（lightweight-charts 的 LineStyle：1 點線、2 虛線、3 長虛線）
+const BAND_STYLE: Record<number, { color: string; style: number }> = {
+  50: { color: "#80cbc4", style: 1 },
+  80: { color: "#4db6ac", style: 2 },
+  95: { color: "#26a69a99", style: 3 },
+};
 
 function fmt(n: number | null | undefined): string {
   return n == null ? "—" : n.toLocaleString("zh-TW", { maximumFractionDigits: 1 });
@@ -61,6 +71,10 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
   const [err, setErr] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [legend, setLegend] = useState<string>("");
+  const [bandKey, setBandKey] = useState<BandKey>("15");
+  const [bandKind, setBandKind] = useState<Kind>("term");
+  const [range, setRange] = useState<RangeData | null>(null);
+  const [rangeErr, setRangeErr] = useState<string | null>(null);
   const lastT = useRef<number>(0);
 
   // 讀回上次的設定（隱私模式等沒有 localStorage 就用預設）
@@ -69,12 +83,14 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
       const p = parseToggles(localStorage.getItem(STORE_KEY));
       setIntervalMin(p.interval);
       setToggles(p.toggles);
+      setBandKey(p.bandKey);
+      setBandKind(p.bandKind);
     } catch { /* 沒有 localStorage：用預設 */ }
   }, []);
 
-  const save = useCallback((i: Interval, t: Toggles) => {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify({ interval: i, toggles: t })); } catch { /* 忽略 */ }
-  }, []);
+  const save = useCallback((i: Interval, t: Toggles, bk: BandKey = bandKey, kd: Kind = bandKind) => {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify({ interval: i, toggles: t, bandKey: bk, bandKind: kd })); } catch { /* 忽略 */ }
+  }, [bandKey, bandKind]);
 
   // 建圖（一次）。lightweight-charts 用動態載入，避免伺服器端渲染時碰到 window。
   useEffect(() => {
@@ -154,6 +170,19 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
     return () => { stop = true; clearInterval(id); };
   }, [active]);
 
+  // 範圍帶（開著才抓）
+  useEffect(() => {
+    if (!active || !toggles.band) return;
+    let stop = false;
+    const load = async () => {
+      try { const d = await api.market.range(); if (!stop) { setRange(d); setRangeErr(null); } }
+      catch { if (!stop) setRangeErr("範圍帶暫時抓不到（後端要重啟成新版才有這個端點）"); }
+    };
+    load();
+    const id = setInterval(load, BAND_POLL_MS);
+    return () => { stop = true; clearInterval(id); };
+  }, [active, toggles.band]);
+
   const agg = useMemo(() => aggregate(bars, interval), [bars, interval]);
 
   // 畫 K 棒、成交量、均線、VWAP。每次都整批 setData（最多約 1,500 根，很小）：
@@ -189,9 +218,9 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
     if (!ready || !r.candle) return;
     for (const l of lines.current) { try { r.candle.removePriceLine(l); } catch { /* 已經不在 */ } }
     lines.current = [];
-    const add = (price: number | null, title: string, color: string, dashed = true) => {
+    const add = (price: number | null, title: string, color: string, dashed = true, style?: number) => {
       if (price == null || !(price > 0) || !r.candle) return;
-      lines.current.push(r.candle.createPriceLine({ price, color, lineWidth: 1, lineStyle: dashed ? 2 : 0, axisLabelVisible: true, title }));
+      lines.current.push(r.candle.createPriceLine({ price, color, lineWidth: 1, lineStyle: style ?? (dashed ? 2 : 0), axisLabelVisible: true, title }));
     };
     if (toggles.levels && bars.length) {
       const lv = sessionLevels(bars);
@@ -205,9 +234,17 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
         add(p.price, p.title, p.kind === "entry" ? "#4fc3f7" : p.kind === "stop" ? "#ff1744" : "#00e676", p.kind !== "entry");
       }
     }
-  }, [ready, bars, toggles.levels, toggles.position, positions, watches]);
+    if (toggles.band) {
+      for (const l of bandLines(range, bandKey, bandKind)) {
+        const st = BAND_STYLE[l.p] ?? BAND_STYLE[80];
+        add(l.price, l.title, st.color, true, st.style);
+      }
+    }
+  }, [ready, bars, toggles.levels, toggles.position, toggles.band, positions, watches, range, bandKey, bandKind]);
 
   const setI = (i: Interval) => { setIntervalMin(i); save(i, toggles); };
+  const setBK = (k: BandKey) => { setBandKey(k); save(interval, toggles, k, bandKind); };
+  const setKD = (k: Kind) => { setBandKind(k); save(interval, toggles, bandKey, k); };
   const flip = (k: keyof Toggles) => {
     const t = { ...toggles, [k]: !toggles[k] };
     setToggles(t);
@@ -244,6 +281,50 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
           </button>
         ))}
       </div>
+      {toggles.band && (
+        <div className="mb-2 space-y-1">
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="範圍帶設定">
+            <span className="text-[10px] text-[#7070a0]">範圍帶</span>
+            {BAND_KEYS.map((k) => {
+              const off = k === "close" && !hasClose(range);
+              return (
+                <button key={k} type="button" disabled={off} onClick={() => setBK(k)} aria-pressed={bandKey === k}
+                  title={off ? "到收盤只有日盤（距收盤 15~270 分鐘）才有" : undefined}
+                  className={`${chip} disabled:opacity-40 ${bandKey === k ? "border-[#80cbc4] text-[#80cbc4] bg-[#80cbc415]" : "border-[#1e1e3a] text-[#7070a0] hover:text-[#e0e0f0]"}`}>
+                  {bandText(k)}
+                </button>
+              );
+            })}
+            <span className="text-[10px] text-[#404060] mx-1">｜</span>
+            {KINDS.map((k) => (
+              <button key={k.id} type="button" onClick={() => setKD(k.id)} aria-pressed={bandKind === k.id} title={k.hint}
+                className={`${chip} ${bandKind === k.id ? "border-[#80cbc4] text-[#80cbc4] bg-[#80cbc415]" : "border-[#1e1e3a] text-[#7070a0] hover:text-[#e0e0f0]"}`}>
+                {k.text}
+              </button>
+            ))}
+          </div>
+          <div className="text-[10px] leading-snug text-[#7070a0]">
+            {rangeErr ? <span className="text-[#ffc107]">{rangeErr}</span> : (() => {
+              const b = pickBand(range, bandKey);
+              if (!range) return "範圍帶載入中…";
+              if (!b) return <span className="text-[#ffc107]">{range.note || "這個時間沒有範圍（到收盤只有日盤才有）"}</span>;
+              const lv80 = b.levels.find((l) => l.p === 80)?.[bandKind];
+              return (
+                <>
+                  {bandKind === "term" ? "落點" : "期間"}範圍（{bandKey === "close" ? `到收盤剩 ${b.minutes} 分` : `${b.minutes} 分鐘`}）：
+                  {b.levels.map((l) => l[bandKind] && (
+                    <span key={l.p} className="font-mono text-[#e0e0f0]"> {l.p}% ±{fmtP(l[bandKind]!.d)}</span>
+                  ))}
+                  {lv80 && <>　80% ＝ {fmtP(edge(lv80.lo, "lo"))} ~ {fmtP(edge(lv80.hi, "hi"))}</>}
+                  <span className="text-[#404060]">　只說會走多遠、不說往哪個方向；線上標「?」＝這格樣本外驗證沒通過</span>
+                  {range.stale && <span className="text-[#ffc107]">　（最新成交價是舊的，線以那個價為中心）</span>}
+                  {b.few && <span className="text-[#ffc107]">　（夜盤實測樣本少）</span>}
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
       <div className="text-[11px] font-mono text-[#7070a0] mb-1 h-4 truncate" aria-live="off">{legend || (last ? `${hhmm(last.t)}  開 ${fmt(last.o)}  高 ${fmt(last.h)}  低 ${fmt(last.l)}  收 ${fmt(last.c)}  量 ${last.v}（外盤 ${last.b}／內盤 ${last.s}）` : "")}</div>
       <div className="relative">
         <div ref={boxRef} className="w-full h-[300px] md:h-[420px]" />

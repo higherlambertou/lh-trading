@@ -14,11 +14,13 @@ const transpile = (src, out) => {
     module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText);
   return require(out);
 };
-const map = { "@/lib/stopSuggest": path.join(TMP, "stopSuggest.js"), "@/lib/api": path.join(TMP, "api.js") };
+const map = { "@/lib/stopSuggest": path.join(TMP, "stopSuggest.js"), "@/lib/api": path.join(TMP, "api.js"), "@/lib/range": path.join(TMP, "range.js") };
 const orig = Module._resolveFilename;
 Module._resolveFilename = function (req, ...r) { return map[req] || orig.call(this, req, ...r); };
 const L = transpile(path.join(FRONT, "lib", "stopSuggest.ts"), path.join(TMP, "stopSuggest.js"));
 const apiMod = transpile(path.join(FRONT, "lib", "api.ts"), path.join(TMP, "api.js"));
+transpile(path.join(FRONT, "lib", "range.ts"), path.join(TMP, "range.js"));                             // 卡片裡的〈機率範圍〉（update.md 發現 48）
+transpile(path.join(FRONT, "components", "RangeSection.tsx"), path.join(TMP, "RangeSection.js"));
 const C = transpile(path.join(FRONT, "components", "StopSuggestCard.tsx"), path.join(TMP, "card.js"));
 const Card = C.default, e = React.createElement;
 let fail = 0;
@@ -85,6 +87,7 @@ const tick = () => new Promise((r) => setImmediate(r));
     check("卡片：成本與要多贏幾個百分點、三種型態一樣", tx.includes(`成本 ${d.cost_pts} 點：要比「沒有技巧」的勝率多贏約 ${need} 個百分點才打平`) && tx.includes("改比例只是把勝率換成賺賠比"), tx);
     check("卡片：勝率高不等於賺錢的提醒、校準資料說明、權益與成本是假設", tx.includes("勝率高 ≠ 賺錢") && tx.includes("期望值＝−成本") && tx.includes(`掃到機率與「都沒到」是實測（${L.calText(d.cal, "day")}）`) && tx.includes("權益 52,318 元、單筆風險上限 1%、成本是假設值"), tx);
     check("卡片：沒有 undefined／NaN", !BAD.test(tx), tx.match(BAD));
+    check("卡片：σ 那兩行下面接著〈機率範圍（依波動）〉（發現 48）", tx.indexOf("機率範圍（依波動）") > tx.indexOf("15 分鐘的雜訊範圍") && tx.indexOf("機率範圍（依波動）") < tx.indexOf("高勝率型"), tx);
   }
   {
     const h = harness({ [S.open]: true, [S.data]: d });                                          // 沒指定持有時間：預設 15 分鐘
@@ -121,7 +124,8 @@ const tick = () => new Promise((r) => setImmediate(r));
   {
     const h = harness({ [S.open]: false, [S.data]: d });
     const raw = h.render(), tx = strip(raw);
-    check("收合：只剩標題，沒有按鈕組與內容", tx.includes("▸ 建議停損停利（依波動）") && !tx.includes("持有約") && !tx.includes("停利 ") && !tx.includes("勝率高"), tx);
+    check("收合：只剩標題，沒有按鈕組與內容", tx.includes("▸ 建議停損停利（依波動）") && !tx.includes("持有約") && !tx.includes("停利 ") && !tx.includes("勝率高"), tx)
+    check("收合：也沒有機率範圍", !tx.includes("機率範圍"), tx);
   }
   // 載入與輪詢
   {

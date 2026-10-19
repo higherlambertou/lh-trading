@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, apiErrorDetail } from "@/lib/api";
+import RangeSection from "./RangeSection";
 import {
   HORIZONS, calText, friendlySuggestError, lotsText, money, needPts, pct, sessionText,
   type Suggest, type SuggestRow,
@@ -107,6 +108,7 @@ export default function StopSuggestCard({ contract, onApply }: { contract: strin
                   今天已走 {money(data.today.done)} 點，預期之後還會走約 {money(data.today.expect_mid)} 點（68% 區間 {money(data.today.expect_lo)}～{money(data.today.expect_hi)}）
                 </div>
               )}
+              <RangeSection horizon={horizon} />
               {data.note && <div className="text-xs text-[#ffc107]">{data.note}</div>}
               {data.rows.length > 0 && (
                 <>

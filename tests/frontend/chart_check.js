@@ -17,6 +17,7 @@ const transpile = (src, out) => {
   fs.writeFileSync(out, js);
   return require(out);
 };
+transpile(path.join(FRONT, "lib", "range.ts"), path.join(TMP, "range.js"));            // chart.ts 要用 range.ts 的 isBandKey
 const C = transpile(path.join(FRONT, "lib", "chart.ts"), path.join(TMP, "chart.js"));
 
 const bar = (t, o, h, l, c, v = 10, b = 6, s = 4, n = 5) => ({ t, o, h, l, c, v, b, s, n });
@@ -96,6 +97,12 @@ const T0 = 1_760_000_040;    // 任意分鐘起點（60 的倍數）
   eq(C.parseToggles("not json").interval, 1, "壞掉的 JSON 用預設");
   eq(C.parseToggles(JSON.stringify({ interval: 7 })).interval, 1, "不認得的週期用 1 分");
   eq(C.parseToggles(JSON.stringify({ toggles: { ma5: "yes" } })).toggles.ma5, false, "型別不對的欄位用預設");
+  eq([d.toggles.band, d.bandKey, d.bandKind], [false, "15", "term"], "範圍帶預設關、15 分、落點");
+  const pb = C.parseToggles(JSON.stringify({ toggles: { band: true }, bandKey: "close", bandKind: "path" }));
+  eq([pb.toggles.band, pb.bandKey, pb.bandKind], [true, "close", "path"], "範圍帶的設定還原");
+  const bad = C.parseToggles(JSON.stringify({ bandKey: "7", bandKind: "x", toggles: { band: "yes" } }));
+  eq([bad.toggles.band, bad.bandKey, bad.bandKind], [false, "15", "term"], "壞掉的範圍帶設定用預設");
+  eq(C.parseToggles(JSON.stringify({ interval: 5 })).bandKey, "15", "舊版存的設定（沒有範圍帶欄位）用預設");
   const a = [bar(T0, 1, 2, 0, 1)], b = [bar(T0, 1, 2, 0, 1)];
   ok(C.sameBars(a, b), "內容一樣");
   b[0].c = 9;
@@ -109,15 +116,16 @@ const calls = [];
 const store = {};
 global.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } };
 const realApi = transpile(path.join(FRONT, "lib", "api.ts"), path.join(TMP, "real_api.js"));
-fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = { api: { market: { bars: () => Promise.resolve({}) }, position: { list: () => Promise.resolve([]) }, order: { watches: () => Promise.resolve([]) } } };");
+fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = { api: { market: { bars: () => Promise.resolve({}), range: () => Promise.resolve({}) }, position: { list: () => Promise.resolve([]) }, order: { watches: () => Promise.resolve([]) } } };");
 const orig = Module._resolveFilename;
 Module._resolveFilename = function (req, ...r) {
   if (req === "@/lib/api") return path.join(TMP, "api_stub.js");
   if (req === "@/lib/chart") return path.join(TMP, "chart.js");
+  if (req === "@/lib/range") return path.join(TMP, "range.js");
   return orig.call(this, req, ...r);
 };
 const Comp = transpile(path.join(FRONT, "components", "PriceChart.tsx"), path.join(TMP, "panel.js")).default;
-const NAMES = ["ready", "bars", "interval", "toggles", "positions", "watches", "err", "updatedAt", "legend"];
+const NAMES = ["ready", "bars", "interval", "toggles", "positions", "watches", "err", "updatedAt", "legend", "bandKey", "bandKind", "range", "rangeErr"];
 function render(forced = {}) {
   const sets = [];
   let n = 0;
@@ -141,7 +149,9 @@ const text = (el) => (el == null || typeof el === "boolean") ? "" : typeof el ==
 {
   const { tree, sets } = render();
   const buttons = find(tree, (e) => e.type === "button");
-  eq(buttons.length, 9, "3 個週期＋6 個線的開關");
+  eq(buttons.length, 10, "3 個週期＋7 個線的開關（含範圍帶）");
+  eq(buttons.find((b) => text(b).includes("範圍帶")).props["aria-pressed"], false, "範圍帶預設關");
+  ok(!text(tree).includes("落點範圍"), "範圍帶關著就沒有選擇列與摘要");
   const byText = (t) => buttons.find((b) => text(b).includes(t));
   eq(byText("5 分").props["aria-pressed"], false, "預設 1 分，5 分沒按下");
   eq(buttons.find((b) => text(b).includes("1 分")).props["aria-pressed"], true, "1 分是按下的");
@@ -165,6 +175,48 @@ const text = (el) => (el == null || typeof el === "boolean") ? "" : typeof el ==
   ok(text(empty).includes("還沒有 K 棒資料"), "沒資料的空狀態說明原因");
   const bad = render({ 0: true, 1: [], 6: "連不上後端（K 棒暫停更新）" }).tree;
   ok(text(bad).includes("連不上後端"), "連不上時顯示原因");
+}
+
+// ── 範圍帶（update.md 發現 48）──
+{
+  const on = { ...C.DEFAULT_TOGGLES, band: true };
+  const lv = (p, d, bad = false) => ({ p, term: { d, lo: 30000 - d, hi: 30000 + d }, path: { d: d * 1.5, lo: 30000 - d * 1.5, hi: 30000 + d * 1.5 }, unstable_term: bad, unstable_path: false });
+  const band = { minutes: 15, noise: 16.8, few: false, levels: [lv(50, 10), lv(80, 20.2), lv(95, 34.3)] };
+  const range = { price: 30000, stale: false, bands: { "15": band }, note: null };
+  const { tree, sets } = render({ 3: on });
+  const buttons = find(tree, (e) => e.type === "button");
+  eq(buttons.length, 17, "開了範圍帶：多 5 個時間鈕＋2 個種類鈕");
+  const bn = (t) => buttons.find((b) => text(b).trim() === t);
+  eq([bn("15 分").props["aria-pressed"], bn("5 分").props["aria-pressed"]].length, 2, "時間鈕有 aria-pressed");
+  const bandRow = buttons.filter((b) => ["5 分", "15 分", "30 分", "60 分", "到收盤"].includes(text(b).trim()));
+  eq(bandRow.length, 7, "範圍帶的 5／15／30／60 分、到收盤，加上週期那一排同名的 5 分、15 分");
+  ok(buttons.find((b) => text(b).trim() === "到收盤").props.disabled === true, "沒有資料時「到收盤」停用（只有日盤才有）");
+  ok(buttons.find((b) => text(b).trim() === "落點").props["aria-pressed"] === true && buttons.find((b) => text(b).trim() === "期間").props["aria-pressed"] === false, "預設看落點範圍");
+  ok(text(tree).includes("範圍帶載入中"), "還沒有資料時寫載入中");
+  buttons.find((b) => text(b).trim() === "30 分" && b.props.title === undefined && b.props["aria-pressed"] !== undefined && b.props.disabled !== undefined).props.onClick();
+  eq(sets.find((x) => x[0] === "bandKey"), ["bandKey", "30"], "按 30 分會換範圍帶的時間");
+  ok(JSON.parse(store.lh_chart_prefs).bandKey === "30" && JSON.parse(store.lh_chart_prefs).toggles.band === true, "範圍帶的時間與開關記在 localStorage");
+  buttons.find((b) => text(b).trim() === "期間").props.onClick();
+  eq(sets.find((x) => x[0] === "bandKind"), ["bandKind", "path"], "按期間會換種類");
+  ok(JSON.parse(store.lh_chart_prefs).bandKind === "path", "種類也記起來");
+  const withData = render({ 3: on, 11: range }).tree;
+  const t = text(withData);
+  ok(t.includes("落點範圍（15 分鐘）") && t.includes("50% ±10 ") && t.includes("80% ±20.2") && t.includes("95% ±34.3"), "摘要：三個層級的距離");
+  ok(t.includes(`80% ＝ ${29979} ~ ${30021}`.replace(/(\d{2})(\d{3})/g, "$1,$2")) , "摘要：80% 的價位範圍（下緣取整往下、上緣往上）");
+  ok(t.includes("只說會走多遠、不說往哪個方向"), "摘要寫明不說方向");
+  ok(buttons.length === 17 && find(withData, (e) => e.type === "button" && text(e).trim() === "到收盤")[0].props.disabled === true, "沒有到收盤的資料時仍停用");
+  const withClose = render({ 3: on, 11: { ...range, bands: { ...range.bands, close: { ...band, minutes: 45, bucket: "c31_60" } } } }).tree;
+  ok(find(withClose, (e) => e.type === "button" && text(e).trim() === "到收盤")[0].props.disabled === false, "有到收盤的資料就能按");
+  const pathTxt = text(render({ 3: on, 10: "path", 11: range }).tree);
+  ok(pathTxt.includes("期間範圍（15 分鐘）") && pathTxt.includes("50% ±15 "), "期間範圍用 path 的距離（±15＝10×1.5）");
+  const stale = text(render({ 3: on, 11: { ...range, stale: true } }).tree);
+  ok(stale.includes("最新成交價是舊的"), "價格是舊的要說");
+  const none = text(render({ 3: on, 11: { ...range, bands: {}, note: "最近 30 分鐘成交太少" } }).tree);
+  ok(none.includes("最近 30 分鐘成交太少") && !none.includes("±"), "沒有範圍時只寫原因、不寫數字");
+  const err = text(render({ 3: on, 12: "範圍帶暫時抓不到（後端要重啟成新版才有這個端點）" }).tree);
+  ok(err.includes("範圍帶暫時抓不到"), "抓不到時顯示原因");
+  const few = text(render({ 3: on, 11: { ...range, bands: { "15": { ...band, few: true } } } }).tree);
+  ok(few.includes("夜盤實測樣本少"), "夜盤樣本少要說");
 }
 
 console.log(`${passed} PASS, ${failed} FAIL`);

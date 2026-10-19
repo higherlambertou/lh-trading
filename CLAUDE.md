@@ -113,6 +113,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 ### 顯示與分析（純函式、不碰下單）
 - **市場狀態**（Hurst＋IV）預設只顯示＋警告（`MARKET_STATE_GATE=off` 關警告）。**不要把 `hurst_analyzer` 搬回 `~/Downloads` 舊版**（R/S 估計器偏誤）；60 根窗口的 H 雜訊約 ±0.13，看 z 值。
 - **建議停損停利**：σ 定義必須與 `stop_calibration.trailing_sigma` 一致；`stop_calibration.json` 是事先登記、跑一次的表，**不要為了數字好看重算**（重算先重新登記）；**勝率不是優勢**——進場沒有資訊時每筆期望值＝−成本。
+- **機率範圍帶**（發現 48）：σ 與建議停損停利共用同一個定義；`range_calibration.json` 是事先登記、跑一次的表（樣本外 44／48 格過），**不要為了數字好看重算**；只說會走多遠、不說方向，**不要當進場訊號**；策略／風控／下單模組不得引用（`tests/test_range_suggest.py` 靜態檢查）。
 - **選擇權試算**：只做買方；`option_chain` 只在按下試算時查、5 秒快取，**不要輪詢**；口數 0 要擋。
 - **回測**放獨立子行程（`nice -n 10`、同時只跑一個），**不要改成在交易行程裡跑**（CPU 密集會搶下單與報價的 GIL）。
 - 其餘（盤中即時狀態、盤中脈絡、破產機率、指標回放、硬門檻、選擇權歷史與離線檢驗）見 ARCHITECTURE.md。

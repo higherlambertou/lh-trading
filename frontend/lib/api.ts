@@ -49,6 +49,7 @@ import type { CalcBody, CloseBody, OptCalc, OptChain, OptClose } from "./options
 import type { PmPreview, PmSnapshot, PmStatus } from "./premarket";
 import type { EntryRow, Trend } from "./entryLabel";
 import type { Unprotected } from "./protection";
+import type { RangeData } from "./range";
 import type { Suggest } from "./stopSuggest";
 
 /** 把 req() 丟出的 `409 — {"detail":"…"}` 還原成後端給的那句說明（FastAPI 的錯誤主體是 JSON），不是 JSON 就原樣回傳。 */
@@ -424,6 +425,8 @@ export const api = {
     // 走勢圖的 1 分 K（微台真實成交）；第一次給 minutes、之後給 since 只抓增量
     bars: (q: { minutes?: number; since?: number } = {}) =>
       req<BarsResponse>(`/market/bars?${new URLSearchParams(Object.entries(q).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))}`),
+    // 機率範圍帶：只讀本機資料庫與記憶體，一次回五組（5／15／30／60 分鐘與到收盤）
+    range: () => req<RangeData>("/market/range"),
     suggest: (contract: string, horizon: number) => req<Suggest>(`/market/suggest?contract=${encodeURIComponent(contract)}&horizon=${horizon}`),
     replay: (q: Record<string, string | number | boolean>) =>
       req<Replay>(`/market/replay?${new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))}`),
