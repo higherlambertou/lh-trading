@@ -40,6 +40,21 @@ nohup ./run_sim.sh >> /tmp/lh_sim_watchdog.log 2>&1 &
 
 ---
 
+## 信息收集系統（lh-intel，另一個 repo、另一個常駐服務）
+
+籌碼、總經事件、全球市場、新聞的收集**不在這個系統裡**：它是獨立的 repo `~/Documents/GitHub/lh-intel`，用 launchd 常駐（`com.lh.intel`，登入後自動啟動、當掉自動重啟），**不用跟交易後端一起啟停**，交易後端重啟也不會讓它漏資料。
+完整的操作手冊（啟動、狀態檢查、排錯、回補、備份還原）在 `~/Documents/GitHub/lh-intel/OPERATION.md`；最常用的：
+
+```bash
+cd ~/Documents/GitHub/lh-intel
+~/anaconda3/bin/python -m intel status             # 有沒有在跑、各收集器最後一次成功、備份
+~/anaconda3/bin/python -m intel restart-service    # 改了程式或 .env 之後
+~/anaconda3/bin/python -m intel install-service    # 沒裝或被移除了就裝回去
+tail -f data/logs/intel.log
+```
+- 與交易系統的關係：只有 `lh-intel/data/intel.db` 一個檔（契約見 lh-intel/SCHEMA.md），交易系統若要讀必須**唯讀**開、用它的 `intel/read.py` 的 as_of 規則。**目前交易系統沒有任何策略或風控讀它**。
+- Telegram 共用交易系統的 bot（訊息開頭標 `[intel]`）；它的 `.env` 是自己的（只有 FRED 金鑰、聯絡 email、這兩個 Telegram 鍵，沒有券商憑證）。
+
 ## 停止服務
 
 ### 停止正式盤
