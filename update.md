@@ -688,7 +688,7 @@
 
 ## 更新紀錄（新 → 舊）
 
-### 2026-10-19 — 〈資訊〉分頁：唯讀顯示 lh-intel 收集的事件、籌碼、全球市場、新聞（發現 49）— 待 commit
+### 2026-10-19 — 〈資訊〉分頁：唯讀顯示 lh-intel 收集的事件、籌碼、全球市場、新聞（發現 49）— 9c07f87
 - **起因**：新的信息收集系統（獨立 repo `lh-intel`，launchd 常駐，補不回來的籌碼、總經事件日程、全球市場收盤、新聞標題都在它的 `intel.db`）沒有畫面。你同意「在這個 dashboard 加一個唯讀的〈資訊〉分頁」，不另外做網頁。
 - **做了什麼**：`core/intel_reader.py`（唯讀開 `intel.db`：`file:…?mode=ro`，寫入一律失敗；路徑用 `INTEL_DB`，沒設就用同一層的 `../lh-intel/data/intel.db`）、`api/routes_intel.py`（`GET /api/intel/summary`，**永遠回 200**，打不開時 `available: false` 並寫原因；同步 SQLite 讀取丟 executor；10 秒快取）、
   前端〈資訊〉分頁（`IntelPanel.tsx`、`lib/intel.ts`，只在開著那一頁時每 30 秒讀一次）：**近期事件**（FOMC、CPI、非農、GDP、PCE…的台北時間與倒數，台股下次休市）、**全球市場**（VIX、費半、台積電 ADR、美股、美債殖利率、匯率、油價、日經、恒生、KOSPI 的收盤與較前一日、資料超過 3 天沒更新會標黃）、
