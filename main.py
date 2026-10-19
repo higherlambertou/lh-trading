@@ -40,6 +40,7 @@ from core.daily_brief import brief_loop
 from core.signal_shadow import shadow_loop
 from core import entry_log
 from core.live_state import live_state
+from api.routes_intel import router as intel_router
 from api.routes_signals import router as signals_router
 from core import rollover
 from core.tick_store import tick_recorder
@@ -164,6 +165,7 @@ app.include_router(backtest_router, prefix="/api/backtest", tags=["backtest"])
 app.include_router(options_router,  prefix="/api/options",  tags=["options"])
 app.include_router(premarket_router, prefix="/api/premarket", tags=["premarket"])
 app.include_router(signals_router,  prefix="/api/signals",  tags=["signals"])
+app.include_router(intel_router,    prefix="/api/intel",    tags=["intel"])
 
 
 @app.get("/api/health")

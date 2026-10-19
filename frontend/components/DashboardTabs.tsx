@@ -14,13 +14,15 @@ import IndicatorReplayPanel from "./IndicatorReplayPanel";
 import BacktestPanel from "./BacktestPanel";
 import OptionCalcPanel from "./OptionCalcPanel";
 import PremarketPanel from "./PremarketPanel";
+import IntelPanel from "./IntelPanel";
 import PriceChart from "./PriceChart";
 
-type Tab = "trade" | "market" | "analysis";
+type Tab = "trade" | "market" | "intel" | "analysis";
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: "trade", label: "交易", hint: "部位、策略、盤中即時、委託、成交" },
   { id: "market", label: "市場", hint: "盤前判斷、盤中買賣力道、盤前跨市場快照" },
+  { id: "intel", label: "資訊", hint: "事件倒數、全球市場、籌碼、新聞（唯讀自 lh-intel，只顯示、不影響交易）" },
   { id: "analysis", label: "分析", hint: "破產機率驗證、市場指標回放、策略回測、選擇權試算（只試算，不影響交易）" },
 ];
 
@@ -28,11 +30,12 @@ const isTab = (x: string): x is Tab => TABS.some((t) => t.id === x);
 const GRID = "grid grid-cols-1 lg:grid-cols-2 gap-4";
 
 /**
- * 三個分頁，用網址的 # 記住在哪一頁（可加書籤；切換正式盤／模擬盤會 reload，也會留在同一頁）。
+ * 四個分頁，用網址的 # 記住在哪一頁（可加書籤；切換正式盤／模擬盤會 reload，也會留在同一頁）。
  *
  * 掛載策略（為什麼不是三頁都直接掛著）：
  *  - 交易：永遠掛著，只用 CSS 隱藏。委託面板有表單輸入與「3 秒內再點一次」的確認狀態，切分頁不能把它洗掉。
  *    〈盤中即時〉也放在這裡（compact 版），所以它在別的分頁時仍每 3 秒輪詢一次；後端是純記憶體讀取，不碰券商。
+ *  - 資訊：只在目前這一頁時掛載（每 30 秒讀一次本機資料庫，看不到時沒必要讀）。
  *  - 市場：只在目前這一頁時掛載。兩個面板各自在輪詢（3 秒／15 秒），看不到時沒必要打後端。〈盤中即時〉在這裡是完整版。
  *  - 分析：第一次點進去才掛載，之後保留（隱藏）。風險與回放載入時會讓後端算一次蒙地卡羅／排列檢定，
  *    沒在看就不該算；而且它們不輪詢，保留下來可以留住你填的參數與結果。
@@ -95,6 +98,12 @@ export default function DashboardTabs() {
                 <MarketStatePanel />
                 <LiveStatePanel />
                 <PremarketPanel />
+              </div>
+            )}
+
+            {tab === "intel" && (
+              <div className={GRID}>
+                <IntelPanel />
               </div>
             )}
 

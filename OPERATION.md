@@ -52,7 +52,9 @@ cd ~/Documents/GitHub/lh-intel
 ~/anaconda3/bin/python -m intel install-service    # 沒裝或被移除了就裝回去
 tail -f data/logs/intel.log
 ```
-- 與交易系統的關係：只有 `lh-intel/data/intel.db` 一個檔（契約見 lh-intel/SCHEMA.md），交易系統若要讀必須**唯讀**開、用它的 `intel/read.py` 的 as_of 規則。**目前交易系統沒有任何策略或風控讀它**。
+- 與交易系統的關係：只有 `lh-intel/data/intel.db` 一個檔（契約見 lh-intel/SCHEMA.md），交易系統**只能唯讀**開。**〈資訊〉分頁**（`core/intel_reader.py`、`GET /api/intel/summary`）用它顯示事件倒數、籌碼、全球市場、新聞與收集器狀態；**目前交易系統沒有任何策略或風控讀它**。
+  路徑：`.env` 的 `INTEL_DB`（沒設就用同一層的 `../lh-intel/data/intel.db`）。畫面寫「資訊系統沒有資料：…」＝找不到資料庫、打不開或版本不對（原因會寫在後面）；寫「資訊服務沒有心跳」＝lh-intel 沒在跑，去那邊 `python -m intel status`。
+  ⚠ 面板顯示「現在已知的全部」（含事後回補的列）；**拿這些資料做研究、回測、進決策，必須照 lh-intel 的 `intel/read.py` 的 as_of 規則（回補列預設不可見），不能用 `intel_reader.py`**。
 - Telegram 共用交易系統的 bot（訊息開頭標 `[intel]`）；它的 `.env` 是自己的（只有 FRED 金鑰、聯絡 email、這兩個 Telegram 鍵，沒有券商憑證）。
 
 ## 停止服務

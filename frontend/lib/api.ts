@@ -46,6 +46,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 import type { BacktestInfo, BacktestJob, BacktestRequest } from "./backtest";
 import type { CalcBody, CloseBody, OptCalc, OptChain, OptClose } from "./options";
+import type { IntelSummary } from "./intel";
 import type { PmPreview, PmSnapshot, PmStatus } from "./premarket";
 import type { EntryRow, Trend } from "./entryLabel";
 import type { Unprotected } from "./protection";
@@ -458,6 +459,10 @@ export const api = {
       req<unknown>(`/tradelog/entries/${encodeURIComponent(tradeId)}/label`, {
         method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ trend, note: note || null }),
       }),
+  },
+  // 資訊面板：唯讀自 lh-intel 的 intel.db（事件、籌碼、全球市場、新聞、收集器狀態）；永遠回 200，available=false 時 reason 說明原因
+  intel: {
+    summary: () => req<IntelSummary>("/intel/summary"),
   },
   // 盤前跨市場快照（只讀；preview 會去抓外部資料，所以不要輪詢）
   premarket: {

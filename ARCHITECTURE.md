@@ -232,6 +232,10 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   新增通知一律走 `notify()`（背景執行緒、永不丟例外、有冷卻 key）；在交易路徑上呼叫要再包 try/except，**通知壞了不能影響平倉**。
   **測試絕不能碰真實通道**：`.env` 有真的 Telegram token 之後，任何會載入 `.env`、或呼叫真的 `_http_post`／`_http_get` 的測試都會把假警示送到使用者手機（發現 34 的事故）——`tests/conftest.py` 已設 `NOTIFY_SKIP_DOTENV=1`、把兩個 HTTP 函式換成會直接失敗的替身；`tests/test_notify.py` 有測試守住它。
   測試的暫存目錄在 macOS 要 `fs.realpathSync`（`/var` 是 `/private/var` 的連結，否則 node 會把同一個模組載入兩份）。
+- **〈資訊〉分頁**（update.md 發現 49；`core/intel_reader.py`、`api/routes_intel.py`、`GET /api/intel/summary`、前端 `IntelPanel.tsx`／`lib/intel.ts`）：**唯讀**顯示另一個 repo（`lh-intel`，獨立常駐服務）收集的資料庫 `intel.db`——近期事件倒數、全球市場收盤、籌碼（三大法人期貨／選擇權／Put-Call／現貨／融資融券）、新聞標題、收集器狀態。
+  **純顯示、不碰下單**：沒有任何策略、風控、下單、券商模組可以讀它（`tests/test_intel_reader.py` 靜態檢查）；`file:…?mode=ro` 開啟、永遠不丟例外（找不到、打不開、版本比 `SUPPORTED_SCHEMA` 新、讀到一半出錯＝`available: false`＋原因）、同步 SQLite 讀取走 `asyncio.to_thread`、10 秒快取。路徑 `INTEL_DB`（預設 `../lh-intel/data/intel.db`）。
+  ⚠ **「顯示現在」與「研究用的 as_of」是兩回事**：面板用 `fetched_at ≤ 現在`（含事後回補的列），lh-intel 的 as_of 規則（回補列預設不可見）是防偷看用的；**任何研究、回測、進決策的程式都必須照 lh-intel/intel/read.py，不能用 `intel_reader.py`**。
+  新增要顯示的序列時，同步 `MARKETS`／chips 區塊與前端；lh-intel 的 schema 改了，`tests/intel_fixture.py` 的複本要跟著改（有對照測試會抓到）。
 - **機率範圍帶**（update.md 發現 48；`core/range_calibration.py`、`core/range_calibration.json`、`core/range_suggest.py`、`GET /api/market/range`、前端〈建議停損停利〉卡內的〈機率範圍〉與走勢圖〈範圍帶〉）：**純顯示、不碰下單、不是進場訊號**。回答「T 分鐘後（或到收盤）價格有 50／80／95% 的機率落在現價 ± 多少點」。
   **不做模擬、不假設分配，直接量歷史**：σ 與發現 33 共用（`stop_calibration.trailing_sigma`／`stop_suggest.sigma_from_closes`，定義必須一致），進場點同發現 33；落點 z＝|收盤(t+T)−收盤(t)|÷σ√T、期間 z＝期間最遠離現價÷σ√T，取分位數 q，範圍＝現價 ± q·σ√T（落點用絕對值，對稱，不把樣本期間的漲勢當偏向）；
   到收盤依剩餘分鐘分四組（15~30、31~60、61~120、121~270）各一張表。**事先登記、跑一次**：2025-01-01 前算表、後量涵蓋率，48 格過 44 格；沒過的格子與前後半差 > 10% 的格子在 JSON 與畫面標 unstable，不拿掉。**`range_calibration.json` 不要為了數字好看重算，重算先重新登記**（`python -m core.range_calibration run --write`）。
