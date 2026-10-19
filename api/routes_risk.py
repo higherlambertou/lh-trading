@@ -1,9 +1,12 @@
 import asyncio
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
 import api.routes_position as routes_position
+from core import position_size
+from core.manual_monitor import manual_monitor
 from core.ruin import build_report, history_stats
 from core.trade_log import current_mode, trade_log
 
@@ -54,3 +57,14 @@ def trips(limit: int = Query(50, ge=1, le=1000)) -> dict[str, Any]:
     res = trade_log.round_trips(mode=current_mode())
     return {"n": len(res["trips"]), "trips": res["trips"][::-1][:limit], "open": res["open"],
             "stats": history_stats([t["pnl"] for t in res["trips"]])}
+
+
+@router.get("/size")
+def size(contract: str = Query("TMF", description="TMF／MXF／TXF"), stop_pts: Optional[float] = Query(None, description="停損點數；沒填＝不給口數"),
+         qty: Optional[int] = Query(None, ge=1, le=1000, description="你打算下幾口（給了就回報它的風險與有沒有超過上限）")) -> dict[str, Any]:
+    """口數試算（update.md 發現 51）：依停損距離與單筆風險上限算最多幾口，並扣掉手動停損監控裡已佔用的風險。**只顯示、不擋任何委託**；只讀記憶體快取。"""
+    contract = contract.upper()
+    if contract not in position_size.POINT_VALUE:
+        raise HTTPException(422, "contract 要是 TMF／MXF／TXF")
+    c = routes_position._cache
+    return position_size.size_now(c.get("positions") or [], manual_monitor.list_watches(), c.get("margin"), float(c.get("updated_at") or 0.0), time.time(), contract, stop_pts, qty)

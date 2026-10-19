@@ -11,14 +11,14 @@ import json
 import sqlite3
 import sys
 from bisect import bisect_right
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from core.intraday_context import SESSION_MIN, Session, settlement_dates
+from core.intraday_context import Session, settlement_dates
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULT_PATH = ROOT / "data" / "event_day_result.json"

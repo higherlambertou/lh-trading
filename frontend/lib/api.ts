@@ -52,6 +52,7 @@ import type { EntryRow, Trend } from "./entryLabel";
 import type { Unprotected } from "./protection";
 import type { RangeData } from "./range";
 import type { Suggest } from "./stopSuggest";
+import type { Size } from "./size";
 
 /** 把 req() 丟出的 `409 — {"detail":"…"}` 還原成後端給的那句說明（FastAPI 的錯誤主體是 JSON），不是 JSON 就原樣回傳。 */
 export function apiErrorDetail(e: unknown): string {
@@ -417,6 +418,9 @@ export const api = {
     cancel: (id: string) => req<{ cancelled: boolean }>(`/backtest/jobs/${id}/cancel`, { method: "POST" }),
   },
   risk: {
+    // 口數試算（只顯示）：停損點數與打算下的口數 → 最多幾口、已佔用風險；只讀後端記憶體
+    size: (contract: string, stopPts: number, qty?: number) =>
+      req<Size>(`/risk/size?contract=${encodeURIComponent(contract)}&stop_pts=${stopPts}${qty ? `&qty=${qty}` : ""}`),
     ruin: (q: Record<string, string | number | boolean>) =>
       req<RuinReport>(`/risk/ruin?${new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))}`),
   },

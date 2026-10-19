@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, ArrowDown } from "lucide-react";
 import { api, isSimMode, notifyOrderPlaced } from "@/lib/api";
+import SizeHint from "./SizeHint";
 import StopSuggestCard from "./StopSuggestCard";
 
 type Action = "Buy" | "Sell";
@@ -640,6 +641,7 @@ export default function OrderPanel() {
         </div>
       </div>
 
+      {!isOption && <SizeHint contract={contract} stopLoss={stopLoss} quantity={quantity} />}
       {!isOption && <StopSuggestCard contract={contract} onApply={(sl, tp) => { setStopLoss(sl); setTakeProfit(tp); }} />}
 
       {optErr && isOption && (

@@ -201,6 +201,23 @@ def events(conn: sqlite3.Connection, t: float, today: date, min_importance: int 
     return {"upcoming": items, "closures": closures}
 
 
+def upcoming_events(now: Optional[float] = None, path: Optional[Path] = None, ahead_days: int = 2, behind_hours: int = 0, min_importance: int = 2) -> Optional[list[dict[str, Any]]]:
+    """給「只通知」的提醒用（core/event_reminder.py）：接下來的總經事件，可見規則與面板相同（只看未來的行事曆列，不涉及事後回補）。
+    **永遠不丟例外**：資料庫不在、版本比認得的新、被鎖、讀到一半出錯＝None（呼叫端當作『這次沒有資料』，不影響交易）。"""
+    now = time.time() if now is None else now
+    path = path or default_path()
+    if not path.exists():
+        return None
+    try:
+        with closing(connect_ro(path)) as conn:
+            if int(conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0]) > SUPPORTED_SCHEMA:
+                return None
+            return events(conn, now, datetime.fromtimestamp(now, TAIPEI).date(), min_importance, ahead_days, behind_hours)["upcoming"]
+    except Exception:  # noqa: BLE001
+        logger.debug("upcoming_events 讀取失敗（略過）", exc_info=True)
+        return None
+
+
 def news(conn: sqlite3.Connection, t: float, limit: int = 15) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM news WHERE fetched_at<=:t AND dup_of IS NULL ORDER BY coalesce(published_at, fetched_at) DESC, id DESC LIMIT :n", {"t": t, "n": limit}).fetchall()
     out = []

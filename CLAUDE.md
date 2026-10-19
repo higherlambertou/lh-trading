@@ -106,7 +106,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 
 ### 資料與記錄（純加法，不影響交易）
 - trade_log、進場市場狀態紀錄、盤前跨市場資訊紀錄、flow_1m、ticks 落地：**寫入失敗不擋交易**；**沒有任何策略或風控模組可以讀這些欄位**（`tests/test_entry_log.py`、`tests/test_premarket_log.py` 靜態檢查；只通知的 `daily_brief.py`、`reminders.py` 是明列的例外）。
-- **信息收集（籌碼、總經事件、全球市場、新聞）在另一個 repo `lh-intel`**（`~/Documents/GitHub/lh-intel`，獨立常駐服務、獨立 `.env`；操作見它的 `OPERATION.md`）：交易系統**只能唯讀**它的 `data/intel.db`：〈資訊〉分頁用 `core/intel_reader.py` 顯示「現在已知的全部」（只顯示）；**研究、回測、進決策的程式必須照它的 `intel/read.py` 的 as_of 規則讀（回補列預設不可見），不能用 `intel_reader.py`**。**目前沒有任何策略或風控讀它**，要讀之前先登記驗證標準。
+- **信息收集（籌碼、總經事件、全球市場、新聞）在另一個 repo `lh-intel`**（`~/Documents/GitHub/lh-intel`，獨立常駐服務、獨立 `.env`；操作見它的 `OPERATION.md`）：交易系統**只能唯讀**它的 `data/intel.db`：〈資訊〉分頁用 `core/intel_reader.py` 顯示「現在已知的全部」（只顯示）；**研究、回測、進決策的程式必須照它的 `intel/read.py` 的 as_of 規則讀（回補列預設不可見），不能用 `intel_reader.py`**。**目前沒有任何策略或風控讀它**，要讀之前先登記驗證標準；唯一的例外是只通知的 `core/event_reminder.py`（CPI 提醒，只讀未來的行事曆列，`intel_reader.upcoming_events`，發現 52）。
 - **無法回補、請備份**：`data/trade_log.db`、IV 歷史與手動備註（`market_state.db`）、`data/option_spread.db`、`data/signals.db`（影子訊號的前向資料）（備份 `core/backup.py`，交易日 14:00；`option_spread.db` 沒進備份）。`tick_store compact` 的 VACUUM 要先停服務。
 - **`bars_1m` 的 hhmm 是 K 棒「結束」時間，`flow_1m` 的 ts 是分鐘「起點」**，序號差 1（`tests/test_vol_watch.py` 有對照）；`flow-fetch` 只補整天缺的日子。
 - 盤前紀錄：資料時間戳晚於 T 的拒絕、美股休市日 null＋原因（不沿用前一天）、更正＝新增 correction（資料庫觸發器擋 UPDATE／DELETE）。
@@ -115,6 +115,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 - **市場狀態**（Hurst＋IV）預設只顯示＋警告（`MARKET_STATE_GATE=off` 關警告）。**不要把 `hurst_analyzer` 搬回 `~/Downloads` 舊版**（R/S 估計器偏誤）；60 根窗口的 H 雜訊約 ±0.13，看 z 值。
 - **建議停損停利**：σ 定義必須與 `stop_calibration.trailing_sigma` 一致；`stop_calibration.json` 是事先登記、跑一次的表，**不要為了數字好看重算**（重算先重新登記）；**勝率不是優勢**——進場沒有資訊時每筆期望值＝−成本。
 - **機率範圍帶**（發現 48）：σ 與建議停損停利共用同一個定義；`range_calibration.json` 是事先登記、跑一次的表（樣本外 44／48 格過），**不要為了數字好看重算**；只說會走多遠、不說方向，**不要當進場訊號**；策略／風控／下單模組不得引用（`tests/test_range_suggest.py` 靜態檢查）。
+- **口數提示**（發現 51，`core/position_size.py`）：**只顯示、不擋單**（下單面板的口數欄旁）；風險＝(停損＋緩衝)×每點價值，沒有停損登記的部位風險未知、只列出不計入；權益取不到或過期、停損沒填一律不給口數（fail-closed）。要做成真正擋單的獨立風控層（《部位大小控管》需求文件）會動到下單路徑，先討論；`tests/test_position_size.py` 靜態檢查下單與策略路徑沒有引用它。
 - **選擇權試算**：只做買方；`option_chain` 只在按下試算時查、5 秒快取，**不要輪詢**；口數 0 要擋。
 - **回測**放獨立子行程（`nice -n 10`、同時只跑一個），**不要改成在交易行程裡跑**（CPU 密集會搶下單與報價的 GIL）。
 - 其餘（盤中即時狀態、盤中脈絡、破產機率、指標回放、硬門檻、選擇權歷史與離線檢驗）見 ARCHITECTURE.md。
