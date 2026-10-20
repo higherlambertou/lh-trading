@@ -121,6 +121,17 @@ const base = (over = {}) => ({
   check("脈絡卡：距收盤", t.includes("距日盤收盤 3 小時 25 分（13:45）"), t);
   check("脈絡卡：預期振幅與區間", t.includes("之後預期振幅約 210 點") && t.includes("68% 區間 160~280"), t);
   check("脈絡卡：依據與已走", t.includes("依開盤後 60 分振幅 140 點") && t.includes("09:45 後已走 25 點") && t.includes("預期中位數的 12%"), t);
+  const DIV = { expect: { lo: 300, mid: 450, hi: 650 }, r20: 530.7, vix: 29.69, vix_date: "2026-10-19", atm_equiv: 27.61, n: 1574 };
+  const withIv = html(e(Cards.ContextCard, { st: base({ ctx: { ...base().ctx, day_iv: DIV } }) }));
+  check("脈絡卡：開盤前預期日盤振幅與區間、依據的指數與日期、近 20 日均", withIv.includes("開盤前預期日盤振幅約 450 點") && withIv.includes("68% 區間 300~650") && withIv.includes("依 10/19 臺指選擇權波動率指數 29.69") && withIv.includes("近 20 日均 531 點") && !withIv.includes("近 20 日均 525 點"), withIv);
+  check("脈絡卡：預期日盤振幅的誠實說明（降幅、各年不均、涵蓋率偏窄、只是範圍、沒有被範圍帶使用）", withIv.includes("平方誤差約降 15%") && withIv.includes("平均絕對誤差降約 9%") && withIv.includes("2022～2023 幾乎沒幫助") && withIv.includes("約 63%（略偏窄）") && withIv.includes("不是目標價") && withIv.includes("範圍帶與建議停損沒有用它"), withIv);
+  check("脈絡卡：預期日盤振幅排在『之後預期振幅』前面", withIv.indexOf("開盤前預期日盤振幅") > withIv.indexOf("距日盤收盤") && withIv.indexOf("開盤前預期日盤振幅") < withIv.indexOf("之後預期振幅"), withIv);
+  const ivNote = html(e(Cards.ContextCard, { st: base({ ctx: { ...base().ctx, day_iv: { note: "還沒有前一天的臺指選擇權波動率指數" } } }) }));
+  check("脈絡卡：沒有指數時寫原因、不寫預期", ivNote.includes("預期日盤振幅：還沒有前一天的臺指選擇權波動率指數") && !ivNote.includes("開盤前預期日盤振幅約") && !ivNote.includes("平方誤差"), ivNote);
+  check("脈絡卡：舊後端（沒有 day_iv）完全沒有這一塊、其他照舊", !t.includes("開盤前預期日盤振幅") && !t.includes("預期日盤振幅：") && t.includes("之後預期振幅約 210 點"));
+  const noDate = html(e(Cards.ContextCard, { st: base({ ctx: { ...base().ctx, day_iv: { ...DIV, vix_date: undefined } } }) }));
+  check("脈絡卡：沒有指數日期就寫「前一天」", noDate.includes("依 前一天 臺指選擇權波動率指數 29.69") && !/BAD|undefined|NaN/.test(noDate.replace(/BAD/g, "")), noDate);
+  check("脈絡卡：夜盤不顯示預期日盤振幅", !html(e(Cards.ContextCard, { st: base({ ctx: { session: "night", ready: true, mins_to_close: 740, close_hhmm: "05:00", day_iv: DIV } }) })).includes("開盤前預期"));
   check("脈絡卡：誠實標示不確定性與用途", t.includes("±40%") && t.includes("不是目標價") && t.includes("525 點"), t);
   const bars = (raw(e(Cards.ContextCard, { st: base() })).match(/flex-1 rounded-sm/g) || []).length;
   const lit = (raw(e(Cards.ContextCard, { st: base() })).match(/background:#00e676/g) || []).length;

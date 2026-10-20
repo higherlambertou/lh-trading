@@ -213,6 +213,7 @@ class ContextData:
     profile: list[float]
     n_days: int
     last_session: str | None
+    day_iv: dict | None = None            # 開盤前預期日盤振幅（core/iv_day_range，發現 55）：{expect, …} 或 {note}
 
 
 def compute(store: Any, code: str, today: str) -> ContextData:
@@ -225,7 +226,13 @@ def compute(store: Any, code: str, today: str) -> ContextData:
         m = fit_range_model(sessions, c)
         if m:
             models[c] = m
-    return ContextData(today, r20, models, tod_profile(sessions), len(sessions), sessions[-1].date if sessions else None)
+    try:
+        from core import iv_day_range                 # 延後 import：它也 import 這個模組
+        day_iv: dict | None = iv_day_range.for_today(sessions, today)
+    except Exception:
+        logger.warning("開盤前預期日盤振幅計算失敗（略過）", exc_info=True)
+        day_iv = {"note": "計算失敗（細節在後端 log）"}
+    return ContextData(today, r20, models, tod_profile(sessions), len(sessions), sessions[-1].date if sessions else None, day_iv)
 
 
 # ── 描述：把資料＋現在的時間＋即時的早盤振幅，組成給畫面用的 dict ───────────────
@@ -254,6 +261,8 @@ def describe(data: ContextData | None, now: datetime, cp: dict | None, session: 
         return out
     out["r20"] = data.r20
     out["n_days"] = data.n_days
+    if data.day_iv is not None:
+        out["day_iv"] = data.day_iv
     if data.profile:
         i = min(m // BUCKET_MIN, len(data.profile) - 1)
         out["bucket"] = {"label": bucket_label(i), "mult": data.profile[i], "idx": i}

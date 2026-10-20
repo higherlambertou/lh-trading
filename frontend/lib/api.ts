@@ -285,12 +285,19 @@ export interface ContextProj {
   early: number; done: number; done_ratio: number | null; n: number;
   expect: { lo: number; mid: number; hi: number };        // c 分鐘之後的預期振幅（點）：中位數與 68% 區間
 }
+// 開盤前預期日盤振幅（發現 55）：前一天臺指選擇權波動率指數 × 0.93 ＋ 近 20 日均；讀不到就只有 note
+export interface ContextDayIv {
+  expect?: { lo: number; mid: number; hi: number };       // 今天日盤高低差的中位數與 68% 區間（點）
+  r20?: number; vix?: number; vix_date?: string; atm_equiv?: number; n?: number;
+  note?: string;
+}
 export interface IntradayCtx {
   session: string; ready: boolean;
   elapsed?: number; settle_day?: boolean; mins_to_close?: number; close_hhmm?: string;
   r20?: number | null; n_days?: number;
   bucket?: { label: string; mult: number; idx: number }; profile?: number[];
   proj?: ContextProj; proj_note?: string;
+  day_iv?: ContextDayIv;
 }
 
 // 各合約近 N 分鐘的外盤占比（同一個時間視窗並排；不同合約的成交頻率差很多，用「最近幾筆」比的是不同長度的時間）

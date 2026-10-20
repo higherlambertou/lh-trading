@@ -141,6 +141,23 @@ export function ContextCard({ st }: { st: LiveState }) {
             距日盤收盤 {minutesText(c.mins_to_close)}（{c.close_hhmm}）
             {c.settle_day && <span style={{ color: YELLOW }}> · 結算日：近月合約 13:30 收盤</span>}
           </div>
+          {c.day_iv?.expect ? (
+            <div className="space-y-0.5">
+              <div className="text-sm text-[#e0e0f0]">
+                開盤前預期日盤振幅約 <span className="font-mono">{price(c.day_iv.expect.mid, 0)}</span> 點
+                <span className="text-[11px] text-[#7070a0] font-mono">（68% 區間 {price(c.day_iv.expect.lo, 0)}~{price(c.day_iv.expect.hi, 0)}）</span>
+              </div>
+              <div className="text-[11px] text-[#7070a0] font-mono">
+                依 {c.day_iv.vix_date ? c.day_iv.vix_date.slice(5).replace("-", "/") : "前一天"} 臺指選擇權波動率指數 {c.day_iv.vix?.toFixed(2)}；近 20 日均 {price(c.day_iv.r20, 0)} 點
+              </div>
+              <div className="text-[10px] text-[#404060] leading-snug">
+                歷史檢驗：比只看近 20 日均，平方誤差約降 15%（平均絕對誤差降約 9%），但各年差很多（2022～2023 幾乎沒幫助），2025 年起區間實際涵蓋約 63%（略偏窄）。
+                只對整天的來回幅度有用；是範圍，不是目標價；範圍帶與建議停損沒有用它。
+              </div>
+            </div>
+          ) : (
+            c.day_iv?.note && <div className={EMPTY}>預期日盤振幅：{c.day_iv.note}</div>
+          )}
           {c.proj ? (
             <div className="space-y-0.5">
               <div className="text-sm text-[#e0e0f0]">
