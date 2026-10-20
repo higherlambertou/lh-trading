@@ -32,6 +32,8 @@ OBS_VISIBLE = "fetched_at<=:t"                                           # 顯�
 
 # (代號, 名稱, source, series, 單位, 類型)；類型 rate＝殖利率（變動用「點」不用百分比）
 MARKETS = (
+    ("TAIEX", "加權指數", "twse", "taiex.close", "points", "price"),
+    ("VIXTW", "臺指選擇權波動率指數", "taifex", "vixtw.close", "index", "price"),
     ("VIX", "VIX 恐慌指數", "cboe", "VIX.close", "points", "price"),
     ("SOX", "費城半導體", "nasdaq", "SOX.close", "points", "price"),
     ("TSM", "台積電 ADR", "nasdaq", "TSM.close", "usd", "price"),
@@ -104,7 +106,7 @@ def markets(conn: sqlite3.Connection, t: float, today: date) -> list[dict[str, A
 
 
 def chips(conn: sqlite3.Connection, t: float, today: date) -> dict[str, Any]:
-    out: dict[str, Any] = {"futures": [], "options": None, "pcr": None, "inst": None, "margin": None}
+    out: dict[str, Any] = {"futures": [], "options": None, "pcr": None, "inst": None, "margin": None, "market": None}
     for code, label in FUT_COMMODITIES:
         rows, day = [], None
         for who, who_label in WHO:
@@ -134,6 +136,7 @@ def chips(conn: sqlite3.Connection, t: float, today: date) -> dict[str, Any]:
                       "vol_ratio": vol[0][1] if vol else None, "vol_ratio_prev": vol[1][1] if len(vol) > 1 else None}
     out["inst"] = _inst(conn, t)
     out["margin"] = _margin(conn, t)
+    out["market"] = _market(conn, t)
     return out
 
 
@@ -162,6 +165,22 @@ def _inst(conn: sqlite3.Connection, t: float) -> Optional[dict[str, Any]]:
         five = [one(d) for d in dates]
         rows.append({"who": key, "label": label, "net": _round(today_v, 1), "net5": None if any(v is None for v in five) else _round(sum(five), 1), "days5": len(five)})
     return {"date": day, "rows": rows}
+
+
+def _market(conn: sqlite3.Connection, t: float) -> Optional[dict[str, Any]]:
+    """大盤：最新一天的成交金額（億元）與「前面最多 20 個交易日平均」的倍數（至少要 10 天；實際用了幾天在 turnover_days）、股票的漲跌家數（漲停與跌停另列）。成交金額與漲跌家數各有自己的日期（來源不同天公布）。缺值就是 None，不補 0。"""
+    turn = _vals(latest_points(conn, "twse", "market.turnover_twd", t, 21))
+    out: dict[str, Any] = {"date": None, "turnover_100m": None, "turnover_ratio20": None, "turnover_days": None, "breadth_date": None, "up": None, "down": None, "flat": None, "limit_up": None, "limit_down": None}
+    if turn and turn[0][1] is not None:
+        prev = [v for _, v in turn[1:] if v is not None]
+        out.update(date=turn[0][0], turnover_100m=_round(turn[0][1] / 1e8, 1), turnover_ratio20=_round(turn[0][1] / (sum(prev) / len(prev)), 2) if len(prev) >= 10 else None,
+                   turnover_days=len(prev) if len(prev) >= 10 else None)                         # 平均用幾天（資料還不到 20 天時如實標出來，不假裝是 20 日）
+    for k in ("up", "down", "flat", "limit_up", "limit_down"):
+        pts = _vals(latest_points(conn, "twse", f"breadth.stock.{k}", t, 1))
+        if pts:
+            out[k] = pts[0][1]
+            out["breadth_date"] = out["breadth_date"] or pts[0][0]
+    return out if out["date"] or out["breadth_date"] else None
 
 
 def _margin(conn: sqlite3.Connection, t: float) -> Optional[dict[str, Any]]:

@@ -42,6 +42,8 @@ export interface IntelChips {
   pcr: { date: string; oi_ratio: number | null; oi_ratio_prev: number | null; vol_ratio: number | null; vol_ratio_prev: number | null } | null;
   inst: { date: string; rows: InstRow[] } | null;
   margin: { date: string; financing_100m: number | null; financing_chg_100m: number | null; short_lots: number | null; short_chg: number | null; provisional: boolean } | null;
+  market: { date: string | null; turnover_100m: number | null; turnover_ratio20: number | null; turnover_days: number | null; breadth_date: string | null;
+            up: number | null; down: number | null; flat: number | null; limit_up: number | null; limit_down: number | null } | null;
 }
 
 export interface IntelNews { title: string; url: string; source: string; label: string; time: number; taipei_time: string; age_min: number }

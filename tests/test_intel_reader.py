@@ -153,6 +153,69 @@ def test_old_format_dealer_row_and_missing_components(db, tmp_path):
     assert {x["who"]: x for x in ir.chips(ir.connect_ro(tmp_path / "intel.db"), NOW, TODAY)["inst"]["rows"]}["dealer"]["net"] is None
 
 
+def seed_turnover(db, n, last=1200e8, base=1000e8, fetched=None, revision=0):
+    days = [f"2026-09-{d:02d}" for d in range(1, 31) if date(2026, 9, d).weekday() < 5][: n - 1] + ["2026-10-16"]
+    for i, d in enumerate(days):
+        obs(db, "twse", "market.turnover_twd", d, last if d == "2026-10-16" else base + i * 1e8, fetched or NOW - 6 * H, revision=revision)
+    return days
+
+
+def test_market_block_gives_turnover_in_100_million_with_a_ratio_to_the_20_day_average_and_stock_breadth(db, tmp_path):
+    days = seed_turnover(db, 21)
+    for k, v in (("up", 684), ("down", 286), ("flat", 106), ("limit_up", 19), ("limit_down", 0)):
+        obs(db, "twse", f"breadth.stock.{k}", "2026-10-16", v, NOW - 6 * H)
+        obs(db, "twse", f"breadth.all.{k}", "2026-10-16", 99999, NOW - 6 * H)                       # 整體市場（含權證）的數字不能混進來
+    m = ir.chips(ir.connect_ro(tmp_path / "intel.db"), NOW, TODAY)["market"]
+    prev = [1000 + i for i in range(20)]
+    assert m["date"] == "2026-10-16" and m["turnover_100m"] == 1200.0 and m["turnover_ratio20"] == round(1200 / (sum(prev) / 20), 2) and m["turnover_days"] == 20
+    assert (m["breadth_date"], m["up"], m["down"], m["flat"], m["limit_up"], m["limit_down"]) == ("2026-10-16", 684.0, 286.0, 106.0, 19.0, 0.0)
+    assert len(days) == 21
+
+
+def test_market_block_edges_few_days_blank_missing_and_visibility(db, tmp_path):
+    p = tmp_path / "intel.db"
+    assert ir.chips(ir.connect_ro(p), NOW, TODAY)["market"] is None
+    seed_turnover(db, 9)                                                                           # 前面只有 8 天：不算倍數（不到 10 天）
+    m = ir.chips(ir.connect_ro(p), NOW, TODAY)["market"]
+    assert m["turnover_100m"] == 1200.0 and m["turnover_ratio20"] is None and m["turnover_days"] is None and m["up"] is None and m["breadth_date"] is None
+    seed_turnover(db, 21, last=1500e8, fetched=NOW - 5 * H, revision=1)                            # 更多天、同一天的新版（修正）
+    assert ir.chips(ir.connect_ro(p), NOW, TODAY)["market"]["turnover_ratio20"] is not None
+    assert ir.chips(ir.connect_ro(p), NOW - 10 * H, TODAY)["market"] is None                       # 那時候還沒抓到：不顯示
+    obs(db, "twse", "breadth.stock.up", "2026-10-19", 500, NOW - 1 * H)
+    m = ir.chips(ir.connect_ro(p), NOW, TODAY)["market"]
+    assert m["breadth_date"] == "2026-10-19" and m["up"] == 500.0 and m["down"] is None and m["date"] == "2026-10-16"             # 兩者各有自己的日期
+    obs(db, "twse", "breadth.stock.down", "2026-10-16", 300, NOW - 6 * H)                            # 漲跌家數的日期＝第一個有資料的項目（上漲）的日期，後面的項目不改它
+    assert ir.chips(ir.connect_ro(p), NOW, TODAY)["market"]["breadth_date"] == "2026-10-19"
+    db.execute("INSERT INTO observations(source, series, event_date, value, fetched_at, revision, backfilled, missing_reason) VALUES('twse','market.turnover_twd','2026-09-30',NULL,?,0,0,'blank_in_source')", (NOW - 5 * H,))
+    db.commit()
+    m2 = ir.chips(ir.connect_ro(p), NOW, TODAY)["market"]                                             # 前面某一天是空值：不當 0、也不讓整個算式壞掉
+    assert m2["turnover_100m"] == 1500.0 and m2["turnover_ratio20"] is not None
+
+
+def test_market_block_with_breadth_only_has_no_turnover_fields(db, tmp_path):
+    obs(db, "twse", "breadth.stock.up", "2026-10-16", 684, NOW - 6 * H)
+    m = ir.chips(ir.connect_ro(tmp_path / "intel.db"), NOW, TODAY)["market"]
+    assert (m["date"], m["turnover_100m"], m["turnover_ratio20"], m["turnover_days"]) == (None, None, None, None) and m["up"] == 684.0
+
+
+def test_market_block_blank_turnover_is_not_zero(db, tmp_path):
+    db.execute("INSERT INTO observations(source, series, event_date, value, fetched_at, revision, backfilled, missing_reason) VALUES('twse','market.turnover_twd','2026-10-16',NULL,?,0,0,'blank_in_source')", (NOW - 6 * H,))
+    db.commit()
+    assert ir.chips(ir.connect_ro(tmp_path / "intel.db"), NOW, TODAY)["market"] is None
+
+
+def test_taiwan_markets_are_listed_first_with_their_own_units(db, tmp_path):
+    obs(db, "twse", "taiex.close", "2026-10-15", 47111.26, NOW - 30 * H)
+    obs(db, "twse", "taiex.close", "2026-10-16", 46822.08, NOW - 6 * H)
+    obs(db, "taifex", "vixtw.close", "2026-10-15", 30.61, NOW - 30 * H)
+    obs(db, "taifex", "vixtw.close", "2026-10-16", 26.37, NOW - 6 * H)
+    rows = ir.markets(ir.connect_ro(tmp_path / "intel.db"), NOW, TODAY)
+    assert [r["key"] for r in rows[:3]] == ["TAIEX", "VIXTW", "VIX"] and rows[0]["label"] == "加權指數" and rows[1]["label"] == "臺指選擇權波動率指數"
+    t, v = rows[0], rows[1]
+    assert (t["value"], t["prev"], t["chg"], t["unit"], t["date"]) == (46822.08, 47111.26, -289.18, "points", "2026-10-16")
+    assert (v["value"], v["chg"], v["unit"], v["source"]) == (26.37, -4.24, "index", "taifex")
+
+
 def test_margin_converts_units_and_is_marked_provisional(db, tmp_path):
     obs(db, "twse", "margin.financing_amt.today_balance", "2026-10-15", 646_415_871, NOW - 30 * H)       # 仟元
     obs(db, "twse", "margin.financing_amt.today_balance", "2026-10-16", 645_594_048, NOW - 6 * H)
@@ -166,7 +229,7 @@ def test_margin_converts_units_and_is_marked_provisional(db, tmp_path):
 
 def test_chips_are_empty_not_broken_without_any_data(db, tmp_path):
     c = ir.chips(ir.connect_ro(tmp_path / "intel.db"), NOW, TODAY)
-    assert c == {"futures": [], "options": None, "pcr": None, "inst": None, "margin": None}
+    assert c == {"futures": [], "options": None, "pcr": None, "inst": None, "margin": None, "market": None}
 
 
 # ── 事件 ────────────────────────────────────────────────────────
@@ -266,7 +329,7 @@ def test_summary_assembles_everything_for_a_seeded_database(db, tmp_path):
     s = ir.summary(NOW, tmp_path / "intel.db")
     assert s["available"] is True and s["schema_version"] == 1 and s["db"] == "intel.db" and s["as_of"] == NOW
     assert set(s) == {"available", "as_of", "schema_version", "db", "events", "chips", "markets", "news", "collectors"}
-    assert s["markets"][0]["value"] == 19.99 and s["chips"]["futures"][0]["commodity"] == "TX" and s["events"]["upcoming"][0]["uid"] == "bls-1" and s["news"][0]["title"] == "標題"
+    assert {m["key"]: m for m in s["markets"]}["VIX"]["value"] == 19.99 and s["chips"]["futures"][0]["commodity"] == "TX" and s["events"]["upcoming"][0]["uid"] == "bls-1" and s["news"][0]["title"] == "標題"
     json.dumps(s, allow_nan=False)                                                                            # 要能直接當 JSON 回給前端（沒有 NaN）
 
 
@@ -295,7 +358,7 @@ def test_summary_is_cached_for_ten_seconds_but_failures_are_not(db, tmp_path):
     first = ir.summary(NOW, path)
     obs(db, "cboe", "VIX.close", "2026-10-19", 25.0, NOW - 1)
     assert ir.summary(NOW + 9, path) is first                                                                  # 10 秒內：同一份
-    assert ir.summary(NOW + 10, path)["markets"][0]["value"] == 25.0                                           # 過了：重算
+    assert {m["key"]: m for m in ir.summary(NOW + 10, path)["markets"]}["VIX"]["value"] == 25.0                                           # 過了：重算
     ir._cache.update(key=None, at=0.0, data=None)
     assert ir.summary(NOW, tmp_path / "nope.db")["available"] is False and ir._cache["data"] is None
     assert ir.summary(NOW, path)["available"] is True
@@ -351,7 +414,7 @@ def test_reader_works_on_a_database_written_by_the_real_lh_intel_code(tmp_path):
     c.close()
     s = ir.summary(NOW, path)
     assert s["available"] is True and s["schema_version"] == real.SCHEMA_VERSION == ir.SUPPORTED_SCHEMA
-    vix = s["markets"][0]
+    vix = {m["key"]: m for m in s["markets"]}["VIX"]
     assert (vix["value"], vix["prev"], vix["date"]) == (20.5, 16.46, "2026-10-16")                              # 取已抓到的最新修正（回補列也算已知，但不是最近兩天）
     assert s["events"]["upcoming"][0]["title"] == "美國 CPI" and s["news"][0]["title"] == "標題" and s["collectors"]["items"][0]["name"] == "news_rss"
 

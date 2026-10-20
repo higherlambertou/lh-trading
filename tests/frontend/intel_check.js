@@ -24,6 +24,7 @@ let fail = 0;
 const check = (name, ok, extra = "") => { console.log((ok ? "PASS " : "FAIL ") + name + (ok ? "" : "  " + String(extra).slice(0, 900))); if (!ok) fail++; };
 const strip = (s) => s.replace(/<\/?(div|button|li|tr|summary|details|table|thead|tbody)\b[^>]*>/g, " ").replace(/<[^>]+>/g, "").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/\s+/g, " ");
 const text = (el) => strip(renderToStaticMarkup(el));
+const J = (x) => JSON.stringify(x);
 const BAD = /undefined|NaN|\bnull\b|Infinity|\[object/;
 const S = fx.full, M = (k) => S.markets.find((m) => m.key === k);
 
@@ -50,6 +51,7 @@ check("friendlyIntelError：舊後端沒有這個 API 時講白話", L.friendlyI
 
 // ══ 區塊（後端現算的資料）════════════════════════════════════════
 const tm = text(e(C.MarketsCard, { markets: S.markets }));
+check("市場：加權指數與臺指選擇權波動率指數排在最前面（後端的數字）", S.markets[0].key === "TAIEX" && S.markets[1].key === "VIXTW" && tm.includes("加權指數") && tm.includes("46,822.08") && tm.includes("臺指選擇權波動率指數") && tm.includes("26.37") && tm.includes(L.marketChange(M("TAIEX"))) && L.marketChange(M("VIXTW")) === "−4.24（−13.85%）", L.marketChange(M("VIXTW")));
 check("市場：每一項的名稱、收盤、較前一日（後端的數字）", S.markets.every((m) => tm.includes(m.label)) && tm.includes(L.marketValue(M("VIX"))) && tm.includes(L.marketChange(M("VIX"))) && tm.includes(L.marketChange(M("US10Y"))) && tm.includes("bp"), tm);
 check("市場：沒有資料的項目顯示破折號與「沒有資料」，不是 0", tm.includes("日經 225") && /日經 225——沒有資料/.test(tm) && !/日經 225 ?0/.test(tm), tm);
 check("市場：超過 3 天沒更新的日期標「N 天前」（黃色）", /10\/09・10 天前/.test(tm) && renderToStaticMarkup(e(C.MarketsCard, { markets: S.markets })).includes("color:#ffc107"));
@@ -66,7 +68,26 @@ const tc = text(e(C.ChipsCard, { chips: S.chips }));
 check("籌碼：期貨三大法人（大台、小台、微台）淨未平倉、較前一日、多／空", tc.includes("臺股期貨（大台）") && tc.includes("−4,000") && tc.includes("+300") && tc.includes("1,000／5,000") && tc.includes("自營商") && !tc.includes("小型臺指") && !tc.includes("微型臺指"), tc);                  // 小台、微台沒有資料就整組不列
 check("籌碼：選擇權 Call／Put 與變動、Put/Call 比（含前日）", tc.includes("買權 Call") && tc.includes("賣權 Put") && tc.includes("+5,820") && tc.includes("Put/Call 比") && tc.includes("未平倉 120.00%") && tc.includes("前日 60.00"), tc);
 check("籌碼：現貨三大法人（億元）今天與近 5 日、融資融券標暫定", tc.includes("現貨三大法人買賣超（億元") && tc.includes("−104.0") && tc.includes("−510.0") && tc.includes("近 5 日合計") && tc.includes("融資融券（10/16，暫定）") && tc.includes("融資餘額 6,455.9 億") && tc.includes("融券 233,602 張"), tc);
-check("籌碼：沒有資料的項目不顯示、全部沒有時寫「還沒有籌碼資料」", text(e(C.ChipsCard, { chips: { futures: [], options: null, pcr: null, inst: null, margin: null } })).includes("還沒有籌碼資料") && !text(e(C.ChipsCard, { chips: S.chips })).includes("還沒有籌碼資料"));
+check("籌碼：大盤成交（億）與近 20 日平均的倍數、股票漲跌家數（漲停跌停）", tc.includes("大盤成交（10/16）") && tc.includes("8,667 億") && /前 12 日平均的 1\.0\d 倍/.test(tc) && tc.includes("股票漲跌家數（10/16）") && tc.includes("上漲 684（漲停 19）") && tc.includes("下跌 286（跌停 0）") && tc.includes("持平 106") && !tc.includes("99999"), tc);
+const mk = S.chips.market;
+check("籌碼：大盤的後端欄位（億元換算、倍數、漲跌家數）", mk && mk.turnover_100m === 8667 && mk.turnover_ratio20 > 1 && mk.turnover_ratio20 < 1.1 && mk.turnover_days === 12 && mk.up === 684 && mk.limit_down === 0 && mk.date === "2026-10-16" && mk.breadth_date === "2026-10-16", J(mk));
+const onlyTurn = text(e(C.ChipsCard, { chips: { ...S.chips, market: { ...mk, up: null, down: null, limit_up: null, limit_down: null, flat: null, breadth_date: null } } }));
+const onlyBreadth = text(e(C.ChipsCard, { chips: { ...S.chips, market: { ...mk, turnover_100m: null, turnover_ratio20: null, date: null } } }));
+const noRatio = text(e(C.ChipsCard, { chips: { ...S.chips, market: { ...mk, turnover_ratio20: null } } }));
+const fewDays = text(e(C.ChipsCard, { chips: { ...S.chips, market: { ...mk, turnover_days: 10 } } }));
+const legacy = text(e(C.ChipsCard, { chips: { ...S.chips, market: { ...mk, turnover_days: null } } }));
+const noLimit = text(e(C.ChipsCard, { chips: { ...S.chips, market: { ...mk, limit_up: null, limit_down: null, flat: null } } }));
+const onlyMarket = text(e(C.ChipsCard, { chips: { futures: [], options: null, pcr: null, inst: null, margin: null, market: mk } }));
+check("籌碼：只有大盤資料時不寫「還沒有籌碼資料」", onlyMarket.includes("大盤成交") && !onlyMarket.includes("還沒有籌碼資料"), onlyMarket);
+const rawChips = renderToStaticMarkup(e(C.ChipsCard, { chips: S.chips }));
+check("籌碼：平均用了幾天就寫幾天（資料不到 20 天不假裝是 20 日）", fewDays.includes("前 10 日平均的") && !fewDays.includes("前 20 日") && legacy.includes("前 20 日平均的"), fewDays);
+check("籌碼：上漲家數是紅、下跌家數是綠（台灣習慣）", new RegExp(`color:${L.UP}[^>]*>上漲 684`).test(rawChips) && new RegExp(`color:${L.DOWN}[^>]*>下跌 286`).test(rawChips), "");
+const twoDates = text(e(C.ChipsCard, { chips: { ...S.chips, market: { ...mk, date: "2026-10-16", breadth_date: "2026-10-19" } } }));
+const noDown = text(e(C.ChipsCard, { chips: { ...S.chips, market: { ...mk, down: null } } }));
+check("籌碼：成交與漲跌家數各自標自己的日期；缺下跌家數就不列漲跌家數", twoDates.includes("大盤成交（10/16）") && twoDates.includes("股票漲跌家數（10/19）") && !noDown.includes("漲跌家數") && noDown.includes("大盤成交"), twoDates);
+check("籌碼：大盤缺一半就只列另一半、缺倍數不寫倍數、缺漲停跌停不寫括號", onlyTurn.includes("大盤成交") && !onlyTurn.includes("漲跌家數") && onlyBreadth.includes("股票漲跌家數") && !onlyBreadth.includes("大盤成交") && !noRatio.includes("日平均") && noRatio.includes("8,667 億")
+  && noLimit.includes("上漲 684") && !noLimit.includes("漲停") && !noLimit.includes("持平") && !BAD.test(onlyTurn + onlyBreadth + noRatio + noLimit), [onlyTurn, onlyBreadth].join("|"));
+check("籌碼：沒有資料的項目不顯示、全部沒有時寫「還沒有籌碼資料」", text(e(C.ChipsCard, { chips: { futures: [], options: null, pcr: null, inst: null, margin: null, market: null } })).includes("還沒有籌碼資料") && !text(e(C.ChipsCard, { chips: S.chips })).includes("還沒有籌碼資料"));
 check("籌碼：淨空的口數是綠、淨多是紅", new RegExp(`color:${L.DOWN}[^>]*>−4,000`).test(renderToStaticMarkup(e(C.ChipsCard, { chips: S.chips }))), "");
 
 const tn = text(e(C.NewsCard, { news: S.news }));

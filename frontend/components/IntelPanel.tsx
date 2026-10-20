@@ -67,8 +67,8 @@ const lots = (n: number | null | undefined) => (n == null ? "—" : n.toLocaleSt
 const dateText = (d: string) => d.slice(5).replace("-", "/");
 
 export function ChipsCard({ chips }: { chips: IntelChips }) {
-  const { futures, options, pcr, inst, margin } = chips;
-  const empty = !futures.length && !options && !pcr && !inst && !margin;
+  const { futures, options, pcr, inst, margin, market } = chips;
+  const empty = !futures.length && !options && !pcr && !inst && !margin && !market;
   return (
     <div className={`${CARD} space-y-3`}>
       <h2 className={H}>籌碼（盤後；台北交易日）</h2>
@@ -130,6 +130,22 @@ export function ChipsCard({ chips }: { chips: IntelChips }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      {market && (
+        <div className="text-xs space-y-0.5">
+          {market.turnover_100m != null && (
+            <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+              <span className="text-[#7070a0]">大盤成交（{market.date ? dateText(market.date) : "—"}）</span>
+              <span className="font-mono text-[#e0e0f0]">{fmt(market.turnover_100m, 0)} 億{market.turnover_ratio20 != null && <span className="text-[10px] text-[#7070a0]">（前 {market.turnover_days ?? 20} 日平均的 {fmt(market.turnover_ratio20, 2)} 倍）</span>}</span>
+            </div>
+          )}
+          {market.up != null && market.down != null && (
+            <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+              <span className="text-[#7070a0]">股票漲跌家數（{market.breadth_date ? dateText(market.breadth_date) : "—"}）</span>
+              <span className="font-mono"><span style={{ color: upDown(1) }}>上漲 {lots(market.up)}{market.limit_up != null && `（漲停 ${lots(market.limit_up)}）`}</span>　<span style={{ color: upDown(-1) }}>下跌 {lots(market.down)}{market.limit_down != null && `（跌停 ${lots(market.limit_down)}）`}</span>{market.flat != null && <span className="text-[#7070a0]">　持平 {lots(market.flat)}</span>}</span>
+            </div>
+          )}
         </div>
       )}
       {margin && (

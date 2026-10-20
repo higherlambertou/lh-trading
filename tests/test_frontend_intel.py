@@ -23,7 +23,19 @@ NOW = datetime(2026, 10, 19, 20, 0, tzinfo=ir.TAIPEI).timestamp()
 H = 3600.0
 
 
+def seed_taiwan(c) -> None:
+    for sym, series, vals in (("twse", "taiex.close", (47111.26, 46822.08)), ("taifex", "vixtw.close", (30.61, 26.37))):
+        for d, v in zip(("2026-10-15", "2026-10-16"), vals):
+            obs(c, sym, series, d, v, NOW - 6 * H)
+    days = ["2026-09-%02d" % d for d in range(14, 31) if datetime(2026, 9, d).weekday() < 5][:12] + ["2026-10-16"]
+    for i, d in enumerate(days):
+        obs(c, "twse", "market.turnover_twd", d, (8000 + 10 * i) * 1e8 if d != "2026-10-16" else 8667e8, NOW - 6 * H)
+    for k, v in (("up", 684), ("down", 286), ("flat", 106), ("limit_up", 19), ("limit_down", 0)):
+        obs(c, "twse", f"breadth.stock.{k}", "2026-10-16", v, NOW - 6 * H)
+
+
 def seed(c) -> None:
+    seed_taiwan(c)
     """一份「什麼都有一點」的資料庫：市場（有的缺、有的太舊）、期貨（三大法人與缺漏）、選擇權、PCR、現貨三大法人、融資融券、事件、休市日、新聞、收集器。"""
     for sym, series, vals in (("cboe", "VIX.close", (16.46, 19.99)), ("nasdaq", "SOX.close", (11581.22, 11137.29)), ("nasdaq", "TSM.close", (422.25, 412.61)), ("fred", "SP500", (7744.06, 7659.44))):
         for d, v in zip(("2026-10-15", "2026-10-16"), vals):

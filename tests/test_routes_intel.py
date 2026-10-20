@@ -32,7 +32,7 @@ def test_the_route_reads_the_database_named_by_intel_db_and_never_raises(monkeyp
     monkeypatch.setenv("INTEL_DB", str(tmp_path / "intel.db"))
     ir._cache.update(key=None, at=0.0, data=None)
     out = asyncio.run(ri.get_summary())
-    assert out["available"] is True and out["markets"][0]["value"] == 19.99
+    assert out["available"] is True and {m["key"]: m for m in out["markets"]}["VIX"]["value"] == 19.99
     json.dumps(out, allow_nan=False)
     ir._cache.update(key=None, at=0.0, data=None)
 
