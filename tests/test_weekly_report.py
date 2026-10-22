@@ -63,6 +63,7 @@ def test_compose():
     assert "10/24（六）−NT$2,500" in body
     assert "停損監控觸發：停損 2 次、停利 1 次" in body
     assert "權益" not in body and "帳號" not in body
+    assert "沒扣費用；夜盤的單算在下一個交易日" in body
     _, empty = wr.compose(wr.summarize([], MON, SAT))
     assert "沒有平倉紀錄" in empty
 
