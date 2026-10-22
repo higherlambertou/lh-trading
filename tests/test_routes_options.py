@@ -324,3 +324,30 @@ def test_close_validation(fake):
     assert fake.post("close", legs=legs_body()).status_code == 400
     too_many = [{"right": "C", "strike": 100 + i, "entry": 5} for i in range(9)]
     assert fake.post("close", legs=too_many, delivery_month="202610").status_code == 422
+
+
+# ── 跨式 vs 勒式比較 ──────────────────────────────────────────────
+
+def test_compare_live_uses_one_cached_chain_and_returns_both_structures(fake):
+    r = fake.post("compare", delivery_month="202610", lots=2, hold_days=1)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    no_nan(r)
+    assert set(j["structures"]) == {"straddle", "strangle"} and j["source"] == "live" and j["delivery_month"] == "202610" and j["lots"] == 2 and len(j["rows"]) >= 5
+    assert fake.post("compare", delivery_month="202610").status_code == 200 and len(fake.calls) == 1                     # 5 秒內重複用快取
+
+
+def test_compare_manual_mode_validation_and_errors(fake, monkeypatch):
+    r = fake.post("compare", manual={"F": 49300, "iv": 20, "days": 9}, hold_days=0)
+    assert r.status_code == 200 and fake.calls == [] and r.json()["warnings"][0].startswith("手動模式") and r.json()["source"] == "manual"
+    assert fake.post("compare").status_code == 400                                                                      # 沒到期月、也不是手動
+    for bad in ({"delta": 1.5}, {"lots": 0}, {"hold_days": -1}, {"k": -1}, {"fill": "x"}):
+        assert fake.post("compare", delivery_month="202610", **bad).status_code == 422, bad
+    monkeypatch.setattr(ro.oc, "compare_structures", lambda *a, **k: (_ for _ in ()).throw(ValueError("找不到買權能買的檔")))
+    r = fake.post("compare", delivery_month="202610")
+    assert r.status_code == 422 and "找不到買權能買的檔" in r.json()["detail"] and "手動模式" in r.json()["detail"]
+
+
+def test_compare_is_registered_on_the_real_app():
+    import main
+    assert any(getattr(rt, "path", "") == "/api/options/compare" for rt in main.app.routes)

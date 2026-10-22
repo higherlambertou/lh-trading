@@ -45,7 +45,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 import type { BacktestInfo, BacktestJob, BacktestRequest } from "./backtest";
-import type { CalcBody, CloseBody, OptCalc, OptChain, OptClose } from "./options";
+import type { CalcBody, CloseBody, CompareBody, OptCalc, OptChain, OptClose, OptCompare } from "./options";
 import type { IntelSummary } from "./intel";
 import type { PmPreview, PmSnapshot, PmStatus } from "./premarket";
 import type { EntryRow, Trend } from "./entryLabel";
@@ -460,6 +460,7 @@ export const api = {
   options: {
     calc: (body: CalcBody) => req<OptCalc>("/options/calc", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) }),
     close: (body: CloseBody) => req<OptClose>("/options/close", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) }),
+    compare: (body: CompareBody) => req<OptCompare>("/options/compare", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) }),
     chain: (deliveryMonth: string, category = "TXO") =>
       req<OptChain>(`/options/chain?delivery_month=${encodeURIComponent(deliveryMonth)}&category=${encodeURIComponent(category)}`),
   },

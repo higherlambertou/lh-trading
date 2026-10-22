@@ -52,6 +52,19 @@ class CalcRequest(BaseModel):
     manual: Manual | None = None
 
 
+class CompareRequest(BaseModel):
+    category: str = "TXO"
+    delivery_month: str | None = None
+    select: Literal["delta", "move"] = "delta"
+    delta: float = Field(0.25, gt=0, lt=1, description="勒式兩翼的 |delta|")
+    k: float = Field(0.5, ge=0, le=5, description="move 選法：勒式兩翼距 F ± k × 預期波動")
+    move_pts: float | None = Field(None, gt=0)
+    lots: int = Field(1, ge=1, le=1000)
+    hold_days: float = Field(1.0, ge=0, le=800, description="「持有 N 天後」那條曲線的天數（IV 不變）")
+    fill: Literal["ask", "mid"] = "ask"
+    manual: Manual | None = None
+
+
 class CloseLeg(BaseModel):
     right: Literal["C", "P"]
     strike: float = Field(gt=0)
@@ -203,4 +216,18 @@ async def close(req: CloseRequest) -> dict[str, Any]:
         res["warnings"].append(f"有 {modeled} 腳在鏈上找不到報價（履約價沒掛單或不在這個到期月），目前價格改用模型估")
     if meta["source"] == "manual":
         res["warnings"].insert(0, "手動模式：目前價格是用 Black-76 與單一 IV 估的（或你輸入的買賣價），只能當示意")
+    return {**res, **meta, "as_of": time.time()}
+
+
+@router.post("/compare")
+async def compare(req: CompareRequest) -> dict[str, Any]:
+    """買跨式 vs 買勒式：各標的點位（到期時、持有 N 天後）的損益表與曲線。只試算、不下單。"""
+    chain, meta = await _get_chain(req.category, req.delivery_month, req.manual)
+    try:
+        res = await asyncio.to_thread(oc.compare_structures, chain, select=req.select, delta=req.delta, k=req.k, ref_move=req.move_pts,
+                                      fill=req.fill, lots=req.lots, hold_days=req.hold_days)
+    except ValueError as e:
+        raise HTTPException(422, f"{e}" + ("（若是休市或沒有報價，可以改用手動模式）" if meta["source"] == "live" else ""))
+    if meta["source"] == "manual":
+        res["warnings"].insert(0, "手動模式：價格是用 Black-76 與單一 IV 估的（沒有偏斜、價差是模擬的），只能當示意")
     return {**res, **meta, "as_of": time.time()}

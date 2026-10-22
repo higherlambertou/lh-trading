@@ -226,3 +226,55 @@ export function beText(b: OptBE): string {
   const side = b.dist_pts != null && b.dist_pts < 0 ? "下" : "上";
   return `${side} ${pts(b.level)}（${spts(b.dist_pts)} 點、${spct(b.dist_pct)}、${sigma(b.dist_em)}）`;
 }
+
+// ── 跨式 vs 勒式：各點位的損益（後端 core/options_calc.compare_structures、POST /api/options/compare）──
+export interface CompareBody {
+  category: string; delivery_month?: string; select: OptSelect; delta: number; k: number; move_pts?: number;
+  lots: number; hold_days: number; manual?: ManualBody;
+}
+export interface CmpStructure {
+  legs: { right: "C" | "P"; strike: number; entry: number; bid: number; ask: number }[];
+  cost_pts: number; cost_twd: number; breakevens: number[]; breakeven_moves: number[]; max_loss_twd: number;
+}
+export interface CmpCell { expiry: number; hold: number }
+export interface CmpRow { S: number; chg: number; chg_pct: number; straddle: CmpCell; strangle: CmpCell }
+export interface OptCompare {
+  F: number; days: number; hold_days: number; hold_is_expiry: boolean; atm_iv: number | null; em_pts: number; lots: number; step: number;
+  structures: { straddle: CmpStructure; strangle: CmpStructure }; rows: CmpRow[]; curve: CmpRow[]; warnings: string[];
+  source: string; delivery_month: string | null; expiry: string | null;
+}
+
+/** 比較用的請求：沿用試算表單的勒式設定（Delta 或距離倍數）、預期波動、組數；跨式固定用最靠近現價的履約價。 */
+export function buildCompareRequest(f: OptForm, src: OptSource, holdDays: string): Built<CompareBody> {
+  const delta = num(f.delta), k = num(f.k), lots = num(f.lots), hold = num(holdDays);
+  const move = f.movePts.trim() === "" ? undefined : num(f.movePts);
+  if (f.select === "delta" && !(delta > 0 && delta < 1)) return { ok: false, error: "勒式兩翼的 Delta 要在 0～1 之間（例如 0.25）" };
+  if (f.select === "move" && !(k >= 0 && k <= 5)) return { ok: false, error: "勒式的距離倍數要在 0～5 之間（例如 0.5）" };
+  if (move !== undefined && !(move > 0)) return { ok: false, error: "預期波動點數要大於 0（或留空用市場隱含的）" };
+  if (!(Number.isInteger(lots) && lots >= 1 && lots <= 1000)) return { ok: false, error: "組數要是 1～1000 的整數" };
+  if (!(hold >= 0 && hold <= 800)) return { ok: false, error: "持有天數要在 0～800" };
+  const body: CompareBody = { category: "TXO", select: f.select, delta: Number.isFinite(delta) ? delta : 0.25, k: Number.isFinite(k) ? k : 0.5, lots, hold_days: hold };
+  if (move !== undefined) body.move_pts = move;
+  if (src.manual) {
+    const m = buildManual(src);
+    if (!m.ok) return m;
+    body.manual = m.body;
+  } else {
+    if (!src.deliveryMonth) return { ok: false, error: "請選到期月，或改用手動模式" };
+    body.delivery_month = src.deliveryMonth;
+  }
+  return { ok: true, body };
+}
+
+/** 曲線的 SVG 座標：x＝點位、y＝損益（元）。回傳每條線的 path 字串與座標轉換。 */
+export function chartGeometry(curve: CmpRow[], w: number, h: number, pad = 36) {
+  const xs = curve.map((r) => r.S);
+  const ys = curve.flatMap((r) => [r.straddle.expiry, r.straddle.hold, r.strangle.expiry, r.strangle.hold]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(0, ...ys), y1 = Math.max(0, ...ys);
+  if (y1 - y0 < 1) { y0 -= 1; y1 += 1; }
+  const X = (x: number) => pad + ((x - x0) / (x1 - x0 || 1)) * (w - pad - 28);
+  const Y = (y: number) => 8 + (1 - (y - y0) / (y1 - y0)) * (h - 8 - 22);
+  const path = (get: (r: CmpRow) => number) => curve.map((r, i) => `${i ? "L" : "M"}${X(r.S).toFixed(1)},${Y(get(r)).toFixed(1)}`).join(" ");
+  return { X, Y, x0, x1, y0, y1, path };
+}

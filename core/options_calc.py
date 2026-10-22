@@ -563,3 +563,71 @@ def close_analysis(legs: Sequence[dict], *, F: float, T: float, r: float = RATE,
         warnings.append("沒有現價報價：目前價格是用 Black-76 與你給的 IV 估的（沒有買賣價差），平倉的已實現損益會比實際好看")
     return {"F": _r1(F), "days": round(T * YEAR_DAYS, 2), "iv": _r1(iv_ref * 100, 2), "em_sigma_pts": _r1(em_rem), "ref_pts": _r1(ref),
             "entry_total_pts": _r1(E), "legs": legs_out, "actions": actions, "warnings": warnings}
+
+
+# ── 跨式 vs 勒式：各指數點位的損益（〈選擇權試算〉的比較表與曲線）────────────
+
+COMPARE_STEPS = (50, 100, 200, 250, 500, 1000, 2000, 5000)
+COMPARE_MAX_ROWS = 25
+COMPARE_CURVE_POINTS = 121
+
+
+def _nice_step(span: float, max_rows: int = COMPARE_MAX_ROWS) -> float:
+    """讓 ±span 之間的列數不超過 max_rows 的最小整齊間距。"""
+    for s in COMPARE_STEPS:
+        if 2 * span / s <= max_rows - 1:
+            return float(s)
+    return float(COMPARE_STEPS[-1])
+
+
+def _value_at(legs: Sequence[dict], S: float, T_rem: float, r: float, iv0: float) -> float:
+    return payoff(legs, S) if T_rem <= 1e-9 else position_value(legs, S, T_rem, r, 0.0, iv0)
+
+
+def compare_structures(chain: dict, *, select: str = "delta", delta: float = 0.25, k: float = 0.5, ref_move: float | None = None,
+                       fill: str = "ask", lots: int = 1, hold_days: float = 1.0, mult: float = MULT) -> dict[str, Any]:
+    """同一條鏈上的買跨式與買勒式，在各個標的點位（遠期價）的損益（元）：到期時，以及持有 hold_days 天後（IV 不變、用 Black-76 重估）。
+    點位以現價為中心、整齊間距；範圍涵蓋 ±1.5 個預期波動與兩者所有的損益兩平點（再多 20%）。曲線另外給 121 個點畫圖。只試算、不下單。"""
+    F, T, r = chain["F"], chain["T"], chain["r"]
+    iv0 = chain["atm_iv"] or 0.2
+    em = ref_move if ref_move and ref_move > 0 else expected_move(F, chain["atm_iv"] or 0.0, T)
+    T_hold = max(T - max(hold_days, 0.0) / YEAR_DAYS, 0.0)
+    out: dict[str, Any] = {"F": round(F, 1), "days": round(T * YEAR_DAYS, 2), "hold_days": hold_days, "hold_is_expiry": T_hold <= 1e-9,
+                           "atm_iv": chain["atm_iv"], "em_pts": round(em, 1), "lots": lots, "structures": {}, "warnings": []}
+    legs_by: dict[str, list[dict]] = {}
+    far = 0.0
+    for kind in ("straddle", "strangle"):
+        legs = select_legs(chain, kind, select=select, delta=delta, k=k, ref_move=ref_move, fill=fill)
+        cost = sum(l["qty"] * l["entry"] for l in legs)
+        bes = breakevens(legs, cost)
+        far = max([far] + [abs(b - F) for b in bes])
+        legs_by[kind] = legs
+        out["structures"][kind] = {"legs": [{"right": l["right"], "strike": l["strike"], "entry": l["entry"], "bid": l["bid"], "ask": l["ask"]} for l in legs],
+                                   "cost_pts": round(cost, 2), "cost_twd": round(cost * mult * lots), "breakevens": [round(b, 1) for b in bes],
+                                   "breakeven_moves": [round(b - F, 1) for b in bes], "max_loss_twd": round(-cost * mult * lots)}
+        for l in legs:
+            if l["bid"] <= 0:
+                out["warnings"].append(f"{'買權' if l['right'] == 'C' else '賣權'} {l['strike']:g} 沒有買價：出場可能很難成交")
+    span = max(1.5 * em, far * 1.2, F * 0.02)
+    step = _nice_step(span)
+    lo = math.floor((F - span) / step) * step
+    hi = math.ceil((F + span) / step) * step
+    levels: list[float] = []
+    x = lo
+    while x <= hi + 1e-9:
+        if x > 0:
+            levels.append(float(x))
+        x += step
+
+    def row(S: float) -> dict[str, Any]:
+        d: dict[str, Any] = {"S": round(S, 1), "chg": round(S - F, 1), "chg_pct": round((S - F) / F, 5)}
+        for kind, legs in legs_by.items():
+            cost = out["structures"][kind]["cost_pts"]
+            d[kind] = {"expiry": round((payoff(legs, S) - cost) * mult * lots), "hold": round((_value_at(legs, S, T_hold, r, iv0) - cost) * mult * lots)}
+        return d
+
+    out["step"] = step
+    out["rows"] = [row(S) for S in levels]
+    c_lo, c_hi = levels[0], levels[-1]
+    out["curve"] = [row(c_lo + (c_hi - c_lo) * i / (COMPARE_CURVE_POINTS - 1)) for i in range(COMPARE_CURVE_POINTS)]
+    return out

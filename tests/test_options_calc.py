@@ -595,3 +595,86 @@ def test_analyze_and_close_analysis_carry_the_hedge_view():
     assert keep_call["tmf_lots"] < 0                                                                              # 只留下價內很深的 Call：賣微台
     json.dumps(res, allow_nan=False)
     json.dumps(a, allow_nan=False)
+
+
+# ── 跨式 vs 勒式：各點位的損益（compare_structures）────────────────
+
+def _cmp_chain(F=48400.0, iv=20.0, days=9.0, spread=0.03):
+    return oc.build_chain(oc.model_quotes(F, iv, days, spread_pct=spread), days / 365.0, F=F)
+
+
+def test_compare_expiry_pnl_is_the_exact_payoff_minus_cost_per_level():
+    ch = _cmp_chain()
+    r = oc.compare_structures(ch, lots=2, hold_days=1)
+    for kind in ("straddle", "strangle"):
+        legs = oc.select_legs(ch, kind)
+        cost = sum(l["entry"] for l in legs)
+        s = r["structures"][kind]
+        assert s["cost_pts"] == pytest.approx(cost, abs=0.01) and s["cost_twd"] == round(cost * 50 * 2) and s["max_loss_twd"] == -s["cost_twd"]
+        assert [x["strike"] for x in s["legs"]] == [l["strike"] for l in legs] and s["breakevens"] == [round(b, 1) for b in oc.breakevens(legs, cost)]
+        for row in r["rows"]:
+            assert row[kind]["expiry"] == round((oc.payoff(legs, row["S"]) - round(cost, 2)) * 50 * 2)
+    st, sg = r["structures"]["straddle"], r["structures"]["strangle"]
+    assert len(set(l["strike"] for l in st["legs"])) == 1 and sg["legs"][0]["strike"] > ch["F"] > sg["legs"][1]["strike"]                   # 跨式同一履約價；勒式兩翼價外
+    assert sg["cost_pts"] < st["cost_pts"] and min(st["breakevens"]) > min(sg["breakevens"])                                                 # 勒式便宜、但要走更遠才回本
+
+
+def test_compare_levels_are_round_centered_and_cover_every_breakeven():
+    for days, iv in ((9.0, 20.0), (238.0, 26.8), (2.0, 15.0)):
+        ch = _cmp_chain(iv=iv, days=days)
+        r = oc.compare_structures(ch, hold_days=1)
+        S = [x["S"] for x in r["rows"]]
+        assert all(b - a == r["step"] for a, b in zip(S, S[1:])) and all(s % r["step"] == 0 for s in S) and len(S) <= oc.COMPARE_MAX_ROWS
+        bes = r["structures"]["straddle"]["breakevens"] + r["structures"]["strangle"]["breakevens"]
+        assert S[0] < min(bes) and S[-1] > max(bes) and S[0] < ch["F"] < S[-1]
+        assert len(r["curve"]) == oc.COMPARE_CURVE_POINTS and r["curve"][0]["S"] == S[0] and r["curve"][-1]["S"] == S[-1]
+        assert all(x["chg"] == round(x["S"] - ch["F"], 1) for x in r["rows"])
+    assert oc._nice_step(1000) == 100 and oc._nice_step(2000) == 200 and oc._nice_step(2500) == 250 and oc._nice_step(1e9) == 5000
+
+
+def test_compare_hold_values_use_black76_with_the_remaining_time_and_become_payoff_at_expiry():
+    ch = _cmp_chain(days=9.0)
+    r = oc.compare_structures(ch, hold_days=2)
+    legs = oc.select_legs(ch, "straddle")
+    cost = r["structures"]["straddle"]["cost_pts"]
+    T_rem = ch["T"] - 2 / 365
+    row = r["rows"][len(r["rows"]) // 2]
+    assert row["straddle"]["hold"] == round((oc.position_value(legs, row["S"], T_rem, ch["r"], 0.0, ch["atm_iv"]) - cost) * 50)
+    assert r["hold_is_expiry"] is False and r["rows"][len(r["rows"]) // 2]["straddle"]["hold"] > r["rows"][len(r["rows"]) // 2]["straddle"]["expiry"]     # 現價附近：還有時間價值
+    late = oc.compare_structures(ch, hold_days=30)
+    assert late["hold_is_expiry"] is True and all(x[k]["hold"] == x[k]["expiry"] for x in late["rows"] for k in ("straddle", "strangle"))
+    zero = oc.compare_structures(ch, hold_days=0)
+    mid = zero["rows"][len(zero["rows"]) // 2]
+    assert abs(mid["straddle"]["hold"]) < r["structures"]["straddle"]["cost_twd"]                                                                   # 持有 0 天＝現在平掉：只賠價差，不是整個成本
+
+
+def test_compare_selection_and_errors():
+    ch = _cmp_chain()
+    a = oc.compare_structures(ch, delta=0.15)
+    b = oc.compare_structures(ch, delta=0.35)
+    assert a["structures"]["strangle"]["cost_pts"] < b["structures"]["strangle"]["cost_pts"] and a["structures"]["straddle"] == b["structures"]["straddle"]   # Delta 只影響勒式
+    m = oc.compare_structures(ch, select="move", k=1.0, ref_move=600.0)
+    sk = [l["strike"] for l in m["structures"]["strangle"]["legs"]]
+    assert abs(sk[0] - (ch["F"] + 600)) <= 50 and abs(sk[1] - (ch["F"] - 600)) <= 50 and m["em_pts"] == 600.0
+    wide = _cmp_chain(spread=0.25)
+    assert oc.compare_structures(wide)["structures"]["straddle"]["cost_pts"] > oc.compare_structures(wide, fill="mid")["structures"]["straddle"]["cost_pts"]
+    empty = {"F": 48400.0, "T": 0.02, "r": 0.015, "atm_iv": 0.2, "rows": []}
+    with pytest.raises(ValueError):
+        oc.compare_structures(empty)
+    json.dumps(oc.compare_structures(ch), allow_nan=False)
+
+
+def test_compare_range_follows_breakevens_even_with_a_small_user_move_and_warns_without_bids():
+    ch = _cmp_chain()
+    r = oc.compare_structures(ch, ref_move=50.0)                                          # 自己填很小的預期波動：範圍仍要涵蓋損益兩平
+    S = [x["S"] for x in r["rows"]]
+    bes = r["structures"]["straddle"]["breakevens"] + r["structures"]["strangle"]["breakevens"]
+    assert S[0] < min(bes) and S[-1] > max(bes)
+    r2 = oc.compare_structures(ch)
+    assert r2["rows"][0]["S"] <= ch["F"] - 1.5 * r2["em_pts"] and r2["rows"][-1]["S"] >= ch["F"] + 1.5 * r2["em_pts"]
+    import copy
+    nob = copy.deepcopy(ch)
+    for row in nob["rows"]:
+        if row["call"]:
+            row["call"]["bid"] = 0.0
+    assert any("沒有買價" in w for w in oc.compare_structures(nob)["warnings"]) and not oc.compare_structures(ch)["warnings"]

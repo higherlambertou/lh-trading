@@ -50,6 +50,10 @@ def make_fixtures(d: Path) -> None:
     legs = oc.select_legs(ch, "straddle")
     held = [{"right": l["right"], "strike": l["strike"], "qty": 1, "entry": l["entry"] + (40 if l["right"] == "C" else -60)} for l in legs]
     live = oc.close_analysis(held, F=ch["F"], T=ch["T"], iv=ch["atm_iv"], marks=[{"bid": l["bid"], "ask": l["ask"], "iv": l["iv"]} for l in legs], hold_hours=24)
+    cmp = oc.compare_structures(ch, lots=2, hold_days=1)
+    cmp_exp = oc.compare_structures(ch, select="move", k=1.0, ref_move=600.0, hold_days=30)
+    for name, body in (("compare", cmp), ("compare_expiry", cmp_exp)):
+        (d / f"{name}.json").write_text(json.dumps({**body, **META}, allow_nan=False), encoding="utf-8")
     for name, body, extra in (("calc_straddle", straddle, META), ("calc_strangle_user", strangle, META), ("calc_call", call, META),
                               ("close_doc", doc, {**META, "source": "manual", "delivery_month": None, "expiry": None}), ("close_live", live, META)):
         (d / f"{name}.json").write_text(json.dumps({**body, **extra}, allow_nan=False), encoding="utf-8")

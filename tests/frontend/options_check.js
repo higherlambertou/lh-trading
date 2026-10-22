@@ -23,7 +23,7 @@ const realApi = transpile(path.join(FRONT, "lib", "api.ts"), path.join(TMP, "rea
 const calls = [];
 let impl = {};
 const spy = (name) => (...a) => { calls.push([name, ...a]); return impl[name] ? impl[name](...a) : Promise.resolve(undefined); };
-global.__api_stub = { api: { order: { optionExpiries: spy("expiries") }, options: { calc: spy("calc"), close: spy("close"), chain: spy("chain") } },
+global.__api_stub = { api: { order: { optionExpiries: spy("expiries") }, options: { calc: spy("calc"), close: spy("close"), chain: spy("chain"), compare: spy("compare") } },
                       apiErrorDetail: realApi.apiErrorDetail };
 fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = global.__api_stub;");
 fs.writeFileSync(path.join(TMP, "lucide_stub.js"), "module.exports = new Proxy({}, { get: () => () => null });");
@@ -34,6 +34,7 @@ Module._resolveFilename = function (req, ...r) {
   if (req === "lucide-react") return path.join(TMP, "lucide_stub.js");
   return orig.call(this, req, ...r);
 };
+const SC = transpile(path.join(FRONT, "components", "StrategyCompare.tsx"), path.join(TMP, "StrategyCompare.js"));     // 面板引用 ./StrategyCompare：先放到同一個暫存目錄
 const P = transpile(path.join(FRONT, "components", "OptionCalcPanel.tsx"), path.join(TMP, "panel.js"));
 const Comp = P.default, e = React.createElement;
 
@@ -321,6 +322,51 @@ const EXP = ["202610", "202611"];
     check("容器：手動模式不查鏈、清掉摘要", !calls.some((c) => c[0] === "chain") && m.sets.ctx === null);
     const hint = render({ expiries: EXP, src: live, ctx: { F: 49283, days: 8.8, atm_iv_pct: 20.3, em_sigma_pts: 1551.2, straddle_pts: 1237.7 } });
     check("容器：有鏈摘要時顯示遠期價、ATM IV 與市場隱含 1σ", field(hint.tree, "到期月").props.hint === "遠期 49,283.0 · ATM IV 20.3% · 距到期 8.8 天" && field(hint.tree, "預期波動（點，選填）").props.hint.includes("1,551"), text(field(hint.tree, "到期月").props.hint));
+  }
+  // ══ 跨式 vs 勒式：各點位的損益 ══════════════════════════════════
+  {
+    const F0 = { ...O.DEFAULT_FORM, delta: "0.25", lots: "2", movePts: "" };
+    const live = O.buildCompareRequest(F0, { ...O.DEFAULT_SOURCE, deliveryMonth: "202610" }, "1");
+    check("比較：請求內容（到期月、勒式 Delta、組數、持有天數）", live.ok && J(live.body) === J({ category: "TXO", select: "delta", delta: 0.25, k: 0.5, lots: 2, hold_days: 1, delivery_month: "202610" }), J(live));
+    const man = O.buildCompareRequest({ ...F0, select: "move", k: "1", movePts: "600" }, { ...O.DEFAULT_SOURCE, manual: true, mF: "49300", mIv: "20", mDays: "9" }, "0");
+    check("比較：手動模式與預期波動", man.ok && man.body.manual.F === 49300 && man.body.move_pts === 600 && man.body.select === "move" && man.body.k === 1 && man.body.hold_days === 0 && !("delivery_month" in man.body), J(man));
+    const bad = [[{ ...F0, delta: "1.2" }, "1"], [{ ...F0, select: "move", k: "-1" }, "1"], [{ ...F0, lots: "0" }, "1"], [F0, "-1"], [F0, "900"], [{ ...F0, movePts: "-5" }, "1"]];
+    check("比較：不合理的輸入擋下來", bad.every(([f, h]) => !O.buildCompareRequest(f, { ...O.DEFAULT_SOURCE, deliveryMonth: "202610" }, h).ok)
+      && !O.buildCompareRequest(F0, O.DEFAULT_SOURCE, "1").ok, "");
+    const c = fx("compare"), ce = fx("compare_expiry");
+    const g = O.chartGeometry(c.curve, 720, 260);
+    check("比較：曲線座標（點位由左到右、損益越大越上面、path 從 M 開始）", g.X(g.x0) < g.X(g.x1) && g.Y(g.y1) < g.Y(g.y0) && g.path((r) => r.straddle.expiry).startsWith("M") && g.y0 <= 0 && g.y1 >= 0);
+    const t = html(e(SC.CompareView, { r: c }));
+    const s0 = c.structures.straddle, s1 = c.structures.strangle;
+    check("比較：兩種結構的腳、成本（元）、損益兩平", t.includes("買跨式") && t.includes("買勒式") && t.includes(O.twd(s0.cost_twd)) && t.includes(O.twd(s1.cost_twd))
+      && s0.breakevens.every((b) => t.includes(O.pts(b))) && s1.legs.every((l) => t.includes(`${l.right === "C" ? "Call" : "Put"} ${O.pts(l.strike)}`)), t.slice(0, 600));
+    check("比較：表格每個點位一列、四欄損益、標出現價附近、沒有怪值", (t.match(/←現價/g) || []).length === 1 && t.includes("跨式・到期") && t.includes("勒式・1 天後") && c.rows.every((x) => t.includes(O.pts(x.S)))
+      && t.includes(O.stwd(c.rows[0].straddle.expiry)) && !BAD.test(t), t.match(BAD));
+    const raw = renderToStaticMarkup(e(SC.CompareChart, { r: c }));
+    check("比較：圖上有四條線（到期實線＋持有虛線）與損益兩平點", (raw.match(/<path /g) || []).length === 4 && (raw.match(/stroke-dasharray="5 4"/g) || []).length === 2 && (raw.match(/<circle /g) || []).length >= 4, raw.slice(0, 300));
+    const te = html(e(SC.CompareView, { r: ce }));
+    const rawe = renderToStaticMarkup(e(SC.CompareChart, { r: ce }));
+    check("比較：持有天數超過到期就只有到期線、欄名寫（＝到期）", ce.hold_is_expiry === true && (rawe.match(/<path /g) || []).length === 2 && te.includes("跨式・（＝到期）") && te.includes("只有實線"), te.slice(0, 300));
+    check("比較：持有那欄等於到期那欄（到期後）", ce.rows.every((x) => x.straddle.hold === x.straddle.expiry && x.strangle.hold === x.strangle.expiry));
+    // 容器：hooks 換成替身
+    const st = [];
+    let n = 0;
+    React.useState = (init) => { const i = n++; if (!(i in st)) st[i] = init; return [st[i], (v) => { st[i] = typeof v === "function" ? v(st[i]) : v; }]; };
+    React.useCallback = (f) => f;
+    const render = (props) => { n = 0; return SC.default(props); };
+    const find = (node, pred, out = []) => { if (Array.isArray(node)) node.forEach((x) => find(x, pred, out)); else if (node && typeof node === "object" && node.props) { if (pred(node)) out.push(node); find(node.props.children, pred, out); } return out; };
+    calls.length = 0; impl.compare = () => Promise.resolve(c);
+    let tree = render({ form: F0, src: { ...O.DEFAULT_SOURCE, deliveryMonth: "202610" } });
+    await find(tree, (x) => x.type === "button")[0].props.onClick();
+    check("容器：按比較 → 用表單的設定問後端一次、結果存起來", calls.filter((x) => x[0] === "compare").length === 1 && calls.find((x) => x[0] === "compare")[1].hold_days === 1 && st[1] === c && st[2] === "", J(calls));
+    calls.length = 0;
+    tree = render({ form: { ...F0, delta: "3" }, src: { ...O.DEFAULT_SOURCE, deliveryMonth: "202610" } });
+    await find(tree, (x) => x.type === "button")[0].props.onClick();
+    check("容器：輸入不合理就不問後端、寫原因", calls.length === 0 && st[2].includes("Delta"), st[2]);
+    impl.compare = () => Promise.reject(new Error('422 — {"detail":"找不到買權能買的檔"}'));
+    tree = render({ form: F0, src: { ...O.DEFAULT_SOURCE, deliveryMonth: "202610" } });
+    await find(tree, (x) => x.type === "button")[0].props.onClick();
+    check("容器：後端錯誤顯示白話原因", st[2] === "找不到買權能買的檔" && st[3] === false, st[2]);
   }
   console.log(fail ? `\n${fail} 項失敗` : "\n全部通過");
   process.exit(fail ? 1 : 0);

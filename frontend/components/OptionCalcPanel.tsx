@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { Calculator } from "lucide-react";
+import StrategyCompare from "./StrategyCompare";
 import { api, apiErrorDetail } from "@/lib/api";
 import {
   DEFAULT_FORM, DEFAULT_SOURCE, EMPTY_ROW, KIND_HINT, KIND_TEXT, beText, buildCalcRequest, buildCloseRequest, defaultDelta, defaultMonth, hedgeText,
@@ -422,6 +423,7 @@ export default function OptionCalcPanel() {
             {calcErr && <span className="text-[11px]" style={{ color: "#ff5252" }}>{calcErr}</span>}
           </div>
           {calc && <CalcResultView r={calc} onToClose={toClose} />}
+          <StrategyCompare form={form} src={src} />
         </>
       ) : (
         <>
