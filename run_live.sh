@@ -39,6 +39,9 @@ echo $$ > "$LOCK_DIR/pid"
 
 PORT=8002
 PY=/Users/lambert/anaconda3/bin/python3.11
+# shioaji 1.5.8 的獨立環境（專案裡的 .venv，沿用 anaconda 的其他套件；update.md 發現 68）。沒有 .venv 就用 anaconda 本身（舊版 1.5.3）。
+# 退回舊版：mv .venv .venv.off 之後重啟 watchdog（1.5.3 已從 PyPI 下架，備份在 data/backup/sdk/shioaji-1.5.3）。
+[ -x "$PWD/.venv/bin/python" ] && PY="$PWD/.venv/bin/python"
 # 正式盤 main.py 綁定 .env 的 BIND_HOST（多機部署用的 Tailscale IP），
 # 不是 localhost，所以健康檢查必須打同一個 host，否則會誤判「啟動失敗」而狂殺健康進程。
 BIND_HOST=$(grep -E '^BIND_HOST=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"' ")
@@ -154,6 +157,16 @@ wait_iface() {   # 位址不在就等（每 5 秒看一次）；不啟動後端�
     return 0
 }
 
+LOG_MAX_MB=100         # app log 超過這麼大，(重)啟動前改名成 .1（只留一份舊的；update.md 發現 68）
+rotate_app_log() {     # 只在子進程已經停掉、還沒啟動新的之前呼叫（沒有人在寫這個檔）
+    local size
+    size=$(stat -f %z "$APP_LOG" 2>/dev/null || stat -c %s "$APP_LOG" 2>/dev/null || echo 0)
+    if [ "${size:-0}" -gt $((LOG_MAX_MB * 1024 * 1024)) ]; then
+        mv -f "$APP_LOG" "${APP_LOG}.1"
+        log "app log 超過 ${LOG_MAX_MB}MB，改名成 ${APP_LOG}.1（只留一份舊的）"
+    fi
+}
+
 # 啟動前先清掉任何佔用 8002 的殘留進程，避免綁不上 port
 free_port() {
     local pids
@@ -191,6 +204,7 @@ while true; do
 
     wait_iface
     free_port
+    rotate_app_log
     log "啟動 main.py（正式盤）…"
     "$PY" main.py >> "$APP_LOG" 2>&1 &
     CHILD_PID=$!

@@ -35,6 +35,11 @@ _PRIORITY = {"default": 3, "high": 4, "urgent": 5}
 _SECRET_ENV = ("NOTIFY_TELEGRAM_TOKEN", "NOTIFY_TELEGRAM_CHAT_ID", "NOTIFY_NTFY_URL", "NOTIFY_WEBHOOK_URL")
 
 _clock: Callable[[], float] = time.time           # 測試可替換
+_sleep: Callable[[float], None] = time.sleep       # 測試可替換（重試的等待）
+RETRY_DELAYS = (15.0, 60.0, 180.0)                 # 網路類錯誤：隔這麼久重送失敗的通道（update.md 發現 68；10/20 08:35 的盤前摘要因為網路瞬斷沒送到）
+LATE_NOTE_SEC = 30.0                               # 晚這麼久以上才送到，訊息後面註明原本的時間
+_RETRYABLE = ("URLError", "TimeoutError", "timeout", "ConnectionError", "ConnectionResetError", "ConnectionRefusedError", "RemoteDisconnected",
+              "IncompleteRead", "SSLError", "SSLEOFError", "OSError", "HTTP 5", "HTTPError: HTTP Error 5", "gaierror")
 _memory_last: dict[str, float] = {}               # 沒有冷卻檔時的記憶體備援
 _lock = threading.Lock()
 
@@ -116,11 +121,17 @@ def _send_webhook(title: str, message: str, priority: str) -> int:
 _SENDERS = {"telegram": _send_telegram, "ntfy": _send_ntfy, "webhook": _send_webhook}
 
 
-def send_sync(title: str, message: str, priority: str = "high") -> dict[str, str]:
-    """送到每個已設定的通道，回傳 {通道: 'ok' 或錯誤說明}。不丟例外。沒有通道時回 {}（並寫 ERROR log）。"""
+def retryable(err: str) -> bool:
+    """網路類的錯誤（斷線、逾時、伺服器 5xx）值得重試；設定錯誤（HTTP 4xx、網址不對）重試也沒用。"""
+    return any(err.startswith(p) for p in _RETRYABLE) or "timed out" in err
+
+
+def send_sync(title: str, message: str, priority: str = "high", only: Optional[list[str]] = None) -> dict[str, str]:
+    """送到每個已設定的通道（only＝只送這幾個，重試用），回傳 {通道: 'ok' 或錯誤說明}。不丟例外。沒有通道時回 {}（並寫 ERROR log）。"""
     message = message if len(message) <= MAX_LEN else message[:MAX_LEN] + "…"
-    logger.warning("NOTIFY %s｜%s", title, message.replace("\n", " ／ "))     # 不論推不推得出去，log 裡都留一份
-    names = channels()
+    if only is None:
+        logger.warning("NOTIFY %s｜%s", title, message.replace("\n", " ／ "))     # 不論推不推得出去，log 裡都留一份（重試不再記一次）
+    names = channels() if only is None else [n for n in channels() if n in only]
     if not names:
         logger.error("沒有設定任何推播通道（NOTIFY_TELEGRAM_*／NOTIFY_NTFY_URL／NOTIFY_WEBHOOK_URL），上面這則警示只有 log；"
                      "設定後用 python -m core.notify test 測試")
@@ -194,12 +205,29 @@ def _release(key: str) -> None:
 
 
 def _deliver(title: str, message: str, priority: str, key: Optional[str], cooldown: float) -> dict[str, str]:
-    """（已通過冷卻）實際送出；有設定通道卻全部失敗就把冷卻還回去。不丟例外。"""
+    """（已通過冷卻）實際送出；網路類錯誤的通道隔 RETRY_DELAYS 重送（只送失敗的那幾個），晚 LATE_NOTE_SEC 以上才送到的註明原本時間。
+    有設定通道卻全部失敗就把冷卻還回去。不丟例外。預設在背景執行緒裡跑，等待不會卡住任何東西。"""
+    t0 = time.time()
     try:
         res = send_sync(title, message, priority)
     except Exception:  # noqa: BLE001
         logger.exception("推播執行緒例外（已忽略）")
         res = {"error": "exception"}
+    for delay in RETRY_DELAYS:
+        failed = [ch for ch, v in res.items() if v != "ok" and ch in _SENDERS and retryable(v)]
+        if not failed:
+            break
+        _sleep(delay)
+        late = time.time() - t0
+        note = f"\n（網路恢復後補送：原本 {time.strftime('%H:%M:%S', time.localtime(t0))}）" if late >= LATE_NOTE_SEC else ""
+        try:
+            again = send_sync(title, message + note, priority, only=failed)
+        except Exception:  # noqa: BLE001
+            logger.exception("推播重試例外（已忽略）")
+            break
+        res.update(again)
+        if all(again.get(ch) == "ok" for ch in failed):
+            logger.info("推播重試成功（%s，晚了 %.0f 秒）", "、".join(failed), late)
     if key and cooldown > 0 and res and not any(v == "ok" for v in res.values()):
         _release(key)
     return res

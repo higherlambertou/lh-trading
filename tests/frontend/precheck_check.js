@@ -33,6 +33,9 @@ check("傍晚：今天日盤的『還沒有』不顯示", !L.showDayLine(ev) && 
 check("等資料時寫原因", L.nightLine(wt).startsWith("11/10 晚上的夜盤預期振幅：等 11-10 收盤") && L.nextDayLine(wt).startsWith("下一個日盤預期振幅：等 11-10 收盤"), [L.nightLine(wt), L.nextDayLine(wt)]);
 check("計算失敗只影響那一行", L.nightLine(br) === "夜盤預期振幅：計算失敗（細節在後端 log）" && L.nextDayLine(br) === null && html(React.createElement(C.PrecheckBody, { p: br })).includes("隱含波動"));
 check("夜盤那一行有月亮", html(React.createElement(C.PrecheckBody, { p: ev })).includes("🌙 11/10 晚上的夜盤"));
+check("預測驗證：還不夠", L.hitsLine(fx.hits_few) === "預測驗證：累積中（日盤 3 天、夜盤 1 晚，滿 5 筆才算命中率）", L.hitsLine(fx.hits_few));
+check("預測驗證：日盤夠了、夜盤還不夠", L.hitsLine(fx.hits_ok) === "預測驗證：日盤近 20 天有 14 天落在 68% 區間內、夜盤累積中（3 晚）（模型說應約 68%）", L.hitsLine(fx.hits_ok));
+check("沒有命中率資料就不顯示那一行", L.hitsLine(f) === null && html(React.createElement(C.PrecheckBody, { p: fx.hits_ok })).includes("預測驗證"));
 const raw = renderToStaticMarkup(React.createElement(C.PrecheckBody, { p: f }));
 check("IV 偏高與有事件時標黃色、有 📅", (raw.match(/color:#ffc107/g) || []).length >= 2 && raw.includes("📅"), raw);
 check("沒事件時不標黃", !renderToStaticMarkup(React.createElement(C.PrecheckBody, { p: q })).includes("📅"));

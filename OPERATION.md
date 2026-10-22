@@ -113,6 +113,13 @@ watchdog log 有 `判定券商連線假死(stale) → 正常關閉 PID=… 後�
 之後每個交易日 14:00 本機備份完就複製一份過去（保留 14 天）；Google Drive 沒開時只略過、不影響本機備份，〈系統健康〉會變黃。
 備份內容是成交紀錄、IV 歷史、日誌等資料庫；**不含** `.env`、憑證與金鑰。
 
+### 券商 SDK 版本與退回（update.md 發現 68）
+
+正式盤／模擬盤由 watchdog 用專案裡的 `.venv/bin/python` 啟動（shioaji 1.5.8；其他套件沿用 anaconda）。〈系統健康〉的「券商連線」那一行會寫目前的 SDK 版本。
+- **退回 1.5.3**：`mv .venv .venv.off`，再重啟 watchdog（沒有 `.venv` 就用 anaconda 本身的 1.5.3）。
+- **anaconda 的 1.5.3 壞掉時**：備份在 `data/backup/sdk/shioaji-1.5.3/`，把兩個資料夾複製回 `~/anaconda3/lib/python3.11/site-packages/`。1.5.3 已從 PyPI 下架，pip 裝不回來。
+- **之後要再升級**：先 `.venv/bin/python -m pip install shioaji==新版`，用 `.venv/bin/python main_sim.py` 跑模擬盤，實測登入、報價、部位、掛單／取消、市價成交與成交回報，再重啟正式盤的 watchdog。
+
 ### 查看策略列表
 
 ```bash

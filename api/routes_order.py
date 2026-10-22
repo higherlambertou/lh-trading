@@ -21,18 +21,27 @@ router = APIRouter()
 _trades_cache: list = []
 WEEKEND_TRADES_SEC = 120
 _trades_updated_at: float = 0.0
+UNFINISHED = {"PendingSubmit", "PreSubmitted", "Submitted", "PartFilled"}
+
+
+def has_unfinished(trades: list) -> bool:
+    """快取裡還有沒結束的委託嗎（要向券商更新狀態才看得到成交或取消）。"""
+    return any(isinstance(t, dict) and t.get("status") in UNFINISHED for t in trades or [])
 
 
 async def trades_refresh_loop() -> None:
     """每 8s 向 worker 查一次委託清單，快取起來供 HTTP 端點回傳。
-    用較長 timeout（12s），確保即使 api.list_trades() 偶爾緩慢也能成功。"""
+    用較長 timeout（12s），確保即使 api.list_trades() 偶爾緩慢也能成功。
+    shioaji 1.5.x 的委託快取不會被回報自動更新（1.7.6 才有）：清單裡還有沒結束的委託時，先 update_status 再讀（list_trades_with_status，
+    多一次帳務查詢）；沒有掛單就只讀本機快取、不查券商（update.md 發現 68）。"""
     await asyncio.sleep(3)
     while True:
         await asyncio.sleep(WEEKEND_TRADES_SEC if weekend_quiet(datetime.now(TAIPEI)) else 8)     # 週末沒有盤：委託不會變（發現 65）
         if not broker.is_connected:
             continue
         try:
-            raw = await asyncio.wait_for(broker.list_trades(), timeout=12)
+            fetch = broker.list_trades_with_status if has_unfinished(_trades_cache) else broker.list_trades
+            raw = await asyncio.wait_for(fetch(), timeout=12)
             global _trades_updated_at
             _trades_cache[:] = raw
             _trades_updated_at = time.time()

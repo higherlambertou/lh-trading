@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from api.routes_position import _cache as position_cache
 from api.routes_strategy import strategy_engine
-from core import precheck, range_suggest, stop_suggest
+from core import forecast_log, precheck, range_suggest, stop_suggest
 from core.broker import broker
 from core.daily_summary import TICK_SEC, market_state
 from core.flow_store import flow_recorder
@@ -68,7 +68,8 @@ async def get_precheck() -> dict[str, Any]:
         logger.debug("precheck：取不到盤中脈絡（略過）", exc_info=True)
     events = await asyncio.to_thread(precheck.fetch_events, now)
     evening = await asyncio.to_thread(precheck.fetch_evening, now, market_state.store)       # 13:45～05:00：今晚夜盤與下一個日盤的預期振幅（發現 67）
-    return precheck.build(ctx, market_state.snapshot(), events, now, evening)
+    hits = await asyncio.to_thread(forecast_log.summary, market_state.store.path)            # 預測的命中率（發現 68）
+    return precheck.build(ctx, market_state.snapshot(), events, now, evening, hits)
 
 
 @router.get("/live")

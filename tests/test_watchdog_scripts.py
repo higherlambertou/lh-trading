@@ -396,3 +396,40 @@ def test_stale_restarts_the_backend(tmp_path, script):
         for x in pids():
             if _alive(x):
                 os.kill(x, signal.SIGKILL)
+
+
+# ── 新版 SDK 的獨立環境與 log 改名（update.md 發現 68）──────────────────────────
+
+@pytest.mark.skipif(not HAS_BASH, reason="需要 bash")
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_python_is_the_venv_when_present(tmp_path, script):
+    text = script.read_text(encoding="utf-8")
+    lines = [l for l in text.splitlines() if l.startswith("PY=") or l.startswith('[ -x "$PWD/.venv/bin/python" ]')]
+    assert len(lines) == 2, lines
+    snippet = "\n".join(lines) + '\necho "$PY"'
+    r = subprocess.run(["bash", "-c", "set -u\n" + snippet], capture_output=True, text=True, cwd=tmp_path)
+    assert r.stdout.strip() == "/Users/lambert/anaconda3/bin/python3.11"                # 沒有 .venv：用 anaconda（舊版）
+    (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    py = tmp_path / ".venv" / "bin" / "python"
+    py.write_text("#!/bin/sh\n")
+    py.chmod(0o755)
+    r = subprocess.run(["bash", "-c", "set -u\n" + snippet], capture_output=True, text=True, cwd=tmp_path)
+    assert r.stdout.strip() == str(py.resolve()) or r.stdout.strip().endswith("/.venv/bin/python")
+    assert '"$PY" main' in text                                                          # 啟動後端用的是 $PY，不是寫死的路徑
+
+
+@pytest.mark.skipif(not HAS_BASH, reason="需要 bash")
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_rotate_app_log(tmp_path, script):
+    log_fn = 'log() { echo "LOG: $*"; }'
+    fn = function_source("rotate_app_log", script)
+    app = tmp_path / "app.log"
+    app.write_bytes(b"x" * (2 * 1024 * 1024))
+    r = run_bash(f'{log_fn}\n{fn}\nAPP_LOG="{app}"\nLOG_MAX_MB=1\nrotate_app_log', stub_bin(tmp_path, ifconfig="exit 0"))
+    assert not app.exists() and (tmp_path / "app.log.1").stat().st_size == 2 * 1024 * 1024 and "改名成" in r.stdout
+    app.write_bytes(b"y" * 1000)
+    r = run_bash(f'{log_fn}\n{fn}\nAPP_LOG="{app}"\nLOG_MAX_MB=1\nrotate_app_log', tmp_path / "bin")
+    assert app.exists() and r.stdout == ""                                               # 沒超過：不動
+    text = script.read_text(encoding="utf-8")
+    i = text.index("    rotate_app_log\n")
+    assert text.index("    free_port\n") < i < text.index('"$PY" main')                 # 舊的停掉、清完 port 之後，啟動新的之前

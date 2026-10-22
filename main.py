@@ -44,6 +44,9 @@ from core.session_watch import TradingDays, session_watch, session_watch_loop
 from core.log_throttle import install_access_filter
 from core.taifex_update import taifex_update_loop
 from core.bar_gapfill import gapfill_loop
+from core import forecast_log, precheck
+from core.evening_brief import evening_loop
+from core.intraday_context import intraday_context
 from core.signal_shadow import shadow_loop
 from core import entry_log
 from core.live_state import live_state
@@ -122,6 +125,15 @@ async def lifespan(app: FastAPI):
     session_task = loop.create_task(session_watch_loop(lambda: bool(broker._known_subs), TradingDays(TwCalendar().check)))   # 券商連線假死偵測（/api/health 回報 stale → watchdog 重啟；SESSION_WATCH=false 關閉）
     taifex_task = loop.create_task(taifex_update_loop())                  # 期交所日資料自動更新（獨立子行程；只有正式盤跑；TAIFEX_UPDATE=false 關閉）
     gapfill_task = loop.create_task(gapfill_loop(market_state.store, broker.kbars, lambda: broker.is_connected))   # 走勢圖缺口回補（盤前／盤後各一次；只有正式盤；GAPFILL=false 關閉）
+
+    async def _day_forecast(today: str):
+        ctx = await intraday_context.get(market_state.store, "TXF", today)
+        return ctx.day_iv if ctx else None
+    _cal = TwCalendar()
+    evening_task = loop.create_task(evening_loop(market_state.store, lambda d: bool(_cal.check(d)["open"])))   # 傍晚摘要 16:20（給夜盤；只通知；EVENING_BRIEF=false 關閉）
+    forecast_task = loop.create_task(forecast_log.forecast_loop(          # 預測紀錄與命中率（日盤／夜盤預期振幅；只記錄；FORECAST_LOG=false 關閉）
+        market_state.store.path, _day_forecast, lambda now: precheck.fetch_evening(now, market_state.store),
+        lambda target: market_state.store.bars_1m("TXF", target)))
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
     startup_task.cancel()
@@ -142,6 +154,8 @@ async def lifespan(app: FastAPI):
     session_task.cancel()
     taifex_task.cancel()
     gapfill_task.cancel()
+    forecast_task.cancel()
+    evening_task.cancel()
     shadow_task.cancel()
     tick_recorder.stop()
     flow_recorder.stop()

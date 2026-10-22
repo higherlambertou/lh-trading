@@ -39,7 +39,8 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 連上過之後 `nobroker`／`down` 連續 2 次（≈30s）就 kill -9 並重啟。**腳本鐵則**：log 用 `>>`（`>` 會清空正在跑那個的 log）；變數後面緊接全形標點要寫 `${var}`；
 長等待一律用 `isleep`（背景 sleep＋wait，否則 `pkill` 會被拖最長 10 分鐘）；`main.py` 啟動前先試綁 `BIND_HOST`（`core/bind_check.py`）。測試 `tests/test_watchdog_scripts.py`。
 
-**log**：watchdog `/tmp/lh_{sim,live}_watchdog.log`，應用程式 `/tmp/lh_{sim,live}.log`。**停止**：`kill <watchdog_pid>`（會一併關掉子進程；只 kill 子進程它會拉回來）。
+**Python 與 SDK**：watchdog 有專案的 `.venv` 就用它（沿用 anaconda 套件＋shioaji 1.5.8，發現 68），沒有就用 anaconda（1.5.3）；退回舊版＝`mv .venv .venv.off` 再重啟 watchdog（1.5.3 已下架，備份在 `data/backup/sdk/`）。**升級 SDK 一律先用模擬盤實測下單與成交回報。**
+**log**：watchdog `/tmp/lh_{sim,live}_watchdog.log`，應用程式 `/tmp/lh_{sim,live}.log`（超過 100 MB 在重啟前改名成 `.1`）。**停止**：`kill <watchdog_pid>`（會一併關掉子進程；只 kill 子進程它會拉回來）。
 **凍結時抓堆疊**：`kill -USR1 <pid>`（main_sim.py 已掛 faulthandler）。排錯與「誰關的」判斷見 OPERATION.md〈常見狀況〉。
 
 ---
@@ -100,9 +101,9 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 - **帳務查詢頻率**（`positions_refresh_loop` 等）：worker 單執行緒，查詢期間下單會排隊；**加輪詢或縮短間隔前先估總和**（見下方上限表）。`broker.kbars()` 只在盤前／盤後用。
 
 ### 通知
-- 一律走 `notify()`（背景執行緒、永不丟例外、有冷卻 key、模擬盤不推播）；交易路徑上再包 try/except，**通知壞了不能影響平倉**；訊息**不放帳號與權益**（連「占權益 %」也不行）。
+- 一律走 `notify()`（背景執行緒、永不丟例外、有冷卻 key、模擬盤不推播、網路類錯誤隔 15 秒／1 分／3 分重送失敗的通道）；交易路徑上再包 try/except，**通知壞了不能影響平倉**；訊息**不放帳號與權益**（連「占權益 %」也不行）。
 - **測試絕不能碰真實通道**：`tests/conftest.py` 已設 `NOTIFY_SKIP_DOTENV=1` 並把 `_http_post`／`_http_get` 換成會失敗的替身（發現 34 的事故）；`tests/test_notify.py` 守著。
-- **指標類通知**（波動放大／合約到期／盤前摘要，發現 37、39、40）：只通知、不動委託、**不接進場訊號**（買賣力道、Hurst 標籤的檢驗沒過）。
+- **指標類通知**（波動放大／合約到期／盤前摘要／傍晚摘要，發現 37、39、40、68）：只通知、不動委託、**不接進場訊號**（買賣力道、Hurst 標籤的檢驗沒過）。
 
 ### 資料與記錄（純加法，不影響交易）
 - trade_log、進場市場狀態紀錄、盤前跨市場資訊紀錄、flow_1m、ticks 落地：**寫入失敗不擋交易**；**沒有任何策略或風控模組可以讀這些欄位**（`tests/test_entry_log.py`、`tests/test_premarket_log.py` 靜態檢查；只通知的 `daily_brief.py`、`reminders.py`、`weekly_report.py`（週報，只數停損監控觸發次數）是明列的例外）。
@@ -117,6 +118,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 - **建議停損停利**：σ 定義必須與 `stop_calibration.trailing_sigma` 一致；`stop_calibration.json` 是事先登記、跑一次的表，**不要為了數字好看重算**（重算先重新登記）；**勝率不是優勢**——進場沒有資訊時每筆期望值＝−成本。
 - **機率範圍帶**（發現 48）：σ 與建議停損停利共用同一個定義；`range_calibration.json` 是事先登記、跑一次的表（樣本外 44／48 格過），**不要為了數字好看重算**；只說會走多遠、不說方向，**不要當進場訊號**；策略／風控／下單模組不得引用（`tests/test_range_suggest.py` 靜態檢查）。
 - **口數提示**（發現 51，`core/position_size.py`）：**只顯示、不擋單**（下單面板的口數欄旁）；風險＝(停損＋緩衝)×每點價值，沒有停損登記的部位風險未知、只列出不計入；權益取不到或過期、停損沒填一律不給口數（fail-closed）。要做成真正擋單的獨立風控層（《部位大小控管》需求文件）會動到下單路徑，先討論；`tests/test_position_size.py` 靜態檢查下單與策略路徑沒有引用它。
+- **預測紀錄**（`core/forecast_log.py`，發現 68）：日盤／夜盤預期振幅每天一筆、存了不改（觸發器），收盤後對照實際算命中率；只記錄、只顯示，策略／風控／下單不讀。
 - **夜盤預期振幅**（發現 67，`core/night_range.py`）：只顯示；模型在獨立子行程擬合（`data/night_model.json`），後端只讀結果；輸入不齊寫原因、不湊數字；策略／風控／下單不得引用。
 - **選擇權試算**：只做買方；`option_chain` 只在按下試算時查、5 秒快取，**不要輪詢**；口數 0 要擋。
 - **回測**放獨立子行程（`nice -n 10`、同時只跑一個），**不要改成在交易行程裡跑**（CPU 密集會搶下單與報價的 GIL）。

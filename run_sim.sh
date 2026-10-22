@@ -35,6 +35,10 @@ HEALTH_HOST="$(_env_val SIM_BIND_HOST)"
 HEALTH_HOST="${HEALTH_HOST:-127.0.0.1}"
 HEALTH_URL="http://${HEALTH_HOST}:${PORT}/api/health"
 APP_LOG="/tmp/lh_sim.log"
+PY=/Users/lambert/anaconda3/bin/python3.11
+# shioaji 1.5.8 的獨立環境（專案裡的 .venv，沿用 anaconda 的其他套件；update.md 發現 68）。沒有 .venv 就用 anaconda 本身（舊版 1.5.3）。
+# 退回舊版：mv .venv .venv.off 之後重啟 watchdog（1.5.3 已從 PyPI 下架，備份在 data/backup/sdk/shioaji-1.5.3）。
+[ -x "$PWD/.venv/bin/python" ] && PY="$PWD/.venv/bin/python"
 CHECK_INTERVAL=15      # 每幾秒檢查一次 health
 GRACE_PERIOD=200       # (重)啟動後容許「還沒登入完成」的寬限秒數（永豐 Solace 登入可達 ~135s）
 FAIL_THRESHOLD=2       # 寬限期過後，連續幾次異常才重啟（避免單次抖動誤判）
@@ -93,6 +97,16 @@ health_state() {
     esac
 }
 
+LOG_MAX_MB=100         # app log 超過這麼大，(重)啟動前改名成 .1（只留一份舊的；update.md 發現 68）
+rotate_app_log() {     # 只在子進程已經停掉、還沒啟動新的之前呼叫（沒有人在寫這個檔）
+    local size
+    size=$(stat -f %z "$APP_LOG" 2>/dev/null || stat -c %s "$APP_LOG" 2>/dev/null || echo 0)
+    if [ "${size:-0}" -gt $((LOG_MAX_MB * 1024 * 1024)) ]; then
+        mv -f "$APP_LOG" "${APP_LOG}.1"
+        log "app log 超過 ${LOG_MAX_MB}MB，改名成 ${APP_LOG}.1（只留一份舊的）"
+    fi
+}
+
 # 啟動前先清掉任何佔用 8003 的殘留進程，避免綁不上 port
 free_port() {
     local pids
@@ -120,8 +134,9 @@ while true; do
     fi
 
     free_port
+    rotate_app_log
     log "啟動 main_sim.py…"
-    /Users/lambert/anaconda3/bin/python3.11 main_sim.py >> "$APP_LOG" 2>&1 &
+    "$PY" main_sim.py >> "$APP_LOG" 2>&1 &
     CHILD_PID=$!
     started=$(date +%s)
     ready=0

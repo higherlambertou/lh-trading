@@ -50,7 +50,8 @@ def _md(d: str) -> str:
 
 # ── 各項（純函式）────────────────────────────────────────────────
 
-def broker_item(connected: bool, stale: Optional[str], snap: dict[str, Any], usage: Optional[dict[str, Any]], uptime: Optional[float]) -> dict[str, Any]:
+def broker_item(connected: bool, stale: Optional[str], snap: dict[str, Any], usage: Optional[dict[str, Any]], uptime: Optional[float],
+                sdk: Optional[str] = None) -> dict[str, Any]:
     q = snap.get("last_quote_age")
     parts = [f"最近報價 {_ago(q)}"]
     if usage:
@@ -59,6 +60,8 @@ def broker_item(connected: bool, stale: Optional[str], snap: dict[str, Any], usa
             parts.append(f"今日流量 {usage['percent']}%")
     if uptime is not None:
         parts.append(f"後端已跑 {_ago(uptime).replace('前', '')}")
+    if sdk:
+        parts.append(f"SDK {sdk}")
     if not connected:
         return item("broker", "券商連線", "bad", "沒有連上券商（登入中或斷線）｜" + "｜".join(parts))
     if stale:
@@ -182,8 +185,9 @@ def _tail(path: Path, max_bytes: int = 300_000) -> Optional[str]:
 
 def collect(now: float, mode: str, connected: bool, stale: Optional[str], snap: dict[str, Any], usage: Optional[dict[str, Any]],
             uptime: Optional[float], intel_status: Callable[[], dict[str, Any]], backup_root: Path,
-            watchdog_log: Optional[Path] = None, app_log: Optional[Path] = None, taifex_state: Optional[Path] = None) -> dict[str, Any]:
-    items = [broker_item(connected, stale, snap, usage, uptime)]
+            watchdog_log: Optional[Path] = None, app_log: Optional[Path] = None, taifex_state: Optional[Path] = None,
+            sdk: Optional[str] = None) -> dict[str, Any]:
+    items = [broker_item(connected, stale, snap, usage, uptime, sdk)]
     wl = watchdog_log or WATCHDOG_LOG.get(mode, WATCHDOG_LOG["live"])
     text = _tail(wl)
     items.append(restarts_item(None if text is None else watchdog_events(text, now), now, None if text is not None else f"讀不到 {wl}"))

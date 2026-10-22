@@ -26,6 +26,7 @@ def test_broker_item():
     stale = sh.broker_item(True, "日盤中 200 秒沒有收到任何報價", {"last_quote_age": 200.0}, None, None)
     assert stale["status"] == "warn" and "連線假死" in stale["text"]
     assert sh.broker_item(False, None, {}, None, None)["status"] == "bad"
+    assert "SDK 1.5.8" in sh.broker_item(True, None, {"last_quote_age": 3.0}, None, None, "1.5.8")["text"]
     many = sh.broker_item(True, None, {"last_quote_age": 1.0}, {"connections": 4, "percent": 1}, None)
     assert many["status"] == "warn" and "孤兒 worker" in many["detail"]
 
@@ -131,6 +132,8 @@ def test_api_route_reads_memory_and_temp_files(monkeypatch, tmp_path):
     monkeypatch.setattr(sh, "TAIFEX_STATE", tmp_path / "st.json")
     r = asyncio.run(rs.get_health())
     assert r["mode"] in ("live", "sim") and len(r["items"]) == 6 and r["overall"] in ("ok", "warn", "bad")
+    import shioaji
+    assert f"SDK {shioaji.__version__}" in r["items"][0]["text"]                       # 跑測試的那個 Python 的版本
     assert next(i for i in r["items"] if i["key"] == "intel")["status"] == "bad"           # 測試沒有 lh-intel
 
 

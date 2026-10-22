@@ -10,6 +10,11 @@ export interface Precheck {
     night?: { expect?: { lo: number; mid: number; hi: number }; r20n?: number; vix?: number; vix_date?: string; day_range?: number; note?: string };
     next_day?: { expect?: { lo: number; mid: number; hi: number }; r20?: number; vix?: number; vix_date?: string; note?: string } | null;
   } | null;
+  hits?: {
+    day?: { n: number; inside: number; rate: number | null; ratio_median: number | null };
+    night?: { n: number; inside: number; rate: number | null; ratio_median: number | null };
+    min_show?: number;
+  } | null;
 }
 
 const n0 = (x: number | null | undefined): string => (x == null || !Number.isFinite(x) ? "—" : Math.round(x).toLocaleString("en-US"));
@@ -43,6 +48,18 @@ export function nextDayLine(p: Precheck): string | null {
 
 /** 傍晚以後「今天的日盤」那一行如果只是「還沒有」就不顯示（換成夜盤與下一個日盤）。 */
 export const showDayLine = (p: Precheck): boolean => !p.evening || !!p.day_range.expect;
+
+/** 預測驗證那一行（發現 68）：「預測驗證：日盤近 20 天有 14 天落在 68% 區間內、夜盤近 12 晚 8 晚（應約 68%）」；還不夠就說累積中。 */
+export function hitsLine(p: Precheck): string | null {
+  const h = p.hits;
+  if (!h) return null;
+  const min = h.min_show ?? 5;
+  const d = h.day ?? { n: 0, inside: 0 }, n = h.night ?? { n: 0, inside: 0 };
+  if (d.n < min && n.n < min) return `預測驗證：累積中（日盤 ${d.n} 天、夜盤 ${n.n} 晚，滿 ${min} 筆才算命中率）`;
+  const part = (x: { n: number; inside: number }, unit: string, name: string) =>
+    x.n >= min ? `${name}近 ${x.n} ${unit}有 ${x.inside} ${unit}落在 68% 區間內` : `${name}累積中（${x.n} ${unit}）`;
+  return `預測驗證：${part(d, "天", "日盤")}、${part(n, "晚", "夜盤")}（模型說應約 68%）`;
+}
 
 export function ivLine(p: Precheck): string {
   const iv = p.iv;

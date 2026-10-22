@@ -158,12 +158,13 @@ def test_a_failed_push_gives_the_cooldown_back(monkeypatch, clock):
     configure(monkeypatch, webhook=True)
     h = FakeHttp(fail={"hooks.example.org": OSError("down")})
     monkeypatch.setattr(nt, "_http_post", h)
-    assert nt.notify("t", "m", key="k", cooldown=600, wait=True) is True
+    n = 1 + len(nt.RETRY_DELAYS)                                                                            # 網路類錯誤：每則先送一次＋重試（發現 68）
+    assert nt.notify("t", "m", key="k", cooldown=600, wait=True) is True and len(h.calls) == n
     clock.t += 5
-    assert nt.notify("t", "m", key="k", cooldown=600, wait=True) is True and len(h.calls) == 2           # 通道壞了不會讓我們沉默 10 分鐘
+    assert nt.notify("t", "m", key="k", cooldown=600, wait=True) is True and len(h.calls) == 2 * n       # 通道壞了不會讓我們沉默 10 分鐘
     h.fail.clear()
     clock.t += 5
-    assert nt.notify("t", "m", key="k", cooldown=600, wait=True) is True and len(h.calls) == 3
+    assert nt.notify("t", "m", key="k", cooldown=600, wait=True) is True and len(h.calls) == 2 * n + 1
     clock.t += 5
     assert nt.notify("t", "m", key="k", cooldown=600, wait=True) is False                                  # 成功送出之後才開始冷卻
 
@@ -385,3 +386,45 @@ def test_simulation_mode_does_not_push(monkeypatch, http):
     assert nt.sim_blocked() is False
     monkeypatch.delenv("SIMULATION")
     assert nt.sim_blocked() is False                                                            # 沒設定＝不擋（測試、CLI）
+
+
+
+# ── 失敗重試（發現 68）───────────────────────────────────────────
+
+def test_retry_only_failed_channels_and_note_late_delivery(monkeypatch, clock):
+    """10/20 08:35 的盤前摘要因為網路瞬斷（No route to host）沒送到：網路類錯誤要重送，而且只重送失敗的通道；晚 30 秒以上才送到的註明原本時間。"""
+    import urllib.error
+    configure(monkeypatch, webhook=True, telegram=True)
+    h = FakeHttp(fail={"api.telegram.org": urllib.error.URLError("[Errno 65] No route to host")})
+    monkeypatch.setattr(nt, "_http_post", h)
+    waits = []
+
+    def fake_sleep(sec):
+        waits.append(sec)
+        nt_time[0] += sec
+        if len(waits) == 2:
+            h.fail.clear()                                                               # 第二次重試時網路回來了
+    nt_time = [1_000_000.0]
+    monkeypatch.setattr(nt, "_sleep", fake_sleep)
+    monkeypatch.setattr(nt.time, "time", lambda: nt_time[0])
+    res = nt._deliver("📋 盤前摘要", "內容", "default", None, 0)
+    assert res == {"telegram": "ok", "webhook": "ok"} and waits == [15.0, 60.0]
+    tg = [c for c in h.calls if "telegram" in c[0]]
+    wh = [c for c in h.calls if "hooks.example.org" in c[0]]
+    assert len(tg) == 3 and len(wh) == 1                                                  # webhook 第一次就成功：不重送
+    import urllib.parse
+    last = urllib.parse.parse_qs(tg[-1][1].decode())["text"][0]
+    assert "網路恢復後補送：原本" in last                                                 # 晚了 75 秒
+    first = urllib.parse.parse_qs(tg[0][1].decode())["text"][0]
+    early = urllib.parse.parse_qs(tg[1][1].decode())["text"][0]
+    assert "補送" not in first and "補送" not in early                                    # 第一次重試只晚 15 秒：不加註
+
+
+def test_config_errors_are_not_retried(monkeypatch, clock):
+    configure(monkeypatch, webhook=True)
+    h = FakeHttp(status=400)
+    monkeypatch.setattr(nt, "_http_post", h)
+    res = nt._deliver("t", "m", "high", None, 0)
+    assert res == {"webhook": "HTTP 400"} and len(h.calls) == 1
+    assert nt.retryable("URLError: <urlopen error [Errno 65] No route to host>") and nt.retryable("TimeoutError: timed out") and nt.retryable("HTTP 502")
+    assert not nt.retryable("HTTP 400") and not nt.retryable("ValueError: 通知網址只接受 http／https") and not nt.retryable("NoRealNetwork: x")

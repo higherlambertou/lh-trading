@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { api, apiErrorDetail } from "@/lib/api";
-import { eventLines, ivHigh, ivLine, nextDayLine, nightLine, rangeLine, showDayLine, type Precheck } from "@/lib/precheck";
+import { eventLines, hitsLine, ivHigh, ivLine, nextDayLine, nightLine, rangeLine, showDayLine, type Precheck } from "@/lib/precheck";
 
 // 下單前檢查（只顯示、不擋單；update.md 發現 60）：今天預期會走多遠、隱含波動高不高、今晚有沒有重大事件——集中在下單面板最上面。
 // 13:45 以後多了今晚夜盤與下一個日盤的預期振幅（發現 67）。
 export function PrecheckBody({ p }: { p: Precheck }) {
-  const night = nightLine(p), next = nextDayLine(p);
+  const night = nightLine(p), next = nextDayLine(p), hits = hitsLine(p);
   return (
     <div className="space-y-0.5 text-[11px] leading-snug">
       {showDayLine(p) && <div className="text-[#e0e0f0]">{rangeLine(p)}</div>}
@@ -15,6 +15,7 @@ export function PrecheckBody({ p }: { p: Precheck }) {
       {next && <div className="text-[#a0a0c0]">{next}</div>}
       <div style={{ color: ivHigh(p) ? "#ffc107" : "#7070a0" }}>{ivLine(p)}</div>
       {eventLines(p).map((l, i) => <div key={i} style={{ color: p.events && p.events.length ? "#ffc107" : "#7070a0" }}>{p.events && p.events.length ? "📅 " : ""}{l}</div>)}
+      {hits && <div className="text-[#505070]">{hits}</div>}
     </div>
   );
 }

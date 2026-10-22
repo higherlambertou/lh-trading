@@ -39,7 +39,7 @@ def upcoming_major(now: float, upcoming: Optional[list[dict[str, Any]]], hours: 
 
 
 def build(ctx: Optional[dict[str, Any]], state: Optional[dict[str, Any]], events: Optional[list[dict[str, Any]]], now: Optional[float] = None,
-          evening_: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+          evening_: Optional[dict[str, Any]] = None, hits: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """ctx＝/api/market/live 的 ctx（含 day_iv）；state＝/api/market/state（含 iv）；events＝upcoming_major 的結果。"""
     now = time.time() if now is None else now
     day_iv = (ctx or {}).get("day_iv")
@@ -49,6 +49,7 @@ def build(ctx: Optional[dict[str, Any]], state: Optional[dict[str, Any]], events
         "iv": None if not iv else {"value": iv.get("value"), "percentile": iv.get("percentile"), "label": iv.get("label"), "history_n": iv.get("history_n"), "note": iv.get("note") or ""},
         "events": events, "events_note": None if events is not None else "讀不到 lh-intel 的事件行事曆", "event_hours": EVENT_HOURS, "as_of": now,
         "evening": evening_,
+        "hits": hits,                       # 預測紀錄的命中率（core/forecast_log，發現 68）
     }
 
 

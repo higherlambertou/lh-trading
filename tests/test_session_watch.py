@@ -368,3 +368,35 @@ def test_a_broken_hook_never_breaks_dispatch_or_orders(monkeypatch):
     with pytest.raises(asyncio.TimeoutError):                                           # 照常等回覆（逾時），不是鉤子的 RuntimeError
         asyncio.run(broker._acall("place_order", timeout=0.05))
     assert len(sent) == 1
+
+
+def test_trades_refresh_updates_status_only_when_orders_are_open(monkeypatch):
+    """1.5.x 的委託快取不會被回報更新：有沒結束的委託才 update_status（多一次帳務查詢），沒有就只讀本機快取（發現 68）。"""
+    from api import routes_order as ro
+    assert ro.has_unfinished([{"status": "Filled"}, {"status": "Submitted"}]) and not ro.has_unfinished([{"status": "Filled"}, {"status": "Cancelled"}])
+    assert not ro.has_unfinished([]) and not ro.has_unfinished(None) and ro.has_unfinished([{"status": "PendingSubmit"}])
+    calls = []
+
+    class B:
+        is_connected = True
+
+        async def list_trades(self):
+            calls.append("plain")
+            return [{"id": "1", "status": "PendingSubmit"}]
+
+        async def list_trades_with_status(self):
+            calls.append("status")
+            return [{"id": "1", "status": "Filled"}]
+    monkeypatch.setattr(ro, "broker", B())
+    monkeypatch.setattr(ro, "_trades_cache", [])
+    n = {"k": 0}
+
+    async def fake_sleep(sec):
+        n["k"] += 1
+        if n["k"] > 4:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(ro.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(ro.trades_refresh_loop())
+    assert calls == ["plain", "status", "plain"]                                           # 沒掛單 → 讀快取；看到 PendingSubmit → 更新狀態；都結束了 → 回到只讀快取
+    assert ro._trades_cache == [{"id": "1", "status": "PendingSubmit"}]

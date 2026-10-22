@@ -106,6 +106,10 @@ A1 連續 ≥ 3 次連線錯誤（`Session error`／`SessionNotEstablished`／`N
 **存取紀錄**（`log_throttle.QuietAccessFilter`，update.md 發現 66）：uvicorn 的 access log 裡成功的 GET／HEAD／OPTIONS 不記（以前占 app log 96%），4xx／5xx 與 POST／DELETE 照記；`ACCESS_LOG=all` 全記。lifespan 開頭裝（uvicorn 設定完 logging 之後）。
 **系統健康**（`core/system_health.py`、`GET /api/system/health`、〈分析〉頁的〈系統健康〉，update.md 發現 66）：券商連線、近 7 天 watchdog 自動重啟（讀 `/tmp/lh_{live,sim}_watchdog.log` 的尾巴）、備份與雲端副本（`mirror_state.json`）、期交所資料更新（`data/taifex/update_state.json`）、lh-intel（`intel_reader.collector_status`）、磁碟與 app log；只讀檔案與記憶體、在執行緒裡讀。
 **走勢圖缺口回補**（`core/bar_gapfill.py`，update.md 發現 66）：平日 13:50～14:50、08:00～08:40 檢查最近 3 個平日已結束的日盤（300 分鐘）與夜盤（840 分鐘），flow_1m＋`bars_fill_1m` 不滿就用 `broker.kbars("TMF", …)` 查一次、只補缺的分鐘（券商 K 棒時間＝台灣時間當 UTC、標結束；起點＝結束−60 秒）。`bars_fill_1m` 只給 `GET /api/market/bars` 用（f＝1、灰色；回補時間 `fills_at` 變了前端整段重抓），flow_1m 與研究不讀（`tests/test_bar_gapfill.py` 靜態檢查）。只有正式盤跑，`GAPFILL=false` 關閉。
+**券商 SDK**（發現 68）：正式盤與模擬盤由 watchdog 用專案的 `.venv/bin/python` 啟動（`--system-site-packages` 建的，沿用 anaconda 的套件，只多裝 shioaji 1.5.8；沒有 `.venv` 就退回 anaconda 的 1.5.3）。1.5.x 的委託快取不會被回報更新（1.7.6 才有）：`trades_refresh_loop` 在快取裡還有沒結束的委託時改用 `list_trades_with_status`（先 update_status）。
+**推播重試**（`core/notify._deliver`，發現 68）：網路類錯誤（`retryable()`：URLError、逾時、連線錯誤、5xx）的通道隔 `RETRY_DELAYS`（15／60／180 秒）重送，`send_sync(only=…)` 只送失敗的那幾個；晚 30 秒以上才送到的加註原本時間。測試裡 `_sleep` 被換掉（conftest）。
+**預測紀錄**（`core/forecast_log.py`，發現 68）：`forecast_log`（append-only，觸發器擋 UPDATE／DELETE）與 `forecast_outcome` 在 market_state.db；背景每 10 分鐘：平日 08:00～13:45 記今天的日盤預測（intraday_context 的 day_iv）、16:00～05:00 記今晚的夜盤預測（precheck.evening）、補上收盤了的實際值（日盤 bars_1m、夜盤期交所盤後列）。`summary()` 給下單前檢查卡與傍晚摘要。
+**傍晚摘要**（`core/evening_brief.py`，發現 68）：16:20（`EVENING_BRIEF_TIME`）起，夜盤預測好了就發，最晚 17:30 照發；休市日曆由 main.py 傳入。
 
 **log 位置**
 - watchdog：`/tmp/lh_sim_watchdog.log`、`/tmp/lh_live_watchdog.log`

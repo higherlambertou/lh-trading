@@ -33,7 +33,10 @@ def test_precheck_card(tmp_path):
     waiting = pc.build(None, iv, [], eve, {"prev_day": "2026-11-10", "night": {"note": "等 11-10 收盤的臺指選擇權波動率指數（lh-intel 約 16:15 抓到）"},
                                            "next_day": {"note": "等 11-10 收盤的臺指選擇權波動率指數（lh-intel 約 16:15 抓到）"}})
     broken = pc.build(None, iv, [], eve, {"error": "RuntimeError"})
-    (tmp_path / "fixtures.json").write_text(json.dumps({"full": full, "quiet": quiet, "empty": empty, "evening": evening, "waiting": waiting, "broken": broken},
+    hits_few = pc.build(None, iv, [], eve, None, {"day": {"n": 3, "inside": 2, "rate": 0.667, "ratio_median": 1.0}, "night": {"n": 1, "inside": 1, "rate": 1.0, "ratio_median": 1.1}, "min_show": 5})
+    hits_ok = pc.build(None, iv, [], eve, None, {"day": {"n": 20, "inside": 14, "rate": 0.7, "ratio_median": 0.98}, "night": {"n": 3, "inside": 2, "rate": 0.667, "ratio_median": 1.0}, "min_show": 5})
+    (tmp_path / "fixtures.json").write_text(json.dumps({"full": full, "quiet": quiet, "empty": empty, "evening": evening, "waiting": waiting, "broken": broken,
+                                                       "hits_few": hits_few, "hits_ok": hits_ok},
                                                        ensure_ascii=False, allow_nan=False), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP")}
     env["PC_FIXTURES"] = str(tmp_path)
