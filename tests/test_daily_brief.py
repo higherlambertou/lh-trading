@@ -47,6 +47,20 @@ def data(**kw):
 
 # ── 組訊息 ───────────────────────────────────────────────────
 
+DAY_IV = {"expect": {"lo": 180.0, "mid": 240.0, "hi": 330.0}, "r20": 300.0, "vix": 22.4, "vix_date": "2026-10-13", "atm_equiv": 20.8, "n": 1400}
+CPI = {"kind": "CPI", "label": "美國 CPI", "when": "今晚 20:30", "time": 0.0, "note": "歷史上隔天日盤開盤跳空約平常的 1.6 倍"}
+
+
+def test_compose_day_range_and_events():
+    _, body = db.compose(data(day_iv=DAY_IV, events=[CPI]))
+    assert "預期日盤振幅：約 240 點（68% 落在 180～330；臺指 VIX 22.4，10-13）" in body
+    assert "📅 今晚 20:30 美國 CPI：歷史上隔天日盤開盤跳空約平常的 1.6 倍" in body
+    _, body = db.compose(data(day_iv={"note": "還沒有前一天的臺指選擇權波動率指數"}, events=[]))
+    assert "預期日盤振幅：還沒有前一天的臺指選擇權波動率指數" in body and "📅" not in body and "事件" not in body
+    _, body = db.compose(data(events=None))
+    assert "預期日盤振幅：取不到" in body and "事件：讀不到 lh-intel 的事件行事曆" in body
+
+
 def test_compose_full():
     title, body = db.compose(data())
     assert title == "📋 盤前摘要 10/14（三）"
@@ -125,6 +139,17 @@ def test_gather_collects_what_it_can():
     assert d["n_sessions"] == 12
     assert d["night"]["value"] is None and d["night"]["missing_reason"]       # 沒有 ticks.db：寫原因、不丟例外
     assert d["last_trading_day"] is False and d["errors"] == []
+    assert d["events"] is None                                     # 測試沒有 lh-intel：事件讀不到是 None（訊息寫「讀不到」），不丟例外
+    assert d["day_iv"] is not None
+
+
+def test_gather_takes_events_from_precheck_at_now(monkeypatch):
+    from core import precheck
+    seen = []
+    monkeypatch.setattr(precheck, "fetch_events", lambda t: seen.append(t) or [CPI])
+    now = tpe(2026, 10, 14, 8, 35)
+    d = db.gather(now, Store(_bars(DATES)), STATE, lambda x: True, lambda x: x - timedelta(days=1), ticks_path=NO_TICKS)
+    assert d["events"] == [CPI] and seen == [now.timestamp()]
 
 
 def test_gather_sigma_does_not_use_todays_session():

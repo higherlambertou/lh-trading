@@ -224,6 +224,7 @@ export default function MarketStatePanel() {
               <div className="text-[11px] text-[#404060] font-mono">
                 方向 {st.direction_label}（scalp market_bias：1 順勢／-1 逆勢／2 依狀態自動）
               </div>
+              <div className="text-[11px] text-[#ffc107]/80">僅供參考：由 Hurst 推出的方向偏向，配上盤中買賣力道，歷史上沒有差異（update.md 發現 14）；IV 百分位那一格仍有用（隱含波動能多預測當天振幅，發現 54）。</div>
             </Card>
           </div>
 

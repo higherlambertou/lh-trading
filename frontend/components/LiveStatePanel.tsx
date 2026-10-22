@@ -139,7 +139,7 @@ export default function LiveStatePanel({ compact = false }: { compact?: boolean 
           </div>
 
           <div className="bg-[#0d0d14] rounded-lg border border-[#1e1e3a] p-3 space-y-1.5">
-            <div className="text-[10px] text-[#7070a0] uppercase tracking-widest">與盤前判斷</div>
+            <div className="text-[10px] text-[#7070a0] uppercase tracking-widest">與盤前判斷 <span className="normal-case tracking-normal text-[#ffc107]/80">僅供參考：協調／矛盾在歷史上沒有差異（發現 14）</span></div>
             <div className="flex items-center gap-2">
               <Chip color={cohColor} text={cohText} />
               <span className="text-[11px] text-[#7070a0] font-mono">

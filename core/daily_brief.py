@@ -3,9 +3,10 @@
 內容是「今天的尺度」，不是進場訊號：
   夜盤 TXF 報酬（本機 ticks.db，與盤前紀錄 core/premarket_log 同一個函式）、盤前市場狀態（Hurst／IV／方向，08:30 算好的）、
   近 20 日日盤平均振幅 R20（core/intraday_context，只用今天以前）、典型 σ（近 20 個日盤同時段 σ 的中位數，core/vol_watch 的基準）
-  → 30 分鐘雜訊範圍 → 平衡型停利停損點數與 1 口微台的停損金額、今天是不是最後交易日。
+  → 30 分鐘雜訊範圍 → 平衡型停利停損點數與 1 口微台的停損金額、今天是不是最後交易日；
+  開盤前預期日盤振幅（盤中脈絡的 day_iv，發現 55）與接下來 36 小時的 CPI／非農／FOMC（core/precheck，與下單前檢查同一份，發現 62）。
 訊息不放權益與「占權益 %」（通知通道是第三方服務，見 OPERATION.md 的通道說明：只放合約、方向、口數與停損點數）。
-不放 VIX／費半：免費來源 12:16 才有前一天資料（update.md 發現 35），這個時間拿不到。
+不放 VIX／費半的漲跌（看〈市場〉分頁的盤前紀錄）。12:30 的事件提醒（core/event_reminder）照舊另外推。
 時間：DAILY_BRIEF_TIME（預設 0835，晚於 08:30 的市場狀態與盤前紀錄）；到點之後到 09:30 之前都會補發；一天一則（冷卻 key 跨重啟）。
 任何一塊取不到就在那一行寫「取不到」，其他照給；整個流程的例外都吞掉。DAILY_BRIEF=false 關閉。模擬盤不推播（notify 的規則）。"""
 from __future__ import annotations
@@ -54,7 +55,7 @@ def gather(now: datetime, store: Any, state: Optional[dict[str, Any]], is_open: 
     today = now.astimezone(TAIPEI).date()
     ds = today.isoformat()
     d: dict[str, Any] = {"date": ds, "weekday": _WD_ZH[today.weekday()], "state": state, "night": None, "r20": None,
-                         "sigma": None, "n_sessions": 0, "table": stop_suggest.load_table(), "last_trading_day": False, "errors": []}
+                         "sigma": None, "n_sessions": 0, "day_iv": None, "events": None, "table": stop_suggest.load_table(), "last_trading_day": False, "errors": []}
     try:
         from core import premarket_log
         d["night"] = premarket_log.txf_night_feature(ticks_path or premarket_log.TICKS_PATH, previous_open(today), now.astimezone(timezone.utc))
@@ -63,7 +64,8 @@ def gather(now: datetime, store: Any, state: Optional[dict[str, Any]], is_open: 
         logger.warning("盤前摘要：夜盤報酬取不到：%r", e)
     try:
         from core import intraday_context
-        d["r20"] = intraday_context.compute(store, "TXF", ds).r20
+        ctx = intraday_context.compute(store, "TXF", ds)
+        d["r20"], d["day_iv"] = ctx.r20, ctx.day_iv
     except Exception as e:  # noqa: BLE001
         d["errors"].append(f"R20：{type(e).__name__}")
         logger.warning("盤前摘要：R20 取不到：%r", e)
@@ -81,6 +83,8 @@ def gather(now: datetime, store: Any, state: Optional[dict[str, Any]], is_open: 
         d["last_trading_day"] = expiry_date(today.year, today.month, is_open) == today
     except Exception as e:  # noqa: BLE001
         d["errors"].append(f"到期日：{type(e).__name__}")
+    from core import precheck
+    d["events"] = precheck.fetch_events(now.timestamp())          # 永遠不丟例外；讀不到是 None
     return d
 
 
@@ -109,10 +113,24 @@ def _state_line(s: Optional[dict[str, Any]]) -> str:
     return f"市場狀態：Hurst {hv}（{h.get('label')}{z}）、IV 百分位 {ivt}、方向 {s.get('direction_label', '—')}"
 
 
+def _day_iv_line(v: Optional[dict[str, Any]]) -> str:
+    e = (v or {}).get("expect")
+    if not e:
+        return f"預期日盤振幅：{(v or {}).get('note') or '取不到'}"
+    return f"預期日盤振幅：約 {e['mid']:.0f} 點（68% 落在 {e['lo']:.0f}～{e['hi']:.0f}；臺指 VIX {v['vix']:.1f}，{v['vix_date'][5:]}）"
+
+
+def _event_lines(evs: Optional[list[dict[str, Any]]]) -> list[str]:
+    if evs is None:
+        return ["事件：讀不到 lh-intel 的事件行事曆"]
+    return [f"📅 {e['when']} {e['label']}：{e['note']}" for e in evs]
+
+
 def compose(d: dict[str, Any]) -> tuple[str, str]:
     lines = [_night_line(d.get("night")), _state_line(d.get("state"))]
     if d.get("r20"):
         lines.append(f"近 20 日日盤平均振幅 R20 ≈ {d['r20']:.0f} 點")
+    lines.append(_day_iv_line(d.get("day_iv")))
     sigma = d.get("sigma")
     if sigma and sigma > 0:
         card = stop_suggest.build(sigma, 30, session="day", horizon=HORIZON, contract="TMF", equity=None, table=d.get("table"))
@@ -126,9 +144,10 @@ def compose(d: dict[str, Any]) -> tuple[str, str]:
     if d.get("last_trading_day"):
         mo = int(d["date"][5:7])
         lines.append(f"📅 今天是 {mo} 月合約最後交易日（13:30 收盤）。")
+    lines.extend(_event_lines(d.get("events")))
     if d.get("errors"):
         lines.append("取不到：" + "、".join(d["errors"]))
-    lines.append("這是今天的尺度，不是進場訊號。VIX／費半要中午之後才有資料，沒放進來。")
+    lines.append("這是今天的尺度，不是進場訊號。")
     return f"📋 盤前摘要 {int(d['date'][5:7])}/{int(d['date'][8:10])}（{d['weekday']}）", "\n".join(lines)
 
 

@@ -42,6 +42,7 @@ def _no_real_pushes_or_state_files(monkeypatch, tmp_path):
     import core.premarket_log as pml                           # 盤前快照的預設資料庫（真的 data/trade_log.db）換成暫存的：沒傳 store 的呼叫也不能寫到真的紀錄
     monkeypatch.setattr(pml, "_default_store", pml.PremarketStore(tmp_path / "default_premarket.db"))
     monkeypatch.setattr(pml, "_intel_path", lambda: tmp_path / "no_intel.db")       # 盤前快照的 lh-intel 來源：測試不能讀真的 intel.db（不存在＝這個來源失敗、改用下一個）
+    monkeypatch.setenv("INTEL_DB", str(tmp_path / "no_intel.db"))                  # 其他讀 lh-intel 的地方（intel_reader.default_path）同樣不能讀真的；要資料的測試自己給路徑
 
 
 @pytest.fixture(autouse=True)

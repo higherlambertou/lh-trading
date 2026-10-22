@@ -16,6 +16,8 @@ import OptionCalcPanel from "./OptionCalcPanel";
 import PremarketPanel from "./PremarketPanel";
 import IntelPanel from "./IntelPanel";
 import PriceChart from "./PriceChart";
+import Folded from "./Folded";
+import { isSimMode } from "@/lib/api";
 
 type Tab = "trade" | "market" | "intel" | "analysis";
 
@@ -85,7 +87,10 @@ export default function DashboardTabs() {
               <PriceChart active={tab === "trade"} />
               <div className={GRID}>
                 <PositionPanel />
-                <StrategyPanel />
+                <Folded id="strategy" title="自動策略" defaultOpen={isSimMode()} keepMounted
+                  why="7 個策略、154 組參數的回測扣掉成本後都沒有找到優勢（update.md 發現 22、23），正式盤預設收起；收起不會停止任何正在跑的策略。">
+                  <StrategyPanel />
+                </Folded>
                 <LiveStatePanel compact />
                 <OrderPanel />
                 <TradesPanel />
@@ -110,7 +115,10 @@ export default function DashboardTabs() {
             {(tab === "analysis" || analysisOpened) && (
               <div className={tab === "analysis" ? GRID : "hidden"}>
                 <RiskPanel />
-                <IndicatorReplayPanel />
+                <Folded id="replay" title="市場指標回放（歷史）"
+                  why="Hurst＋IV＋買賣力道的組合在歷史上沒有顯著差異（update.md 發現 14），沒有做即時版；展開後後端會算一次排列檢定。">
+                  <IndicatorReplayPanel />
+                </Folded>
                 <BacktestPanel />
                 <OptionCalcPanel />
               </div>
