@@ -106,7 +106,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 
 ### 資料與記錄（純加法，不影響交易）
 - trade_log、進場市場狀態紀錄、盤前跨市場資訊紀錄、flow_1m、ticks 落地：**寫入失敗不擋交易**；**沒有任何策略或風控模組可以讀這些欄位**（`tests/test_entry_log.py`、`tests/test_premarket_log.py` 靜態檢查；只通知的 `daily_brief.py`、`reminders.py` 是明列的例外）。
-- **信息收集（籌碼、總經事件、全球市場、新聞）在另一個 repo `lh-intel`**（`~/Documents/GitHub/lh-intel`，獨立常駐服務、獨立 `.env`；操作見它的 `OPERATION.md`）：交易系統**只能唯讀**它的 `data/intel.db`：〈資訊〉分頁用 `core/intel_reader.py` 顯示「現在已知的全部」（只顯示）；**研究、回測、進決策的程式必須照它的 `intel/read.py` 的 as_of 規則讀（回補列預設不可見），不能用 `intel_reader.py`**。**目前沒有任何策略或風控讀它**，要讀之前先登記驗證標準；例外只有兩個**只顯示／只通知**的：`core/event_reminder.py`（CPI／非農／FOMC 公布前提醒，只讀未來的行事曆列，發現 52）與 `core/iv_day_range.py`（〈時段脈絡〉的開盤前預期日盤振幅，只讀前一個交易日的臺指選擇權波動率指數，發現 55）。
+- **信息收集（籌碼、總經事件、全球市場、新聞）在另一個 repo `lh-intel`**（`~/Documents/GitHub/lh-intel`，獨立常駐服務、獨立 `.env`；操作見它的 `OPERATION.md`）：交易系統**只能唯讀**它的 `data/intel.db`：〈資訊〉分頁用 `core/intel_reader.py` 顯示「現在已知的全部」（只顯示）；**研究、回測、進決策的程式必須照它的 `intel/read.py` 的 as_of 規則讀（回補列預設不可見），不能用 `intel_reader.py`**。**目前沒有任何策略或風控讀它**，要讀之前先登記驗證標準；例外只有幾個**只顯示／只通知／只記錄**的：`core/event_reminder.py`（事件提醒，發現 52）、`core/iv_day_range.py`（開盤前預期日盤振幅，發現 55）、`core/precheck.py`（下單前檢查，經由 `intel_reader.upcoming_events`，發現 60）、`core/premarket_log.py` 的 `intel` 來源（盤前快照的費半／TSM／VIX，只用已抓到的列，發現 60）。
 - **無法回補、請備份**：`data/trade_log.db`、IV 歷史與手動備註（`market_state.db`）、`data/option_spread.db`、`data/signals.db`（影子訊號的前向資料）（備份 `core/backup.py`，交易日 14:00；`option_spread.db` 沒進備份）。`tick_store compact` 的 VACUUM 要先停服務。
 - **`bars_1m` 的 hhmm 是 K 棒「結束」時間，`flow_1m` 的 ts 是分鐘「起點」**，序號差 1（`tests/test_vol_watch.py` 有對照）；`flow-fetch` 只補整天缺的日子。
 - 盤前紀錄：資料時間戳晚於 T 的拒絕、美股休市日 null＋原因（不沿用前一天）、更正＝新增 correction（資料庫觸發器擋 UPDATE／DELETE）。

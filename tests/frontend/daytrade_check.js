@@ -26,15 +26,18 @@ fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = global.__api_s
 fs.writeFileSync(path.join(TMP, "suggest_stub.js"), "module.exports = { __esModule: true, default: function StopSuggestStub() { return null; } };");
 // 〈口數提示〉（SizeHint）也有自己的檢查（size_check.js）：同樣換成替身，只驗證它放在哪裡、吃哪三個值
 fs.writeFileSync(path.join(TMP, "size_stub.js"), "module.exports = { __esModule: true, default: function SizeHintStub() { return null; } };");
+fs.writeFileSync(path.join(TMP, "precheck_stub.js"), "module.exports = { __esModule: true, default: function PrecheckStub() { return null; } };");
 const orig = Module._resolveFilename;
 Module._resolveFilename = function (req, ...r) {
   if (req === "@/lib/api") return path.join(TMP, "api_stub.js");
   if (req === "./SizeHint") return path.join(TMP, "size_stub.js");
+  if (req === "./PrecheckCard") return path.join(TMP, "precheck_stub.js");
   if (req === "./StopSuggestCard") return path.join(TMP, "suggest_stub.js");
   return orig.call(this, req, ...r);
 };
 const SuggestCard = require(path.join(TMP, "suggest_stub.js")).default;
 const SizeHint = require(path.join(TMP, "size_stub.js")).default;
+const Precheck = require(path.join(TMP, "precheck_stub.js")).default;
 const Comp = transpile(path.join(FRONT, "components", "OrderPanel.tsx"), path.join(TMP, "panel.js")).default;
 
 // 狀態順序必須和元件裡 useState 的宣告順序一致
@@ -165,6 +168,7 @@ const lastPlace = () => [...calls].reverse().find((c) => c[0] === "place")?.[1];
     const hints = find(render({ contract: c, stopLoss: "30", quantity: 3 }).tree, (e) => e.type === SizeHint);
     check(`${c}：期貨模式有口數提示，帶的是目前的合約、停損與口數`, hints.length === 1 && J(hints[0].props) === J({ contract: c, stopLoss: "30", quantity: 3 }), J(hints.map((x) => x.props)));
   }
+  check("期貨模式最上面有下單前檢查、選擇權模式沒有", find(render({ contract: "TMF" }).tree, (e) => e.type === Precheck).length === 1 && find(render({ mode: "option" }).tree, (e) => e.type === Precheck).length === 0);
   check("選擇權模式沒有口數提示（買方最大虧損是權利金，不是停損距離）", find(render({ mode: "option" }).tree, (e) => e.type === SizeHint).length === 0);
   {
     const { tree, sets } = render({ contract: "TMF", stopLoss: "5", takeProfit: "6" });

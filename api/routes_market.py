@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from api.routes_position import _cache as position_cache
 from api.routes_strategy import strategy_engine
-from core import range_suggest, stop_suggest
+from core import precheck, range_suggest, stop_suggest
 from core.broker import broker
 from core.daily_summary import TICK_SEC, market_state
 from core.flow_store import flow_recorder
@@ -55,6 +55,19 @@ async def market_state_loop() -> None:
 def get_state() -> dict[str, Any]:
     """今日市場狀態（純讀記憶體快取，不對券商發查詢）。"""
     return market_state.snapshot()
+
+
+@router.get("/precheck")
+async def get_precheck() -> dict[str, Any]:
+    """下單前檢查（只顯示）：今天預期日盤振幅、隱含波動百分位、36 小時內的美國重要事件。讀記憶體＋唯讀的 lh-intel（在執行緒裡），不查券商。"""
+    now = time.time()
+    ctx = None
+    try:
+        ctx = (await market_state.live_snapshot()).get("ctx")
+    except Exception:  # noqa: BLE001
+        logger.debug("precheck：取不到盤中脈絡（略過）", exc_info=True)
+    events = await asyncio.to_thread(precheck.fetch_events, now)
+    return precheck.build(ctx, market_state.snapshot(), events, now)
 
 
 @router.get("/live")

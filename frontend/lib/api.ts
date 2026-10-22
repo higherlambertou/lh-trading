@@ -51,6 +51,7 @@ import type { PmPreview, PmSnapshot, PmStatus } from "./premarket";
 import type { EntryRow, Trend } from "./entryLabel";
 import type { Unprotected } from "./protection";
 import type { RangeData } from "./range";
+import type { Precheck } from "./precheck";
 import type { Suggest } from "./stopSuggest";
 import type { Size } from "./size";
 
@@ -439,6 +440,8 @@ export const api = {
       req<BarsResponse>(`/market/bars?${new URLSearchParams(Object.entries(q).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))}`),
     // 機率範圍帶：只讀本機資料庫與記憶體，一次回五組（5／15／30／60 分鐘與到收盤）
     range: () => req<RangeData>("/market/range"),
+    // 下單前檢查（只顯示）：預期日盤振幅、IV 百分位、36 小時內的重要事件
+    precheck: () => req<Precheck>("/market/precheck"),
     suggest: (contract: string, horizon: number) => req<Suggest>(`/market/suggest?contract=${encodeURIComponent(contract)}&horizon=${horizon}`),
     replay: (q: Record<string, string | number | boolean>) =>
       req<Replay>(`/market/replay?${new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))}`),

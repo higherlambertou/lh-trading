@@ -45,6 +45,7 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(pm, "ERROR_FILE", tmp_path / "premarket_errors.jsonl")
     for k in ("PREMARKET_TIME", "PREMARKET_SOURCES", "PREMARKET_LOG", "PREMARKET_RANGE_NIGHT", "PREMARKET_RANGE_SOX", "PREMARKET_RANGE_TSM", "PREMARKET_RANGE_VIX"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("PREMARKET_SOURCES", "nasdaq,cboe")                         # 既有的測試只模擬這兩個來源；lh-intel 來源另有測試（test_intel_source_*）
 
 
 # ── 美股日曆與時區（驗收 3、4）────────────────────────────────────
@@ -265,7 +266,8 @@ def test_fetch_bars_fails_over_and_stops_hitting_a_rate_limited_source():
 
 
 def test_source_order_comes_from_the_environment(monkeypatch):
-    assert pm.source_order() == ["nasdaq", "cboe"]
+    monkeypatch.delenv("PREMARKET_SOURCES", raising=False)
+    assert pm.source_order() == ["intel", "nasdaq", "cboe"]
     monkeypatch.setenv("PREMARKET_SOURCES", " Yahoo , nasdaq,cboe ")
     assert pm.source_order() == ["yahoo", "nasdaq", "cboe"]
 
@@ -1303,3 +1305,61 @@ def test_three_successive_corrections_all_accumulate(tmp_path):
     eff = w.store.effective()[0]
     assert (eff["features"]["sox"]["value"], eff["features"]["vix"]["value"], eff["features"]["tsm"]["value"]) == (0.01, 15.5, -0.02) and eff["correction_note"] == "三"
     assert [r["kind"] for r in w.store.raw_rows()] == ["snapshot", "correction", "correction", "correction"]
+
+
+# ── lh-intel 來源（先讀已經收好的資料）──────────────────────────────
+
+def _intel_db(tmp_path, rows):
+    from intel_fixture import make_db, obs
+    c = make_db(tmp_path / "intel.db")
+    for src, series, d, v, fetched in rows:
+        obs(c, src, series, d, v, fetched)
+    c.close()
+    return tmp_path / "intel.db"
+
+
+NOW_TPE = datetime(2026, 10, 20, 8, 30, tzinfo=pm.TPE)                                  # 週二 08:30：美股最近一個收盤日＝10/19（週一）
+
+
+def test_last_us_weekday():
+    assert pm.last_us_weekday(NOW_TPE) == date(2026, 10, 19)
+    assert pm.last_us_weekday(datetime(2026, 10, 19, 8, 30, tzinfo=pm.TPE)) == date(2026, 10, 16)              # 週一早上：上週五
+    assert pm.last_us_weekday(datetime(2026, 10, 20, 6, 30, tzinfo=pm.TPE)) == date(2026, 10, 19)              # 美東 10/19 17:30 之後算當天
+
+
+def test_intel_source_reads_visible_rows_and_hands_over_when_stale(tmp_path):
+    t = NOW_TPE.timestamp()
+    p = _intel_db(tmp_path, [("nasdaq", "SOX.close", "2026-10-16", 11581.22, t - 50000), ("nasdaq", "SOX.close", "2026-10-19", 11137.29, t - 3600),
+                             ("nasdaq", "SOX.close", "2026-10-20", 1.0, t + 3600), ("cboe", "VIX.close", "2026-10-16", 20.0, t - 50000)])
+    bars = pm.fetch_intel("sox", date(2026, 10, 1), path=p, now=NOW_TPE)
+    assert [(b.date, b.close, b.source) for b in bars] == [(date(2026, 10, 16), 11581.22, "intel"), (date(2026, 10, 19), 11137.29, "intel")]      # 還沒抓到的（未來）不算
+    with pytest.raises(SourceError) as e:
+        pm.fetch_intel("vix", date(2026, 10, 1), path=p, now=NOW_TPE)                                                                         # VIX 只到 10/16：還沒更新
+    assert e.value.kind == "stale"
+    with pytest.raises(SourceError) as e:
+        pm.fetch_intel("tsm", date(2026, 10, 1), path=p, now=NOW_TPE)
+    assert e.value.kind == "empty"
+    with pytest.raises(SourceError) as e:
+        pm.fetch_intel("sox", date(2026, 10, 1), path=tmp_path / "nope.db", now=NOW_TPE)
+    assert e.value.kind == "unavailable"
+    assert pm.fetch_intel("sox", date(2026, 10, 19), path=p, now=NOW_TPE)[0].date == date(2026, 10, 19)                                       # since 之前的不給
+
+
+def test_intel_source_comes_first_by_default_and_falls_back_to_direct_sources(tmp_path, monkeypatch):
+    monkeypatch.delenv("PREMARKET_SOURCES", raising=False)
+    calls = []
+
+    class H:
+        def __call__(self, url, *a, **k):
+            calls.append(url)
+            raise SourceError("network", "timeout")
+    monkeypatch.setattr(pm, "_intel_path", lambda: tmp_path / "nope.db")
+    bars, src, fails = pm.fetch_bars("sox", date(2026, 10, 1), H())
+    assert bars == [] and fails[0].startswith("intel: unavailable") and any("api.nasdaq.com" in u for u in calls)                         # lh-intel 不在 → 改打 Nasdaq
+    import time as _t
+    t = _t.time()
+    good = _intel_db(tmp_path, [("nasdaq", "SOX.close", pm.last_us_weekday().isoformat(), 11000.0, t - 60)])
+    monkeypatch.setattr(pm, "_intel_path", lambda: good)
+    calls.clear()
+    bars, src, fails = pm.fetch_bars("sox", date(2026, 1, 1), H())
+    assert src == "intel" and bars[-1].close == 11000.0 and calls == [] and fails == []                                                       # 有就不打外部網站

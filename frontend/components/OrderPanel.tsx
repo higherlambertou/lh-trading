@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, ArrowDown } from "lucide-react";
 import { api, isSimMode, notifyOrderPlaced } from "@/lib/api";
+import PrecheckCard from "./PrecheckCard";
 import SizeHint from "./SizeHint";
 import StopSuggestCard from "./StopSuggestCard";
 
@@ -519,6 +520,8 @@ export default function OrderPanel() {
           );
         })}
       </div>
+
+      {!isOption && <PrecheckCard />}
 
       {/* 欄位 */}
       <div className="grid grid-cols-2 gap-3 mb-4">

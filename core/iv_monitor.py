@@ -232,6 +232,17 @@ def read_iv_csv(path: str) -> list[tuple[str, float]]:
     return out
 
 
+def backfill_from_vrp(store: Any | None = None, history: dict[str, dict[str, float]] | None = None) -> tuple[int, int]:
+    """用發現 27 的每日 ATM IV（data/taifex/vrp，2016 起；結算價算的，和每天自動抓的盤中 IV 定義相同、重疊日差約 0.2～0.4 個波動點）回填 iv_history，
+    讓 IV 百分位（要 60 天）馬上能用。**只補沒有的日子**，已有的手動或自動值一律不動。回傳（補了幾天, 來源總天數）。"""
+    from core.iv_day_range import load_iv_history
+    from core.market_store import MarketStore
+    store = store or MarketStore()
+    hist = load_iv_history() if history is None else history
+    n = sum(1 for d, v in hist.items() if v.get("iv") and 0 < v["iv"] < 500 and store.insert_iv_if_missing(d, v["iv"], "vrp_settle", "data/taifex/vrp（結算價 ATM IV）"))
+    return n, len(hist)
+
+
 def import_iv_csv(path: str, store: Any | None = None) -> int:
     from core.market_store import MarketStore
     store = store or MarketStore()
@@ -246,6 +257,10 @@ if __name__ == "__main__":  # pragma: no cover
     import sys
     from dotenv import load_dotenv
     load_dotenv()
+    if len(sys.argv) == 2 and sys.argv[1] == "backfill-vrp":
+        n, total = backfill_from_vrp()
+        print(f"從 data/taifex/vrp 的每日 ATM IV（{total} 天）補進 {n} 天；已有的日子（手動或自動抓的）沒動")
+        raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == "import":
         print(f"已匯入 {import_iv_csv(sys.argv[2])} 筆 IV 歷史")
     else:

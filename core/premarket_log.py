@@ -13,7 +13,7 @@
 資料來源（update.md 發現 31）：Yahoo 對這台機器回 429，預設改用 Nasdaq 公開 API（TSM、SOX）＋Cboe 官方 CSV（VIX）；Yahoo 轉接器預設關（PREMARKET_SOURCES 可排進去，沒有對真實 Yahoo 驗證過）。
 都是免費公開端點、不是契約授權：只存檔供個人研究、不轉發。
 
-環境變數：PREMARKET_LOG=false 關閉；PREMARKET_TIME（預設 08:30）；PREMARKET_SOURCES（預設 nasdaq,cboe）；PREMARKET_RANGE_{NIGHT,SOX,TSM,VIX}="下限,上限"（異常值範圍）。
+環境變數：PREMARKET_LOG=false 關閉；PREMARKET_TIME（預設 08:30）；PREMARKET_SOURCES（預設 intel,nasdaq,cboe：先讀 lh-intel 已經收好的資料，沒有或還沒更新才直接打 Nasdaq／Cboe）；PREMARKET_RANGE_{NIGHT,SOX,TSM,VIX}="下限,上限"（異常值範圍）。
 用法：python -m core.premarket_log show|run|export|status|void|correct   （show 只算不寫）
 """
 from __future__ import annotations
@@ -346,17 +346,59 @@ def fetch_yahoo(symbol: str, since: date, http: Callable[..., str] = http_get) -
     return [b for b in parse_yahoo_chart(http(url)) if b.date >= since]
 
 
+def _intel_path():
+    from core import intel_reader
+    return intel_reader.default_path()
+
+
+INTEL_SERIES = {"sox": ("nasdaq", "SOX.close"), "tsm": ("nasdaq", "TSM.close"), "vix": ("cboe", "VIX.close")}
+
+
+def last_us_weekday(now: Optional[datetime] = None) -> date:
+    """台北現在 → 美股最近一個『應該已經收盤』的交易日（只看週一～五，不看美國假日；假日會被當成『還沒更新』而改問下一個來源，無害）。"""
+    t = (now or datetime.now(UTC)).astimezone(ZoneInfo("America/New_York"))
+    d = t.date() if t.hour >= 17 else t.date() - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def fetch_intel(key: str, since: date, http: Any = None, path: Any = None, now: Optional[datetime] = None) -> list[Bar]:
+    """從 lh-intel 的 intel.db（唯讀）讀費半、台積電 ADR、VIX 的日收盤——它已經在收同一批資料（Nasdaq、Cboe），不必再自己打一次。
+    只用『現在已經抓到』的列（fetched_at ≤ 現在）；最新一筆比美股最近的交易日舊＝還沒更新，丟 SourceError('stale') 讓下一個來源（直接打 Nasdaq／Cboe）接手。"""
+    import sqlite3
+    from contextlib import closing
+    from core import intel_reader
+    p = path or _intel_path()
+    if not p.exists():
+        raise SourceError("unavailable", "找不到 lh-intel 資料庫")
+    src, series = INTEL_SERIES[key]
+    t = (now or datetime.now(UTC)).timestamp()
+    try:
+        with closing(intel_reader.connect_ro(p)) as conn:
+            rows = intel_reader.latest_points(conn, src, series, t, 60)
+    except sqlite3.Error as e:
+        raise SourceError("unavailable", f"讀不到 lh-intel（{type(e).__name__}）") from e
+    bars = sorted(Bar(date.fromisoformat(r["event_date"]), float(r["value"]), "intel") for r in rows if r["value"] is not None and r["event_date"] >= since.isoformat())
+    if not bars:
+        raise SourceError("empty", "lh-intel 沒有資料列")
+    want = last_us_weekday(now)
+    if bars[-1].date < want:
+        raise SourceError("stale", f"lh-intel 最新只到 {bars[-1].date}（要 {want}）")
+    return bars
+
+
 # 特徵 → {來源名稱: (since, http) → bars}
 SOURCES: dict[str, dict[str, Callable[..., list[Bar]]]] = {
-    "sox": {"nasdaq": lambda since, http: fetch_nasdaq("SOX", "index", since, http), "yahoo": lambda since, http: fetch_yahoo("^SOX", since, http)},
-    "tsm": {"nasdaq": lambda since, http: fetch_nasdaq("TSM", "stocks", since, http), "yahoo": lambda since, http: fetch_yahoo("TSM", since, http)},
-    "vix": {"cboe": lambda since, http: fetch_cboe_vix(since, http), "yahoo": lambda since, http: fetch_yahoo("^VIX", since, http)},
+    "sox": {"intel": lambda since, http: fetch_intel("sox", since), "nasdaq": lambda since, http: fetch_nasdaq("SOX", "index", since, http), "yahoo": lambda since, http: fetch_yahoo("^SOX", since, http)},
+    "tsm": {"intel": lambda since, http: fetch_intel("tsm", since), "nasdaq": lambda since, http: fetch_nasdaq("TSM", "stocks", since, http), "yahoo": lambda since, http: fetch_yahoo("TSM", since, http)},
+    "vix": {"intel": lambda since, http: fetch_intel("vix", since), "cboe": lambda since, http: fetch_cboe_vix(since, http), "yahoo": lambda since, http: fetch_yahoo("^VIX", since, http)},
 }
 _breaker: dict[str, tuple[float, str]] = {}                     # 來源 → (暫停到什麼時候, 原本的失敗原因)
 
 
 def source_order() -> list[str]:
-    return [s.strip().lower() for s in os.getenv("PREMARKET_SOURCES", "nasdaq,cboe").split(",") if s.strip()]
+    return [s.strip().lower() for s in os.getenv("PREMARKET_SOURCES", "intel,nasdaq,cboe").split(",") if s.strip()]
 
 
 def fetch_bars(key: str, since: date, http: Callable[..., str] = http_get, order: Optional[Sequence[str]] = None,

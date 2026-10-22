@@ -881,3 +881,23 @@ def test_tradelog_endpoints(tmp_path, monkeypatch):
     assert c.get("/api/tradelog/orders?strategy=nope").json() == []
     g = c.get("/api/tradelog/summary?days=1").json()["groups"][0]
     assert (g["strategy"], g["reason"], g["slip_ref"]["max"]) == ("scalp", "sl", 3.0)
+
+
+def test_iv_backfill_only_fills_missing_days_and_never_overwrites(tmp_path):
+    from core.iv_monitor import backfill_from_vrp, evaluate_iv
+    store = MarketStore(tmp_path / "ms.db")
+    store.upsert_iv("2026-10-07", 19.9, "manual")
+    store.upsert_iv("2026-10-08", 20.11, "shioaji")
+    hist = {f"2026-{m:02d}-{d:02d}": {"iv": 15.0 + d / 10, "F": 40000.0} for m in (7, 8, 9) for d in range(1, 29)}
+    hist["2026-10-07"] = {"iv": 99.0, "F": 1.0}
+    hist["2026-10-08"] = {"iv": 98.0, "F": 1.0}
+    hist["2026-06-30"] = {"iv": 0.0, "F": 1.0}                                                    # 壞值不寫
+    n, total = backfill_from_vrp(store, hist)
+    assert total == len(hist) and n == 3 * 28
+    assert store.iv_on("2026-10-07")["iv"] == 19.9 and store.iv_on("2026-10-07")["source"] == "manual"
+    assert store.iv_on("2026-10-08")["iv"] == 20.11 and store.iv_on("2026-10-08")["source"] == "shioaji"   # 自動抓的也不覆蓋
+    assert store.iv_on("2026-07-01")["source"] == "vrp_settle" and store.iv_on("2026-06-30") is None
+    assert backfill_from_vrp(store, hist)[0] == 0                                                 # 重跑不重複
+    h = store.iv_history("2026-10-09", 252)
+    assert len(h) == 86 and evaluate_iv(25.0, h)["percentile"] is not None                        # 60 天門檻馬上過
+    assert store.upsert_iv("2026-07-01", 30.0, "shioaji")                                         # 之後自動抓的仍可覆蓋回填值

@@ -230,6 +230,14 @@ class MarketStore:
             c.commit()
             return cur.rowcount > 0
 
+    def insert_iv_if_missing(self, date: str, iv: float, source: str, detail: str = "") -> bool:
+        """只在那一天還沒有 IV 時寫入（回填歷史用：絕不覆蓋已有的手動或自動值）。回傳是否寫入。"""
+        with closing(self._conn()) as c:
+            cur = c.execute("INSERT OR IGNORE INTO iv_history(date, iv, source, detail, updated_at) VALUES (?,?,?,?,?)",
+                            (date, float(iv), source, detail, time.time()))
+            c.commit()
+            return cur.rowcount > 0
+
     def iv_on(self, date: str) -> dict[str, Any] | None:
         with closing(self._conn()) as c:
             row = c.execute("SELECT * FROM iv_history WHERE date=?", (date,)).fetchone()
