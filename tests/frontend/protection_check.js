@@ -15,11 +15,13 @@ const transpile = (src, out) => {
   return require(out);
 };
 fs.writeFileSync(path.join(TMP, "lucide_stub.js"), "module.exports = new Proxy({}, { get: (_, n) => (p) => require('react').createElement('i', { 'data-icon': String(n) }) });");
-const map = { "@/lib/protection": path.join(TMP, "protection.js"), "@/lib/api": path.join(TMP, "api.js"), "./UnprotectedBanner": path.join(TMP, "banner.js"), "lucide-react": path.join(TMP, "lucide_stub.js") };
+const map = { "@/lib/protection": path.join(TMP, "protection.js"), "@/lib/api": path.join(TMP, "api.js"), "./UnprotectedBanner": path.join(TMP, "banner.js"), "lucide-react": path.join(TMP, "lucide_stub.js"),
+              "@/lib/staleness": path.join(TMP, "staleness.js") };
 const orig = Module._resolveFilename;
 Module._resolveFilename = function (req, ...r) { return map[req] || orig.call(this, req, ...r); };
 const P = transpile(path.join(FRONT, "lib", "protection.ts"), path.join(TMP, "protection.js"));
 transpile(path.join(FRONT, "lib", "api.ts"), path.join(TMP, "api.js"));
+const S = transpile(path.join(FRONT, "lib", "staleness.ts"), path.join(TMP, "staleness.js"));
 const Banner = transpile(path.join(FRONT, "components", "UnprotectedBanner.tsx"), path.join(TMP, "banner.js")).default;
 const Panel = transpile(path.join(FRONT, "components", "PositionPanel.tsx"), path.join(TMP, "panel.js")).default;
 const e = React.createElement;
@@ -42,8 +44,8 @@ const raw = renderToStaticMarkup(e(Banner, { items: fx.two }));
 check("橫幅：role=alert、黃色警告樣式、圖示", raw.includes('role="alert"') && raw.includes("#ffc107") && raw.includes('data-icon="TriangleAlert"'), raw.slice(0, 300));
 check("橫幅：兩筆", text(e(Banner, { items: fx.two })).includes("TMFJ6 多 1 口、MXFJ6 空 2 口"));
 
-// 〈部位面板〉：hooks 換成替身，強制 state（順序：positions, margin, pnlList, error, quotes, dataAge, posAge, unprotected）
-const NAMES = ["positions", "margin", "pnlList", "error", "quotes", "dataAge", "posAge", "unprotected"];
+// 〈部位面板〉：hooks 換成替身，強制 state（順序：positions, margin, pnlList, error, quotes, dataAge, posAge, unprotected, cadence）
+const NAMES = ["positions", "margin", "pnlList", "error", "quotes", "dataAge", "posAge", "unprotected", "cadence"];
 function panel(forced) {
   let n = 0;
   React.useState = (init) => { const i = n++; return [Object.prototype.hasOwnProperty.call(forced, NAMES[i]) ? forced[NAMES[i]] : init, () => {}]; };
@@ -56,6 +58,16 @@ check("部位面板：有持倉又沒保護 → 橫幅出現在標題下面、�
 check("部位面板：有持倉但有保護（空陣列）→ 沒有橫幅", !panel({ positions: POS, unprotected: [], posAge: 2, dataAge: 2 }).includes("沒有停損保護"));
 check("部位面板：沒有持倉 → 就算後端傳來資料也不畫橫幅（不會有「沒有持倉卻說沒保護」）", !panel({ positions: [], unprotected: fx.single, posAge: 2, dataAge: 2 }).includes("沒有停損保護"));
 check("部位面板：預設狀態（還沒載入）沒有橫幅", !panel({}).includes("沒有停損保護"));
+check("過期門檻：平日部位 30 秒、保證金 150 秒；週末部位 360 秒、保證金 1500 秒", S.posLimit({ positions_every: 5, margin_every: 60 }) === 30 && S.marginLimit({ positions_every: 5, margin_every: 60 }) === 150
+  && S.posLimit({ positions_every: 120 }) === 360 && S.marginLimit({ margin_every: 600 }) === 1500 && S.staleAge(45, 2, { positions_every: 5, margin_every: 60 }) === null && S.staleAge(200, 40, null) === 200);
+// 資料過期的判斷照刷新間隔（發現 69）：保證金本來就 60 秒刷新一次，45 秒不是過期；週末部位 2 分鐘刷新一次
+const WEEKDAY = { positions_every: 5, margin_every: 60 }, WEEKEND = { positions_every: 120, margin_every: 600 };
+check("過期：平日保證金 45 秒前、部位 2 秒前 → 不警告（以前會誤報）", !panel({ positions: [], dataAge: 45, posAge: 2, cadence: WEEKDAY }).includes("後端可能重啟中"));
+check("過期：平日保證金 200 秒前 → 警告", panel({ positions: [], dataAge: 200, posAge: 2, cadence: WEEKDAY }).includes("資料 200s 前（後端可能重啟中）"));
+check("過期：平日部位 40 秒前 → 警告、而且不說「目前無持倉」", (() => { const t = panel({ positions: [], dataAge: 10, posAge: 40, cadence: WEEKDAY }); return t.includes("資料 40s 前") && t.includes("部位資料已過期（40 秒前）") && !t.includes("目前無持倉"); })());
+check("過期：週末部位 100 秒前、保證金 300 秒前 → 正常（目前無持倉）", (() => { const t = panel({ positions: [], dataAge: 300, posAge: 100, cadence: WEEKEND }); return !t.includes("後端可能重啟中") && t.includes("目前無持倉"); })());
+check("過期：週末部位 400 秒前 → 部位資料已過期", panel({ positions: [], dataAge: 300, posAge: 400, cadence: WEEKEND }).includes("部位資料已過期（400 秒前）"));
+check("過期：舊版後端沒有間隔 → 用預設（部位 30 秒、保證金 150 秒）", !panel({ positions: [], dataAge: 100, posAge: 20 }).includes("後端可能重啟中") && panel({ positions: [], dataAge: 10, posAge: 31 }).includes("部位資料已過期"));
 // 載入：meta 的 unprotected 真的被讀進 state（effect 照真的跑一次，API 換成替身）
 const api = require(path.join(TMP, "api.js")).api;
 async function load(meta) {

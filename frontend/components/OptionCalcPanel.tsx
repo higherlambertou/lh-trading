@@ -4,8 +4,9 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import { Calculator } from "lucide-react";
 import StrategyCompare from "./StrategyCompare";
 import { api, apiErrorDetail } from "@/lib/api";
+import { defaultSeriesKey, parseSeriesKey, seriesKey, type OptionSeries } from "@/lib/optionSeries";
 import {
-  DEFAULT_FORM, DEFAULT_SOURCE, EMPTY_ROW, KIND_HINT, KIND_TEXT, beText, buildCalcRequest, buildCloseRequest, defaultDelta, defaultMonth, hedgeText,
+  DEFAULT_FORM, DEFAULT_SOURCE, EMPTY_ROW, KIND_HINT, KIND_TEXT, beText, buildCalcRequest, buildCloseRequest, defaultDelta, hedgeText,
   pct1, pnlColor, pts, rightText, rowsFromCalc, sigma, spts, stwd, twd,
   type CloseRow, type OptCalc, type OptChain, type OptClose, type OptCloseAction, type OptForm, type OptHedge, type OptKind, type OptScen, type OptSource,
 } from "@/lib/options";
@@ -301,7 +302,7 @@ export default function OptionCalcPanel() {
   const [mode, setMode] = useState<"calc" | "close">("calc");
   const [src, setSrc] = useState<OptSource>(DEFAULT_SOURCE);
   const [form, setForm] = useState<OptForm>(DEFAULT_FORM);
-  const [expiries, setExpiries] = useState<string[]>([]);
+  const [series, setSeries] = useState<OptionSeries[]>([]);           // 月選＋週選（發現 70）
   const [ctx, setCtx] = useState<OptChain | null>(null);
   const [calc, setCalc] = useState<OptCalc | null>(null);
   const [calcErr, setCalcErr] = useState("");
@@ -318,7 +319,7 @@ export default function OptionCalcPanel() {
 
   useEffect(() => {
     let alive = true;
-    api.order.optionExpiries().then((e) => { if (alive) { setExpiries(e); setSrc((s) => (s.deliveryMonth ? s : { ...s, deliveryMonth: defaultMonth(e) })); } }).catch(() => {});
+    api.order.optionSeries().then((xs) => { if (alive) { setSeries(xs); setSrc((s) => (s.deliveryMonth ? s : { ...s, ...parseSeriesKey(defaultSeriesKey(xs)) })); } }).catch(() => {});
     return () => { alive = false; };
   }, []);
 
@@ -326,9 +327,9 @@ export default function OptionCalcPanel() {
   useEffect(() => {
     if (src.manual || !src.deliveryMonth) { setCtx(null); return; }
     let alive = true;
-    api.options.chain(src.deliveryMonth).then((c) => { if (alive) setCtx(c); }).catch(() => { if (alive) setCtx(null); });
+    api.options.chain(src.deliveryMonth, src.category || "TXO").then((c) => { if (alive) setCtx(c); }).catch(() => { if (alive) setCtx(null); });
     return () => { alive = false; };
-  }, [src.manual, src.deliveryMonth]);
+  }, [src.manual, src.deliveryMonth, src.category]);
 
   const runCalc = useCallback(async () => {
     const b = buildCalcRequest(form, src);
@@ -369,10 +370,11 @@ export default function OptionCalcPanel() {
             options={[{ id: "live", label: "即時報價" }, { id: "manual", label: "手動（休市也能用）" }]} />
         </Field>
         {!src.manual ? (
-          <Field label="到期月" hint={ctx ? `遠期 ${pts(ctx.F, 1)} · ATM IV ${ctx.atm_iv_pct == null ? "—" : pts(ctx.atm_iv_pct, 1)}% · 距到期 ${pts(ctx.days, 1)} 天` : undefined}>
-            <select className={INPUT} value={src.deliveryMonth} onChange={(e) => setS({ deliveryMonth: e.target.value })}>
-              {expiries.length === 0 && <option value="">（載入中…）</option>}
-              {expiries.map((m) => <option key={m} value={m}>{m}</option>)}
+          <Field label="到期日（月選／週選）" hint={ctx ? `遠期 ${pts(ctx.F, 1)} · ATM IV ${ctx.atm_iv_pct == null ? "—" : pts(ctx.atm_iv_pct, 1)}% · 距到期 ${pts(ctx.days, 1)} 天` : undefined}>
+            <select className={INPUT} value={seriesKey({ category: src.category || "TXO", delivery_month: src.deliveryMonth })}
+              onChange={(e) => setS(parseSeriesKey(e.target.value))}>
+              {series.length === 0 && <option value="">（載入中…）</option>}
+              {series.map((s) => <option key={seriesKey(s)} value={seriesKey(s)}>{s.label}</option>)}
             </select>
           </Field>
         ) : (

@@ -40,6 +40,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 長等待一律用 `isleep`（背景 sleep＋wait，否則 `pkill` 會被拖最長 10 分鐘）；`main.py` 啟動前先試綁 `BIND_HOST`（`core/bind_check.py`）。測試 `tests/test_watchdog_scripts.py`。
 
 **Python 與 SDK**：watchdog 有專案的 `.venv` 就用它（沿用 anaconda 套件＋shioaji 1.5.8，發現 68），沒有就用 anaconda（1.5.3）；退回舊版＝`mv .venv .venv.off` 再重啟 watchdog（1.5.3 已下架，備份在 `data/backup/sdk/`）。**升級 SDK 一律先用模擬盤實測下單與成交回報。**
+**登入自動啟動**（發現 69）：正式盤 watchdog 與前端登記成 launchd 服務（`scripts/launchd.sh install|uninstall|status`），登入後自己起來；watchdog 只在異常結束時被拉回來，`kill <watchdog PID>` 停掉不會；單例鎖衝突是 exit 0。launchd 不能直接用 bash 讀 `~/Documents`，一律經 `scripts/launchd_run.py`（anaconda Python）啟動。
 **log**：watchdog `/tmp/lh_{sim,live}_watchdog.log`，應用程式 `/tmp/lh_{sim,live}.log`（超過 100 MB 在重啟前改名成 `.1`）。**停止**：`kill <watchdog_pid>`（會一併關掉子進程；只 kill 子進程它會拉回來）。
 **凍結時抓堆疊**：`kill -USR1 <pid>`（main_sim.py 已掛 faulthandler）。排錯與「誰關的」判斷見 OPERATION.md〈常見狀況〉。
 
@@ -98,6 +99,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 - **手動停損確認**：觸發後不立刻移除監看，用委託狀態確認再重送——**務必保留「先確認再重送」**，否則可能重複平倉變成反向開倉（`tests/test_manual_close.py`）。
 - **持倉保護**：手動停損監控落地（`data/manual_watches_<mode>.json`）、重啟後與券商部位對帳恢復（`reconcile`：部位不在的舊監看一律丟掉）；**策略不自動恢復**；新增 `ManualWatch` 欄位要決定進不進 `_SAVED_FIELDS`。
 - **換月**（`core/rollover.py`，發現 38）：後端偵測訂閱的近月已結算 → `/api/health` 帶 `restart_wanted` → watchdog 正常關閉重啟；只在合約檔更新後的時間點試，四次不成就通知放棄。`ROLLOVER_RESTART=false` 關閉。
+- **背景工作**：main.py 新增背景工作一律加進 `task_watch.register` 的清單（意外停止才會被發現；`tests/test_system_health.py` 檢查）。
 - **帳務查詢頻率**（`positions_refresh_loop` 等）：worker 單執行緒，查詢期間下單會排隊；**加輪詢或縮短間隔前先估總和**（見下方上限表）。`broker.kbars()` 只在盤前／盤後用。
 
 ### 通知
@@ -120,6 +122,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 - **口數提示**（發現 51，`core/position_size.py`）：**只顯示、不擋單**（下單面板的口數欄旁）；風險＝(停損＋緩衝)×每點價值，沒有停損登記的部位風險未知、只列出不計入；權益取不到或過期、停損沒填一律不給口數（fail-closed）。要做成真正擋單的獨立風控層（《部位大小控管》需求文件）會動到下單路徑，先討論；`tests/test_position_size.py` 靜態檢查下單與策略路徑沒有引用它。
 - **預測紀錄**（`core/forecast_log.py`，發現 68）：日盤／夜盤預期振幅每天一筆、存了不改（觸發器），收盤後對照實際算命中率；只記錄、只顯示，策略／風控／下單不讀。
 - **夜盤預期振幅**（發現 67，`core/night_range.py`）：只顯示；模型在獨立子行程擬合（`data/night_model.json`），後端只讀結果；輸入不齊寫原因、不湊數字；策略／風控／下單不得引用。
+- **選擇權序列**（發現 70）：週選是另外的類別（`TX1`／`TXY`…），一個序列＝（類別, 到期月）；下單、報價、履約價、選擇權鏈、試算一律帶 `category`，**不要寫死 TXO**。
 - **選擇權試算**：只做買方；`option_chain` 只在按下試算時查、5 秒快取，**不要輪詢**；口數 0 要擋。
 - **回測**放獨立子行程（`nice -n 10`、同時只跑一個），**不要改成在交易行程裡跑**（CPU 密集會搶下單與報價的 GIL）。
 - 其餘（盤中即時狀態、盤中脈絡、破產機率、指標回放、硬門檻、選擇權歷史與離線檢驗）見 ARCHITECTURE.md。

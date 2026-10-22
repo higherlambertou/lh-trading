@@ -113,6 +113,16 @@ watchdog log 有 `判定券商連線假死(stale) → 正常關閉 PID=… 後�
 之後每個交易日 14:00 本機備份完就複製一份過去（保留 14 天）；Google Drive 沒開時只略過、不影響本機備份，〈系統健康〉會變黃。
 備份內容是成交紀錄、IV 歷史、日誌等資料庫；**不含** `.env`、憑證與金鑰。
 
+### 登入自動啟動（launchd，update.md 發現 69）
+
+正式盤 watchdog 和前端已登記成 launchd 服務，**登入 macOS 後自己起來**（重開機、停電之後不用記得手動開）。你原本的操作方式不變：
+- 停止：照舊 `kill <watchdog PID>`（正常結束，不會被拉回來）；前端照舊停。手動 `nohup ./run_live.sh …` 也照舊——已經有一個在跑時服務會自己讓開。
+- watchdog 本身萬一異常結束（被 kill -9、當掉），launchd 30 秒後重開；前端只在登入時啟動一次。
+- 查狀態／移除：`scripts/launchd.sh status`、`scripts/launchd.sh uninstall`（不會停掉正在跑的）；改了 `deploy/launchd/*.plist` 要重新 `scripts/launchd.sh install`。
+- log：watchdog 照舊 `/tmp/lh_live_watchdog.log`，前端 `/tmp/lh_frontend.log`。
+- **限制**：FileVault 開著、沒有自動登入，所以重開機後要你登入才會起來；半夜自動更新的重開機擋不住——建議關掉「自動安裝 macOS 更新」（系統設定 → 一般 → 軟體更新 → 自動更新）。
+- macOS 不讓 launchd 直接用 bash 讀 `~/Documents`，所以服務用 anaconda 的 Python 當啟動器（`scripts/launchd_run.py`），和 lh-intel 一樣。
+
 ### 券商 SDK 版本與退回（update.md 發現 68）
 
 正式盤／模擬盤由 watchdog 用專案裡的 `.venv/bin/python` 啟動（shioaji 1.5.8；其他套件沿用 anaconda）。〈系統健康〉的「券商連線」那一行會寫目前的 SDK 版本。

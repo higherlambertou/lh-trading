@@ -46,6 +46,7 @@ from core.taifex_update import taifex_update_loop
 from core.bar_gapfill import gapfill_loop
 from core import forecast_log, precheck
 from core.evening_brief import evening_loop
+from core import task_watch
 from core.intraday_context import intraday_context
 from core.signal_shadow import shadow_loop
 from core import entry_log
@@ -134,6 +135,13 @@ async def lifespan(app: FastAPI):
     forecast_task = loop.create_task(forecast_log.forecast_loop(          # 預測紀錄與命中率（日盤／夜盤預期振幅；只記錄；FORECAST_LOG=false 關閉）
         market_state.store.path, _day_forecast, lambda now: precheck.fetch_evening(now, market_state.store),
         lambda target: market_state.store.bars_1m("TXF", target)))
+    for _name, _t in (("開機訂閱", startup_task), ("保證金與流量", cache_task), ("部位刷新", positions_task), ("委託清單", trades_task),
+                      ("市場狀態", market_task), ("選擇權價差取樣", spread_task), ("盤前跨市場紀錄", premarket_task), ("當沖收盤提醒", reminder_task),
+                      ("美國事件提醒", cpi_task), ("重啟後的持倉保護", protect_task), ("波動放大提醒", vol_task), ("盤前摘要", brief_task),
+                      ("週報", weekly_task), ("影子訊號", shadow_task), ("換月", rollover_task), ("連線假死偵測", session_task),
+                      ("期交所資料更新", taifex_task), ("走勢圖回補", gapfill_task), ("傍晚摘要", evening_task), ("預測紀錄", forecast_task),
+                      ("手動停損監控", manual_monitor._task)):
+        task_watch.register(_name, _t)                                    # 背景工作意外停止就推播、系統健康面板顯示（發現 69）
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
     startup_task.cancel()

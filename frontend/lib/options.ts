@@ -16,6 +16,7 @@ export const KIND_HINT: Record<OptKind, string> = {
 export interface OptSource {
   manual: boolean;
   deliveryMonth: string;
+  category?: string;    // 月選 TXO、週三週選 TX1/2/4/5、週五週選 TXU～TXZ（發現 70）；沒給＝TXO
   mF: string; mIv: string; mDays: string; mSpread: string;
 }
 
@@ -30,7 +31,8 @@ export interface OptForm {
   holdHours: string;
 }
 
-export const DEFAULT_SOURCE: OptSource = { manual: false, deliveryMonth: "", mF: "", mIv: "", mDays: "", mSpread: "2" };
+export const DEFAULT_SOURCE: OptSource = { manual: false, deliveryMonth: "", category: "TXO", mF: "", mIv: "", mDays: "", mSpread: "2" };
+const cat = (src: OptSource): string => src.category || "TXO";
 export const DEFAULT_FORM: OptForm = { kind: "straddle", select: "delta", delta: "0.25", k: "0.5", movePts: "", lots: "1", budget: "", holdHours: "6" };
 // 切換結構時的預設 delta：勒式的兩翼 0.25；單向 0.40
 export const defaultDelta = (kind: OptKind): string => (kind === "strangle" ? "0.25" : "0.40");
@@ -64,7 +66,7 @@ export function buildCalcRequest(f: OptForm, src: OptSource): Built<CalcBody> {
   if (!(Number.isInteger(lots) && lots >= 1 && lots <= 1000)) return { ok: false, error: "組數要是 1～1000 的整數" };
   if (budget !== undefined && !(budget > 0)) return { ok: false, error: "預算要大於 0（或留空）" };
   if (!(hold >= 0 && hold <= 720)) return { ok: false, error: "持有時間（小時）要在 0～720" };
-  const body: CalcBody = { kind: f.kind, category: "TXO", select: f.select, delta: Number.isFinite(delta) ? delta : 0.25, k: Number.isFinite(k) ? k : 0.5,
+  const body: CalcBody = { kind: f.kind, category: cat(src), select: f.select, delta: Number.isFinite(delta) ? delta : 0.25, k: Number.isFinite(k) ? k : 0.5,
     lots, hold_hours: hold };
   if (move !== undefined) body.move_pts = move;
   if (budget !== undefined) body.budget_twd = budget;
@@ -105,7 +107,7 @@ export function buildCloseRequest(rows: CloseRow[], src: OptSource, movePts: str
   const move = movePts.trim() === "" ? undefined : num(movePts), hold = num(holdHours || "0");
   if (move !== undefined && !(move > 0)) return { ok: false, error: "預期波動點數要大於 0（或留空）" };
   if (!(hold >= 0 && hold <= 720)) return { ok: false, error: "持有時間（小時）要在 0～720" };
-  const body: CloseBody = { legs, category: "TXO", hold_hours: hold };
+  const body: CloseBody = { legs, category: cat(src), hold_hours: hold };
   if (move !== undefined) body.move_pts = move;
   if (src.manual) {
     const m = buildManual(src);
@@ -253,7 +255,7 @@ export function buildCompareRequest(f: OptForm, src: OptSource, holdDays: string
   if (move !== undefined && !(move > 0)) return { ok: false, error: "預期波動點數要大於 0（或留空用市場隱含的）" };
   if (!(Number.isInteger(lots) && lots >= 1 && lots <= 1000)) return { ok: false, error: "組數要是 1～1000 的整數" };
   if (!(hold >= 0 && hold <= 800)) return { ok: false, error: "持有天數要在 0～800" };
-  const body: CompareBody = { category: "TXO", select: f.select, delta: Number.isFinite(delta) ? delta : 0.25, k: Number.isFinite(k) ? k : 0.5, lots, hold_days: hold };
+  const body: CompareBody = { category: cat(src), select: f.select, delta: Number.isFinite(delta) ? delta : 0.25, k: Number.isFinite(k) ? k : 0.5, lots, hold_days: hold };
   if (move !== undefined) body.move_pts = move;
   if (src.manual) {
     const m = buildManual(src);

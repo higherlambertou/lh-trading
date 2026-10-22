@@ -400,3 +400,12 @@ def test_trades_refresh_updates_status_only_when_orders_are_open(monkeypatch):
         asyncio.run(ro.trades_refresh_loop())
     assert calls == ["plain", "status", "plain"]                                           # 沒掛單 → 讀快取；看到 PendingSubmit → 更新狀態；都結束了 → 回到只讀快取
     assert ro._trades_cache == [{"id": "1", "status": "PendingSubmit"}]
+
+
+def test_position_meta_reports_the_expected_refresh_cadence():
+    """部位面板照這個判斷資料是不是真的過期（發現 69）：保證金本來就 60 秒刷新，週末更慢。"""
+    from api import routes_position as rp
+    assert rp.cadence(tpe(2026, 10, 22, 10, 0)) == {"positions_every": 5, "margin_every": 60.0}
+    assert rp.cadence(tpe(2026, 10, 25, 10, 0)) == {"positions_every": 120, "margin_every": 600.0}
+    m = rp.get_meta()
+    assert "positions_every" in m and "margin_every" in m

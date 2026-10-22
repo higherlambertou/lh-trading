@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, ArrowDown } from "lucide-react";
 import { api, isSimMode, notifyOrderPlaced } from "@/lib/api";
+import { defaultSeriesKey, parseSeriesKey, seriesKey, seriesShort, type OptionSeries } from "@/lib/optionSeries";
 import PrecheckCard from "./PrecheckCard";
 import SizeHint from "./SizeHint";
 import StopSuggestCard from "./StopSuggestCard";
@@ -22,10 +23,6 @@ const CONTRACT_OPTIONS: { value: Contract; label: string; sub: string }[] = [
 // 期交所「當日沖銷保證金減半」只給小台、大台的日盤（微台不適用）；規則與下單檢查在後端 core/daytrade.py
 const DAYTRADE_CONTRACTS: Contract[] = ["MXF", "TXF"];
 
-function fmtMonth(m: string): string {
-  // "202606" → "2026/06"，週選代碼維持原樣
-  return /^\d{6}$/.test(m) ? `${m.slice(0, 4)}/${m.slice(4)}` : m;
-}
 
 // 依大盤現價判斷某履約價是價內/價平/價外。atm = 最接近現價的履約價。
 function moneyness(strike: number, right: Right, spot: number, atm: number): string {
@@ -58,8 +55,9 @@ export default function OrderPanel() {
 
   // 選擇權專用
   const [right, setRight] = useState<Right>("C");
-  const [expiries, setExpiries] = useState<string[]>([]);
-  const [deliveryMonth, setDeliveryMonth] = useState("");
+  const [series, setSeries] = useState<OptionSeries[]>([]);       // 月選＋週選（發現 70）
+  const [seriesSel, setSeriesSel] = useState("");                  // 「類別｜到期月」，例：TXY|202610
+  const { category: optCategory, deliveryMonth } = parseSeriesKey(seriesSel);
   const [strikes, setStrikes] = useState<number[]>([]);
   const [strike, setStrike] = useState<number | "">("");
   const [exitBuffer, setExitBuffer] = useState("3");
@@ -73,22 +71,22 @@ export default function OrderPanel() {
   } | null>(null);
   const [underlying, setUnderlying] = useState<number | null>(null); // 大盤現價（判斷價內外用）
 
-  // 切到選擇權 → 載入到期月份；委託類型預設 ROD（選擇權多為掛單等成交）
+  // 切到選擇權 → 載入到期序列（月選＋週三／週五週選，發現 70）；預設最近的月選；委託類型預設 ROD（選擇權多為掛單等成交）
   useEffect(() => {
     if (mode !== "option") return;
     setOrderType("ROD");
-    if (expiries.length) return;
+    if (series.length) return;
     setOptLoading(true);
     setOptErr("");
     api.order
-      .optionExpiries()
+      .optionSeries()
       .then((xs) => {
-        setExpiries(xs);
-        if (xs.length) setDeliveryMonth((cur) => cur || xs[0]);
+        setSeries(xs);
+        if (xs.length) setSeriesSel((cur) => cur || defaultSeriesKey(xs));
       })
       .catch((e) => setOptErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setOptLoading(false));
-  }, [mode, expiries.length]);
+  }, [mode, series.length]);
 
   // 月份 / 買賣權變動 → 載入履約價，預設挑中間（接近價平）
   useEffect(() => {
@@ -96,14 +94,14 @@ export default function OrderPanel() {
     setOptLoading(true);
     setOptErr("");
     api.order
-      .optionStrikes(deliveryMonth, right)
+      .optionStrikes(deliveryMonth, right, optCategory)
       .then((xs) => {
         setStrikes(xs);
         setStrike(xs.length ? xs[Math.floor(xs.length / 2)] : "");
       })
       .catch((e) => setOptErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setOptLoading(false));
-  }, [mode, deliveryMonth, right]);
+  }, [mode, deliveryMonth, optCategory, right]);
 
   // 選擇權模式：抓大盤現價（讀期貨推播快取，免查詢）判斷價內/價平/價外
   useEffect(() => {
@@ -144,7 +142,7 @@ export default function OrderPanel() {
     let alive = true;
     const fetchQ = () => {
       api.order
-        .optionQuote(deliveryMonth, Number(strike), right)
+        .optionQuote(deliveryMonth, Number(strike), right, optCategory)
         .then((q) => {
           if (alive) setOptQuote({ close: q.close, bid: q.bid, ask: q.ask, vol: q.total_volume });
         })
@@ -158,7 +156,7 @@ export default function OrderPanel() {
       alive = false;
       clearInterval(t);
     };
-  }, [mode, deliveryMonth, strike, right]);
+  }, [mode, deliveryMonth, optCategory, strike, right]);
 
   // 期貨現價：讀後端推播快取（不對永豐發查詢），每 2 秒刷新
   useEffect(() => {
@@ -235,6 +233,7 @@ export default function OrderPanel() {
     try {
       const res = await api.order.placeOption({
         delivery_month: deliveryMonth,
+        category: optCategory,                 // 週選是另外的類別（TX1／TXY…），不帶就會被當成月選（發現 70）
         strike: Number(strike),
         option_right: right,
         action,
@@ -404,19 +403,19 @@ export default function OrderPanel() {
               );
             })}
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="text-[11px] text-[#7070a0] block mb-1">到期月份</label>
+              <label className="text-[11px] text-[#7070a0] block mb-1">到期日（月選／週選）</label>
               <select
-                value={deliveryMonth}
-                onChange={(e) => setDeliveryMonth(e.target.value)}
-                disabled={optLoading || !expiries.length}
+                value={seriesSel}
+                onChange={(e) => setSeriesSel(e.target.value)}
+                disabled={optLoading || !series.length}
                 className={inputCls}
               >
-                {!expiries.length && <option value="">載入中…</option>}
-                {expiries.map((m) => (
-                  <option key={m} value={m}>
-                    {fmtMonth(m)}
+                {!series.length && <option value="">載入中…</option>}
+                {series.map((s) => (
+                  <option key={seriesKey(s)} value={seriesKey(s)}>
+                    {s.label}
                   </option>
                 ))}
               </select>
@@ -672,7 +671,7 @@ export default function OrderPanel() {
           : armed
           ? "⚠ 真錢下單 — 3 秒內再點一次確認"
           : isOption
-          ? `確認${isBuy ? "買進" : "賣出"} ${fmtMonth(deliveryMonth)} ${strike}${
+          ? `確認${isBuy ? "買進" : "賣出"} ${seriesShort(series, seriesSel)} ${strike}${
               right === "C" ? "C" : "P"
             } ${quantity}口 @ ${limitPrice || "?"}`
           : `確認${isBuy ? "買多" : "賣空"} ${quantity} 口${

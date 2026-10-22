@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 用 anaconda 的 Python 當啟動器：macOS 不讓 launchd 直接用 bash 讀 ~/Documents（scripts/launchd_run.py）。
+     正式盤 watchdog 的開機（登入）自動啟動（update.md 發現 69）。安裝／移除：scripts/launchd.sh install|uninstall|status
+     登入時啟動一次 run_live.sh；只有「異常結束」（被 kill -9、當掉）才重啟——你用 kill <watchdog PID> 停掉是正常結束（exit 0），不會被拉回來。
+     已經有一個 watchdog 在跑（例如你手動用 nohup 開的）時，這個會因為單例鎖直接正常結束，不會重複。 -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.lh.trading.live</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/lambert/anaconda3/bin/python</string>
+		<string>/Users/lambert/Documents/GitHub/lh-trading/scripts/launchd_run.py</string>
+		<string>run_live.sh</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/lambert/Documents/GitHub/lh-trading</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Standard</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/lh_live_watchdog.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/lh_live_watchdog.log</string>
+</dict>
+</plist>

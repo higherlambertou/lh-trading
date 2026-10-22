@@ -161,6 +161,23 @@ def intel_item(st: dict[str, Any]) -> dict[str, Any]:
     return item("intel", "lh-intel 資訊收集", "ok", f"{n} 個收集器正常｜心跳 {_ago(hb)}")
 
 
+def tasks_item(tasks: Optional[list[dict[str, Any]]]) -> dict[str, Any]:
+    """背景工作（core/task_watch）：有任何一個丟例外停掉就是紅的。"""
+    if not tasks:
+        return item("tasks", "背景工作", "off", "沒有登記任何背景工作（舊版後端？）")
+    by = {s: [t for t in tasks if t["state"] == s] for s in ("running", "crashed", "off", "done", "cancelled")}
+    detail = "\n".join(f"{t['name']}：{ {'running': '執行中', 'crashed': '停了', 'off': '依設定關閉', 'done': '已完成', 'cancelled': '已取消'}[t['state']] }"
+                       + (f"（{t['error']}）" if t.get("error") else "") for t in tasks)
+    if by["crashed"]:
+        return item("tasks", "背景工作", "bad", f"{len(by['crashed'])} 個意外停止：" + "、".join(t["name"] for t in by["crashed"]) + "（重啟後端才會恢復）", detail)
+    text = f"{len(by['running'])} 個在跑"
+    if by["done"]:
+        text += f"、{len(by['done'])} 個開機工作已完成"
+    if by["off"]:
+        text += f"、{len(by['off'])} 個依設定關閉（" + "、".join(t["name"] for t in by["off"]) + "）"
+    return item("tasks", "背景工作", "ok", text, detail)
+
+
 def disk_item(free_bytes: Optional[int], log_bytes: Optional[int]) -> dict[str, Any]:
     free_gb = None if free_bytes is None else free_bytes / 1e9
     log_mb = None if log_bytes is None else log_bytes / 1e6
@@ -186,8 +203,8 @@ def _tail(path: Path, max_bytes: int = 300_000) -> Optional[str]:
 def collect(now: float, mode: str, connected: bool, stale: Optional[str], snap: dict[str, Any], usage: Optional[dict[str, Any]],
             uptime: Optional[float], intel_status: Callable[[], dict[str, Any]], backup_root: Path,
             watchdog_log: Optional[Path] = None, app_log: Optional[Path] = None, taifex_state: Optional[Path] = None,
-            sdk: Optional[str] = None) -> dict[str, Any]:
-    items = [broker_item(connected, stale, snap, usage, uptime, sdk)]
+            sdk: Optional[str] = None, tasks: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+    items = [broker_item(connected, stale, snap, usage, uptime, sdk), tasks_item(tasks)]
     wl = watchdog_log or WATCHDOG_LOG.get(mode, WATCHDOG_LOG["live"])
     text = _tail(wl)
     items.append(restarts_item(None if text is None else watchdog_events(text, now), now, None if text is not None else f"讀不到 {wl}"))

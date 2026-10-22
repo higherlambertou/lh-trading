@@ -110,6 +110,9 @@ A1 連續 ≥ 3 次連線錯誤（`Session error`／`SessionNotEstablished`／`N
 **推播重試**（`core/notify._deliver`，發現 68）：網路類錯誤（`retryable()`：URLError、逾時、連線錯誤、5xx）的通道隔 `RETRY_DELAYS`（15／60／180 秒）重送，`send_sync(only=…)` 只送失敗的那幾個；晚 30 秒以上才送到的加註原本時間。測試裡 `_sleep` 被換掉（conftest）。
 **預測紀錄**（`core/forecast_log.py`，發現 68）：`forecast_log`（append-only，觸發器擋 UPDATE／DELETE）與 `forecast_outcome` 在 market_state.db；背景每 10 分鐘：平日 08:00～13:45 記今天的日盤預測（intraday_context 的 day_iv）、16:00～05:00 記今晚的夜盤預測（precheck.evening）、補上收盤了的實際值（日盤 bars_1m、夜盤期交所盤後列）。`summary()` 給下單前檢查卡與傍晚摘要。
 **傍晚摘要**（`core/evening_brief.py`，發現 68）：16:20（`EVENING_BRIEF_TIME`）起，夜盤預測好了就發，最晚 17:30 照發；休市日曆由 main.py 傳入。
+**背景工作監看**（`core/task_watch.py`，發現 69）：main.py 建的背景工作（含 `manual_monitor._task`）在 lifespan 裡一次登記；done callback 分三種：取消（關機）、正常結束（開機的一次性工作，或設定關閉、模擬盤不跑而直接 return）、丟例外（意外停止：記 ERROR＋推播一次、冷卻 1 小時）。〈系統健康〉的「背景工作」一行讀 `task_watch.status()`。**新增背景工作要加進那個登記清單**（`tests/test_system_health.py` 會比對 `*_task = loop.create_task` 與清單）。
+**選擇權的到期序列**（`core/option_series.py`、`GET /api/order/option/series`，發現 70）：臺指選擇權在 SDK 裡分類別——月選 `TXO`、週三週選 `TX1/TX2/TX4/TX5`、週五週選 `TXU`～`TXZ`；序列＝（類別, 到期月），到期日看合約的 `delivery_date`。worker 的 `option_series_rows` 只讀 `api.Contracts.Options.<類別>`。前端用「類別｜到期月」當選單的值（`lib/optionSeries.ts`），所有選擇權請求都帶 `category`；預設最近、至少剩 7 天的月選。
+**部位面板的過期判斷**（發現 69）：`/api/position/meta` 帶 `positions_every`／`margin_every`（`routes_position.cadence`：平日 5／60 秒、週末 120／600 秒），前端 `lib/staleness.ts` 用「部位 3 倍、保證金 2.5 倍間隔」判斷，不是固定 30 秒。
 
 **log 位置**
 - watchdog：`/tmp/lh_sim_watchdog.log`、`/tmp/lh_live_watchdog.log`

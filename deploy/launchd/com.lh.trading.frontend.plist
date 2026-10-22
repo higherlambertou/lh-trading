@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 用 anaconda 的 Python 當啟動器：macOS 不讓 launchd 直接用 bash 讀 ~/Documents（scripts/launchd_run.py）。
+     前端的登入自動啟動（update.md 發現 69）：登入時啟動一次（run_frontend.sh），之後**不自動重啟**——
+     你照舊用 npm run build／npm run start 重開；如果前端被 launchd 一直拉起來，會和你手動 build 互相打架。
+     3002 已經有人在用（你手動開的）就直接結束。 -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.lh.trading.frontend</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/lambert/anaconda3/bin/python</string>
+		<string>/Users/lambert/Documents/GitHub/lh-trading/scripts/launchd_run.py</string>
+		<string>run_frontend.sh</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/lambert/Documents/GitHub/lh-trading</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/lambert/.nvm/versions/node/v22.11.0/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<false/>
+	<key>ProcessType</key>
+	<string>Standard</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/lh_frontend.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/lh_frontend.log</string>
+</dict>
+</plist>

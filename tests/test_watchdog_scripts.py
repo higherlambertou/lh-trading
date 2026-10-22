@@ -20,7 +20,7 @@ SCRIPTS = [ROOT / "run_live.sh", ROOT / "run_sim.sh"]
 HAS_BASH = shutil.which("bash") is not None
 
 
-@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("script", SCRIPTS + [ROOT / "run_frontend.sh", ROOT / "scripts" / "launchd.sh"], ids=lambda p: p.name)
 def test_no_variable_is_followed_directly_by_a_multibyte_character(script):
     """`$_old_pid）` 這種寫法：在某些 locale 下 bash 會把全形括號的位元組當成變數名的一部分，set -u 下直接 unbound variable，
     訊息印不出來（2026-10-14 在 /tmp/lh_live_watchdog.log 看到）。變數後面緊接非 ASCII 字元一律要寫成 ${var}。"""
@@ -433,3 +433,79 @@ def test_rotate_app_log(tmp_path, script):
     text = script.read_text(encoding="utf-8")
     i = text.index("    rotate_app_log\n")
     assert text.index("    free_port\n") < i < text.index('"$PY" main')                 # 舊的停掉、清完 port 之後，啟動新的之前
+
+
+# ── 登入自動啟動（launchd，update.md 發現 69）──────────────────────────────
+
+@pytest.mark.skipif(not HAS_BASH, reason="需要 bash")
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_second_watchdog_exits_cleanly(tmp_path, script):
+    """已經有一個在跑：要正常結束（exit 0），launchd（只在異常結束時重啟）才不會一直重試。"""
+    lock = tmp_path / "lock.d"
+    lock.mkdir()
+    (lock / "pid").write_text(str(os.getpid()))                                      # 一個活著的行程佔著鎖
+    text = re.sub(r'(?m)^LOCK_DIR=.*$', f'LOCK_DIR="{lock}"', script.read_text(encoding="utf-8"))
+    (tmp_path / "wd.sh").write_text(text)
+    r = subprocess.run(["bash", str(tmp_path / "wd.sh")], capture_output=True, text=True, cwd=tmp_path, timeout=20)
+    assert r.returncode == 0 and "本次拒絕啟動" in r.stdout, (r.returncode, r.stdout, r.stderr)
+    assert (lock / "pid").read_text() == str(os.getpid())                              # 不會搶走別人的鎖
+
+
+def test_launchd_plists():
+    import plistlib
+    live = plistlib.loads((ROOT / "deploy/launchd/com.lh.trading.live.plist").read_bytes())
+    launcher = ["/Users/lambert/anaconda3/bin/python", str(ROOT / "scripts" / "launchd_run.py")]           # macOS 不讓 launchd 直接用 bash 讀 ~/Documents
+    assert live["Label"] == "com.lh.trading.live" and live["ProgramArguments"] == launcher + ["run_live.sh"]
+    assert live["WorkingDirectory"] == str(ROOT) and live["RunAtLoad"] is True
+    assert live["KeepAlive"] == {"SuccessfulExit": False}                               # 只有異常結束才重啟；kill 停掉（exit 0）不會被拉回來
+    assert {"/usr/sbin", "/sbin", "/usr/bin"} <= set(live["EnvironmentVariables"]["PATH"].split(":"))     # lsof、ifconfig、curl
+    assert live["StandardOutPath"] == live["StandardErrorPath"] == "/tmp/lh_live_watchdog.log"
+    fe = plistlib.loads((ROOT / "deploy/launchd/com.lh.trading.frontend.plist").read_bytes())
+    assert fe["Label"] == "com.lh.trading.frontend" and fe["ProgramArguments"] == launcher + ["run_frontend.sh"]
+    assert fe["KeepAlive"] is False and fe["RunAtLoad"] is True                         # 前端只在登入時啟動一次，不跟手動 build 打架
+
+
+@pytest.mark.skipif(not HAS_BASH, reason="需要 bash")
+def test_run_frontend(tmp_path):
+    work = tmp_path / "work"
+    (work / "frontend").mkdir(parents=True)
+    (work / "run_frontend.sh").write_text((ROOT / "run_frontend.sh").read_text(encoding="utf-8"))
+    calls = tmp_path / "npm_calls"
+    busy = stub_bin(tmp_path / "busy", lsof="exit 0", npm=f'echo "$@" >> {calls}') if (tmp_path / "busy").mkdir() is None else None
+    r = subprocess.run(["bash", str(work / "run_frontend.sh")], capture_output=True, text=True, env={"PATH": f"{busy}:/usr/bin:/bin"}, timeout=20)
+    assert r.returncode == 0 and "已經有前端在跑" in r.stdout and not calls.exists()   # 3002 有人在用：不重複啟動
+    free = stub_bin(tmp_path / "free", lsof="exit 1", npm=f'echo "$@" >> {calls}') if (tmp_path / "free").mkdir() is None else None
+    r = subprocess.run(["bash", str(work / "run_frontend.sh")], capture_output=True, text=True, env={"PATH": f"{free}:/usr/bin:/bin"}, timeout=20)
+    assert r.returncode == 0 and calls.read_text().split("\n")[:2] == ["run build", "run start"]     # 還沒 build 過：先 build 再啟動
+    (work / "frontend" / ".next").mkdir()
+    (work / "frontend" / ".next" / "BUILD_ID").write_text("x")
+    calls.unlink()
+    subprocess.run(["bash", str(work / "run_frontend.sh")], capture_output=True, text=True, env={"PATH": f"{free}:/usr/bin:/bin"}, timeout=20)
+    assert calls.read_text().strip() == "run start"                                    # build 過：直接啟動
+
+
+@pytest.mark.skipif(not HAS_BASH, reason="需要 bash")
+def test_launchd_script_parses():
+    r = subprocess.run(["bash", "-n", str(ROOT / "scripts" / "launchd.sh")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    text = (ROOT / "scripts" / "launchd.sh").read_text(encoding="utf-8")
+    assert "plutil -lint" in text and 'launchctl bootstrap "$DOMAIN"' in text and 'launchctl bootout "$DOMAIN/$l"' in text
+
+
+
+def test_launchd_run_forwards_exit_codes_and_signals(tmp_path):
+    """啟動器用 bash 的結束碼結束（launchd 靠這個分正常／異常），收到的 SIGTERM 轉給 bash（bash 的 trap 才會收拾子行程）。"""
+    import sys
+    root = tmp_path / "repo"
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "launchd_run.py").write_text((ROOT / "scripts" / "launchd_run.py").read_text(encoding="utf-8"))
+    (root / "ok.sh").write_text("exit 0\n")
+    (root / "bad.sh").write_text("exit 3\n")
+    (root / "trap.sh").write_text('trap \'echo got-term > "$PWD/term"; exit 0\' TERM\nwhile true; do sleep 0.1; done\n')
+    run = lambda name: subprocess.run([sys.executable, str(root / "scripts" / "launchd_run.py"), name], capture_output=True, text=True, timeout=20)  # noqa: E731
+    assert run("ok.sh").returncode == 0 and run("bad.sh").returncode == 3
+    assert run("../evil.sh").returncode == 2 and run("x.py").returncode == 2                 # 只能跑 repo 根目錄的 .sh
+    p = subprocess.Popen([sys.executable, str(root / "scripts" / "launchd_run.py"), "trap.sh"])
+    time.sleep(1.0)
+    p.send_signal(signal.SIGTERM)
+    assert p.wait(timeout=10) == 0 and (root / "term").read_text().strip() == "got-term"      # 轉給 bash、bash 正常收尾

@@ -359,6 +359,10 @@ class BrokerClient:
     async def option_expiries(self, category: str = "TXO") -> list[str]:
         return await self._acall("option_expiries", category=category)
 
+    async def option_series(self) -> list[dict]:
+        """臺指選擇權的全部序列（月選＋週選）的原始列；整理在 core/option_series.build。只讀合約清單。"""
+        return await self._acall("option_series")
+
     async def option_strikes(
         self, delivery_month: str, right: str, category: str = "TXO"
     ) -> list[int]:

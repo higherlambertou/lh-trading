@@ -23,7 +23,7 @@ const realApi = transpile(path.join(FRONT, "lib", "api.ts"), path.join(TMP, "rea
 const calls = [];
 let impl = {};
 const spy = (name) => (...a) => { calls.push([name, ...a]); return impl[name] ? impl[name](...a) : Promise.resolve(undefined); };
-global.__api_stub = { api: { order: { optionExpiries: spy("expiries") }, options: { calc: spy("calc"), close: spy("close"), chain: spy("chain"), compare: spy("compare") } },
+global.__api_stub = { api: { order: { optionExpiries: spy("expiries"), optionSeries: spy("series") }, options: { calc: spy("calc"), close: spy("close"), chain: spy("chain"), compare: spy("compare") } },
                       apiErrorDetail: realApi.apiErrorDetail };
 fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = global.__api_stub;");
 fs.writeFileSync(path.join(TMP, "lucide_stub.js"), "module.exports = new Proxy({}, { get: () => () => null });");
@@ -31,9 +31,11 @@ const orig = Module._resolveFilename;
 Module._resolveFilename = function (req, ...r) {
   if (req === "@/lib/api") return path.join(TMP, "api_stub.js");
   if (req === "@/lib/options") return path.join(TMP, "options.js");
+  if (req === "@/lib/optionSeries") return path.join(TMP, "optionSeries.js");
   if (req === "lucide-react") return path.join(TMP, "lucide_stub.js");
   return orig.call(this, req, ...r);
 };
+const OS = transpile(path.join(FRONT, "lib", "optionSeries.ts"), path.join(TMP, "optionSeries.js"));
 const SC = transpile(path.join(FRONT, "components", "StrategyCompare.tsx"), path.join(TMP, "StrategyCompare.js"));     // 面板引用 ./StrategyCompare：先放到同一個暫存目錄
 const P = transpile(path.join(FRONT, "components", "OptionCalcPanel.tsx"), path.join(TMP, "panel.js"));
 const Comp = P.default, e = React.createElement;
@@ -181,8 +183,22 @@ const man = { manual: true, deliveryMonth: "", mF: "49300", mIv: "20.5", mDays: 
   check("平倉畫面（即時鏈）：沒有壞值、損益兩平有顯示", !BAD.test(tl) && live2.actions[0].breakeven.every((b) => tl.includes(O.beText(b))) && tl.includes("即時報價"), tl.match(BAD));
 }
 
+// ══ 月選＋週選（發現 70）══════════════════════════════════════════
+{
+  check("序列鍵：新格式與舊格式（只有月份＝月選）", J(OS.parseSeriesKey("TXY|202610")) === J({ category: "TXY", deliveryMonth: "202610" }) && J(OS.parseSeriesKey("202611")) === J({ category: "TXO", deliveryMonth: "202611" }) && OS.seriesKey({ category: "TX1", delivery_month: "202611" }) === "TX1|202611");
+  const L = [{ category: "TXY", delivery_month: "202610", delivery_date: "2026-10-23", kind: "weekly_fri", kind_text: "週五週選", days: 1, label: "", n: 1 },
+             { category: "TXO", delivery_month: "202610", delivery_date: "2026-10-21", kind: "monthly", kind_text: "月選", days: 3, label: "", n: 1 },
+             { category: "TXO", delivery_month: "202611", delivery_date: "2026-11-18", kind: "monthly", kind_text: "月選", days: 30, label: "", n: 1 }];
+  check("預設：最近、至少剩 7 天的月選（不會一打開就是明天到期的週選）", OS.defaultSeriesKey(L) === "TXO|202611" && OS.defaultSeriesKey(L.slice(0, 2)) === "TXO|202610" && OS.defaultSeriesKey(L.slice(0, 1)) === "TXY|202610" && OS.defaultSeriesKey([]) === "");
+  check("確認用的短名稱", OS.seriesShort(L, "TXY|202610") === "10/23 週五週選" && OS.seriesShort(L, "TXO|202611") === "11/18 月選" && OS.seriesShort(L, "TX9|202612") === "202612");
+  const b1 = O.buildCalcRequest(O.DEFAULT_FORM, { ...live, category: "TX1" }), b0 = O.buildCalcRequest(O.DEFAULT_FORM, live);
+  check("試算請求帶選到的類別；沒給＝TXO", b1.ok && b1.body.category === "TX1" && b0.ok && b0.body.category === "TXO", J([b1, b0]));
+  const c1 = O.buildCompareRequest(O.DEFAULT_FORM, { ...live, category: "TXY" }, "3");
+  check("跨式勒式比較也帶類別", c1.ok && c1.body.category === "TXY", J(c1));
+}
+
 // ══ 容器（hooks 替身）═══════════════════════════════════════════
-const NAMES = ["mode", "src", "form", "expiries", "ctx", "calc", "calcErr", "busy", "rows", "closeMove", "closeHold", "close", "closeErr", "sel"];
+const NAMES = ["mode", "src", "form", "series", "ctx", "calc", "calcErr", "busy", "rows", "closeMove", "closeHold", "close", "closeErr", "sel"];
 function render(forced = {}) {
   const sets = {};
   const effects = [];
@@ -211,53 +227,56 @@ const segPick = (tree, label) => { const s = seg(tree, label); s.props.onChange(
 const field = (tree, label) => find(tree, (x) => x.props.label === label)[0];
 const control = (tree, label) => find(field(tree, label).props.children, (x) => x.type === "input" || x.type === "select")[0];
 const tick = () => new Promise((r) => setTimeout(r, 5));
-const EXP = ["202610", "202611"];
+const EXP = [   // 月選＋週選（發現 70）
+  { category: "TXO", delivery_month: "202610", delivery_date: "2026-10-21", kind: "monthly", kind_text: "月選", days: 5, label: "10/21（週三）月選 10 月・剩 5 天", n: 10 },
+  { category: "TXY", delivery_month: "202610", delivery_date: "2026-10-23", kind: "weekly_fri", kind_text: "週五週選", days: 7, label: "10/23（週五）週五週選・剩 7 天", n: 10 },
+  { category: "TXO", delivery_month: "202611", delivery_date: "2026-11-18", kind: "monthly", kind_text: "月選", days: 33, label: "11/18（週三）月選 11 月・剩 33 天", n: 10 }];
 
 (async () => {
   {
-    const { tree } = render({ expiries: EXP, src: live });
+    const { tree } = render({ series: EXP, src: live });
     const t = text(tree);
-    check("容器：初始畫面有各個控制項", t.includes("選擇權試算（買方）") && ["資料來源", "到期月", "結構", "預期波動（點，選填）", "組數", "預算（元，選填）", "持有時間（小時）"].every((x) => !!field(tree, x)) && !!button(tree, "試算"), t);
-    check("容器：到期月選單有各月份、跨式沒有「履約價怎麼選」", find(control(tree, "到期月").props.children, (x) => x.type === "option").length === 2 && !field(tree, "履約價怎麼選"));
+    check("容器：初始畫面有各個控制項", t.includes("選擇權試算（買方）") && ["資料來源", "到期日（月選／週選）", "結構", "預期波動（點，選填）", "組數", "預算（元，選填）", "持有時間（小時）"].every((x) => !!field(tree, x)) && !!button(tree, "試算"), t);
+    check("容器：到期日選單有月選與週選、跨式沒有「履約價怎麼選」", find(control(tree, "到期日（月選／週選）").props.children, (x) => x.type === "option").length === 3 && !field(tree, "履約價怎麼選"));
     check("容器：沒有結果就不顯示結果", find(tree, (x) => x.type === P.CalcResultView).length === 0);
     check("容器：結構四個選項", seg(tree, "買跨式").props.options.map((o) => o.label).join() === "買跨式,買勒式,買 Call,買 Put");
   }
   {
-    const { tree } = render({ expiries: EXP, src: live, form: { ...O.DEFAULT_FORM, kind: "strangle" } });
+    const { tree } = render({ series: EXP, src: live, form: { ...O.DEFAULT_FORM, kind: "strangle" } });
     check("容器：勒式多了「履約價怎麼選」與 Delta 欄位", !!field(tree, "履約價怎麼選") && !!field(tree, "兩翼的 |Delta|") && !field(tree, "距離＝幾倍的預期波動"));
-    const mv = render({ expiries: EXP, src: live, form: { ...O.DEFAULT_FORM, kind: "call", select: "move" } }).tree;
+    const mv = render({ series: EXP, src: live, form: { ...O.DEFAULT_FORM, kind: "call", select: "move" } }).tree;
     check("容器：單向＋預期波動點數 → 距離倍數欄位", !!field(mv, "距離＝幾倍的預期波動") && !field(mv, "目標 |Delta|"));
   }
   {
-    const { tree } = render({ expiries: EXP, src: man });
-    check("容器：手動模式有遠期價、ATM IV、距到期，沒有到期月", !!field(tree, "遠期價（點）") && !!field(tree, "ATM IV（%）") && !!field(tree, "距到期（天）") && !field(tree, "到期月"));
+    const { tree } = render({ series: EXP, src: man });
+    check("容器：手動模式有遠期價、ATM IV、距到期，沒有到期月", !!field(tree, "遠期價（點）") && !!field(tree, "ATM IV（%）") && !!field(tree, "距到期（天）") && !field(tree, "到期日（月選／週選）"));
   }
   {
-    const r1 = render({ expiries: EXP, src: live });
+    const r1 = render({ series: EXP, src: live });
     segPick(r1.tree, "買勒式");
     check("容器：點「買勒式」→ 結構換掉、delta 變成 0.25", r1.sets.form.kind === "strangle" && r1.sets.form.delta === "0.25", J(r1.sets.form));
-    const r2 = render({ expiries: EXP, src: live });
+    const r2 = render({ series: EXP, src: live });
     segPick(r2.tree, "買 Call");
     check("容器：點「買 Call」→ delta 變成 0.40", r2.sets.form.kind === "call" && r2.sets.form.delta === "0.40", J(r2.sets.form));
-    const r3 = render({ expiries: EXP, src: live });
+    const r3 = render({ series: EXP, src: live });
     segPick(r3.tree, "手動（休市也能用）");
     check("容器：切到手動模式", r3.sets.src.manual === true);
-    const r4 = render({ expiries: EXP, src: live });
-    control(r4.tree, "到期月").props.onChange({ target: { value: "202611" } });
-    check("容器：換到期月", r4.sets.src.deliveryMonth === "202611");
-    const r5 = render({ expiries: EXP, src: live });
+    const r4 = render({ series: EXP, src: live });
+    control(r4.tree, "到期日（月選／週選）").props.onChange({ target: { value: "TXY|202610" } });
+    check("容器：換成週選 → 類別與到期月都換掉", r4.sets.src.deliveryMonth === "202610" && r4.sets.src.category === "TXY", J(r4.sets.src));
+    const r5 = render({ series: EXP, src: live });
     segPick(r5.tree, "平倉試算");
     check("容器：切到「平倉試算」", r5.sets.mode === "close");
   }
   {
     calls.length = 0; impl = {};
-    const r = render({ expiries: EXP, src: { ...live, deliveryMonth: "" } });
+    const r = render({ series: EXP, src: { ...live, deliveryMonth: "" } });
     await button(r.tree, "試算").props.onClick();
     check("容器：沒選到期月 → 顯示錯誤、不呼叫後端", /到期月/.test(r.sets.calcErr) && calls.length === 0, J(r.sets));
   }
   {
     calls.length = 0; impl = { calc: () => Promise.resolve(fx("calc_straddle")) };
-    const r = render({ expiries: EXP, src: live, form: { ...O.DEFAULT_FORM, kind: "strangle", select: "move", k: "0.6", movePts: "700", lots: "2" } });
+    const r = render({ series: EXP, src: live, form: { ...O.DEFAULT_FORM, kind: "strangle", select: "move", k: "0.6", movePts: "700", lots: "2" } });
     await button(r.tree, "試算").props.onClick();
     await tick();
     const body = calls.find((c) => c[0] === "calc")[1];
@@ -266,15 +285,15 @@ const EXP = ["202610", "202611"];
   }
   {
     calls.length = 0; impl = { calc: () => Promise.reject(new Error('422 — {"detail":"鏈上沒有任何報價（若是休市，可以改用手動模式）"}')) };
-    const r = render({ expiries: EXP, src: live });
+    const r = render({ series: EXP, src: live });
     await button(r.tree, "試算").props.onClick();
     await tick();
     check("容器：後端錯誤 → 顯示後端給的那句說明（不是整段 JSON）", r.sets.calcErr === "鏈上沒有任何報價（若是休市，可以改用手動模式）" && r.sets.busy === false, J(r.sets));
   }
   {
-    const r = render({ expiries: EXP, src: live, calc: fx("calc_straddle"), busy: true });
+    const r = render({ series: EXP, src: live, calc: fx("calc_straddle"), busy: true });
     check("容器：忙碌時按鈕停用並顯示「試算中」", button(r.tree, "試算中").props.disabled === true);
-    const r2 = render({ expiries: EXP, src: live, calc: fx("calc_straddle") });
+    const r2 = render({ series: EXP, src: live, calc: fx("calc_straddle") });
     const view = find(r2.tree, (x) => x.type === P.CalcResultView)[0];
     view.props.onToClose();
     check("容器：「帶到平倉試算」→ 各腳帶過去、切到平倉分頁、清掉舊結果", J(r2.sets.rows) === J(O.rowsFromCalc(fx("calc_straddle"))) && r2.sets.mode === "close" && r2.sets.close === null && r2.sets.closeErr === "", J(r2.sets));
@@ -309,19 +328,23 @@ const EXP = ["202610", "202611"];
     check("容器：點動作列切換選中的動作", cv.props.sel === "close_1" && withRes.sets.sel === "hold");
   }
   {
-    calls.length = 0; impl = { expiries: () => Promise.resolve(EXP), chain: () => Promise.resolve({ F: 49283, days: 8.8, atm_iv_pct: 20.3, em_sigma_pts: 1551.2, straddle_pts: 1237.7 }) };
+    calls.length = 0; impl = { series: () => Promise.resolve(EXP), chain: () => Promise.resolve({ F: 49283, days: 8.8, atm_iv_pct: 20.3, em_sigma_pts: 1551.2, straddle_pts: 1237.7 }) };
     const r = render({ src: { ...live, deliveryMonth: "202610" } });
     r.effects.forEach((fn) => fn());
     await tick();
-    check("容器：載入時取到期月清單並選好預設月份", calls.some((c) => c[0] === "expiries") && J(r.sets.expiries) === J(EXP) && typeof r.sets.src === "object" && EXP.includes(r.sets.src.deliveryMonth), J(r.sets));
-    check("容器：選了到期月就查一次鏈摘要", J(calls.filter((c) => c[0] === "chain")) === J([["chain", "202610"]]) && r.sets.ctx.em_sigma_pts === 1551.2, J(calls));
+    check("容器：載入時取到期序列（月選＋週選）、已經選了就不換", calls.some((c) => c[0] === "series") && J(r.sets.series) === J(EXP) && typeof r.sets.src === "object" && r.sets.src.deliveryMonth === "202610", J(r.sets));
+    check("容器：選了到期日就查一次鏈摘要（帶類別）", J(calls.filter((c) => c[0] === "chain")) === J([["chain", "202610", "TXO"]]) && r.sets.ctx.em_sigma_pts === 1551.2, J(calls));
+    const fresh = render({ src: O.DEFAULT_SOURCE });
+    fresh.effects.forEach((fn) => fn());
+    await tick();
+    check("容器：還沒選就用預設（最近、至少剩 7 天的月選）", fresh.sets.src.deliveryMonth === "202611" && fresh.sets.src.category === "TXO", J(fresh.sets.src));
     const m = render({ src: man });
     calls.length = 0;
     m.effects.forEach((fn) => fn());
     await tick();
     check("容器：手動模式不查鏈、清掉摘要", !calls.some((c) => c[0] === "chain") && m.sets.ctx === null);
-    const hint = render({ expiries: EXP, src: live, ctx: { F: 49283, days: 8.8, atm_iv_pct: 20.3, em_sigma_pts: 1551.2, straddle_pts: 1237.7 } });
-    check("容器：有鏈摘要時顯示遠期價、ATM IV 與市場隱含 1σ", field(hint.tree, "到期月").props.hint === "遠期 49,283.0 · ATM IV 20.3% · 距到期 8.8 天" && field(hint.tree, "預期波動（點，選填）").props.hint.includes("1,551"), text(field(hint.tree, "到期月").props.hint));
+    const hint = render({ series: EXP, src: live, ctx: { F: 49283, days: 8.8, atm_iv_pct: 20.3, em_sigma_pts: 1551.2, straddle_pts: 1237.7 } });
+    check("容器：有鏈摘要時顯示遠期價、ATM IV 與市場隱含 1σ", field(hint.tree, "到期日（月選／週選）").props.hint === "遠期 49,283.0 · ATM IV 20.3% · 距到期 8.8 天" && field(hint.tree, "預期波動（點，選填）").props.hint.includes("1,551"), text(field(hint.tree, "到期日（月選／週選）").props.hint));
   }
   // ══ 跨式 vs 勒式：各點位的損益 ══════════════════════════════════
   {

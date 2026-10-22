@@ -1,5 +1,6 @@
 import type { BarsResponse } from "./chart";
 import type { SystemHealth } from "./systemHealth";
+import type { OptionSeries } from "./optionSeries";
 // 後端位址依「載入此頁面的 host」自動推導，而不是寫死／烤進 bundle：
 // 本機開 localhost:3002 → 打 localhost:8002；手機開 100.97.169.26:3002 → 打 100.97.169.26:8002。
 // 一份 bundle 兩邊都正確，也避開「本機自連自己 Tailscale IP timeout」的問題。
@@ -511,7 +512,8 @@ export const api = {
     margin: () => req<Margin>("/position/margin"),
     pnl: () => req<ProfitLoss[]>("/position/pnl"),
     usage: () => req<Usage>("/position/usage"),
-    meta: () => req<{ updated_at: number; age_sec: number; positions_age_sec?: number; pnl_age_sec?: number; unprotected?: Unprotected[] }>("/position/meta"),
+    meta: () => req<{ updated_at: number; age_sec: number; positions_age_sec?: number; pnl_age_sec?: number; unprotected?: Unprotected[];
+      positions_every?: number; margin_every?: number }>("/position/meta"),      // positions_every／margin_every：預期的刷新間隔（發現 69）
   },
   order: {
     place: (data: OrderRequest) =>
@@ -520,6 +522,7 @@ export const api = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       }),
+    optionSeries: () => req<OptionSeries[]>("/order/option/series"),       // 月選＋週選，依到期日排序（發現 70）
     optionExpiries: (category = "TXO") =>
       req<string[]>(`/order/option/expiries?category=${encodeURIComponent(category)}`),
     optionStrikes: (deliveryMonth: string, right: "C" | "P", category = "TXO") =>

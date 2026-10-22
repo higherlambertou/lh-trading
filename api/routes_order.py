@@ -186,6 +186,19 @@ async def option_expiries(category: str = "TXO") -> list[str]:
         raise HTTPException(500, f"取得選擇權月份失敗: {e}")
 
 
+@router.get("/option/series")
+async def option_series() -> list[dict[str, Any]]:
+    """臺指選擇權的全部序列：月選＋週三週選＋週五週選，依到期日排序（update.md 發現 70）。只讀合約清單，不查報價。"""
+    from core import option_series as osr
+    try:
+        rows = await broker.option_series()
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "查詢逾時")
+    except Exception as e:
+        raise HTTPException(500, f"取得選擇權序列失敗: {e}")
+    return osr.build(rows, datetime.now(TAIPEI).date())
+
+
 @router.get("/option/strikes")
 async def option_strikes(delivery_month: str, right: str, category: str = "TXO") -> list[int]:
     try:

@@ -21,7 +21,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
         echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  已有另一個 run_sim.sh 在執行（PID=${_old_pid}），本次拒絕啟動。"
         echo "若確定要重開，先停掉它：kill ${_old_pid}"
-        exit 1
+        exit 0          # 不是錯誤：已經有一個在跑就好。用 0 結束，launchd（KeepAlive 只在異常結束時重啟）才不會一直重試（update.md 發現 69）
     fi
     echo "$(date '+%Y-%m-%d %H:%M:%S')  [watchdog]  偵測到陳舊鎖（前持有者 PID=${_old_pid:-未知} 已不存在），接管。"
 fi

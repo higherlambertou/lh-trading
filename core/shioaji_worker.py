@@ -284,6 +284,26 @@ def _extract_profit_loss(p) -> dict:
     }
 
 
+# ── 選擇權序列（update.md 發現 70）──────────────────────────────────────
+
+def option_series_rows(api: Any) -> list[dict]:
+    """api.Contracts.Options 裡臺指選擇權的每個（類別, 到期月, 到期日）與檔數。類別不存在就略過；讀不到回空清單。"""
+    from core.option_series import CATEGORIES
+    opts = getattr(getattr(api, "Contracts", None), "Options", None)
+    if opts is None:
+        return []
+    groups: dict[tuple[str, str, str], int] = {}
+    for cat in CATEGORIES:
+        try:
+            contracts = list(getattr(opts, cat, None) or [])
+        except Exception:  # noqa: BLE001
+            continue
+        for c in contracts:
+            key = (cat, str(getattr(c, "delivery_month", "") or ""), str(getattr(c, "delivery_date", "") or ""))
+            groups[key] = groups.get(key, 0) + 1
+    return [{"category": c, "delivery_month": m, "delivery_date": d, "n": n} for (c, m, d), n in sorted(groups.items())]
+
+
 # ── 錯誤 log 節流（update.md 發現 65）──────────────────────────────────
 
 def log_failure(throttle: ErrorThrottle, method: str, e: BaseException, now: float, tb: str) -> None:
@@ -580,6 +600,10 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
             elif method == "option_expiries":
                 contracts = _list_option_contracts(cmd.get("category", "TXO"))
                 result = sorted({str(c.delivery_month) for c in contracts})
+
+            elif method == "option_series":
+                # 臺指選擇權的全部序列：月選＋週三週選＋週五週選（各在不同類別；update.md 發現 70）。只讀合約清單，不查券商。
+                result = option_series_rows(api)
 
             elif method == "option_strikes":
                 r = cmd["right"].upper()[:1]

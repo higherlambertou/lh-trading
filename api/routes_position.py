@@ -170,6 +170,11 @@ def get_positions() -> list[dict[str, Any]]:
     return _cache["positions"]
 
 
+def cadence(now: datetime) -> dict[str, float]:
+    """現在預期多久刷新一次（秒）：部位平常 5、週末 120；保證金平常 60、週末 600。前端依這個判斷資料是不是真的過期（update.md 發現 69）。"""
+    return {"positions_every": loop_delay(0, now), "margin_every": float(WEEKEND_CACHE_SEC if weekend_quiet(now) else 60)}
+
+
 @router.get("/meta")
 def get_meta() -> dict[str, Any]:
     now = time.time()
@@ -183,6 +188,7 @@ def get_meta() -> dict[str, Any]:
         "positions_age_sec": age(_cache["positions_at"]),    # 部位（-1 = 從未成功刷新）
         "pnl_age_sec": age(_cache["pnl_at"]),
         "unprotected": current_unprotected(),               # 沒有停損保護的持倉（畫面的橫幅用；update.md 發現 32）
+        **cadence(datetime.now(TAIPEI)),                     # 預期的刷新間隔（發現 69）：保證金本來就 60 秒才刷新，不能拿 30 秒當過期門檻
     }
 
 

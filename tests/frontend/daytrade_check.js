@@ -18,7 +18,7 @@ const transpile = (src, out) => {
 // ── api 換成記錄呼叫的替身（isSimMode=true：模擬盤不用兩段式確認，一次點擊就送）──
 const calls = [];
 const spy = (name) => (...a) => { calls.push([name, ...a]); return Promise.resolve({ trade_id: "T1", status: "PendingSubmit", code: "X", limit_price: 1 }); };
-global.__api_stub = { api: { order: { place: spy("place"), placeOption: spy("placeOption"), optionExpiries: spy("expiries"), optionStrikes: spy("strikes"), optionQuote: spy("quote") },
+global.__api_stub = { api: { order: { place: spy("place"), placeOption: spy("placeOption"), optionExpiries: spy("expiries"), optionSeries: spy("series"), optionStrikes: spy("strikes"), optionQuote: spy("quote") },
                              quote: { last: () => Promise.resolve({}) } },
                       isSimMode: () => true, notifyOrderPlaced: () => {} };
 fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = global.__api_stub;");
@@ -33,17 +33,19 @@ Module._resolveFilename = function (req, ...r) {
   if (req === "./SizeHint") return path.join(TMP, "size_stub.js");
   if (req === "./PrecheckCard") return path.join(TMP, "precheck_stub.js");
   if (req === "./StopSuggestCard") return path.join(TMP, "suggest_stub.js");
+  if (req === "@/lib/optionSeries") return path.join(TMP, "optionSeries.js");
   return orig.call(this, req, ...r);
 };
 const SuggestCard = require(path.join(TMP, "suggest_stub.js")).default;
 const SizeHint = require(path.join(TMP, "size_stub.js")).default;
 const Precheck = require(path.join(TMP, "precheck_stub.js")).default;
+transpile(path.join(FRONT, "lib", "optionSeries.ts"), path.join(TMP, "optionSeries.js"));
 const Comp = transpile(path.join(FRONT, "components", "OrderPanel.tsx"), path.join(TMP, "panel.js")).default;
 
 // 狀態順序必須和元件裡 useState 的宣告順序一致
 const NAMES = ["mode", "action", "quantity", "orderType", "limitPrice", "stopLoss", "takeProfit", "busy", "result", "armed",
                "contract", "priceType", "futPrice", "dayTrade",
-               "right", "expiries", "deliveryMonth", "strikes", "strike", "exitBuffer", "optLoading", "optErr", "optQuote", "underlying"];
+               "right", "series", "seriesSel", "strikes", "strike", "exitBuffer", "optLoading", "optErr", "optQuote", "underlying"];
 const IDX = Object.fromEntries(NAMES.map((n, i) => [n, i]));
 function render(forced = {}) {
   const sets = [];
@@ -150,10 +152,25 @@ const lastPlace = () => [...calls].reverse().find((c) => c[0] === "place")?.[1];
   }
   {
     calls.length = 0;
-    const { tree } = render({ mode: "option", deliveryMonth: "202610", strike: 49800, limitPrice: "120", dayTrade: true });
+    const { tree } = render({ mode: "option", seriesSel: "TXO|202610", strike: 49800, limitPrice: "120", dayTrade: true });
     await submit(tree).props.onClick(); await tick();
     const o = calls.find((c) => c[0] === "placeOption");
     check("選擇權下單不帶 octype（就算 dayTrade 殘留 true）", !!o && !("octype" in o[1]), J(o));
+  }
+  {
+    // 週選（發現 70）：類別要跟著送出，否則會被當成月選；確認按鈕寫出到期日與種類，不會分不出是哪一個
+    calls.length = 0;
+    const SERIES = [{ category: "TXY", delivery_month: "202610", delivery_date: "2026-10-23", kind: "weekly_fri", kind_text: "週五週選", days: 1, label: "10/23（五）週選・明天到期", n: 374 }];
+    const { tree } = render({ mode: "option", series: SERIES, seriesSel: "TXY|202610", strike: 46200, limitPrice: "35" });
+    const btn = submit(tree);
+    check("週選：確認按鈕寫「10/23 週五週選」", JSON.stringify(btn.props.children).includes("10/23 週五週選 46200C"), JSON.stringify(btn.props.children));
+    await btn.props.onClick(); await tick();
+    const o = calls.find((c) => c[0] === "placeOption");
+    check("週選：下單帶 category=TXY、到期月 202610", !!o && o[1].category === "TXY" && o[1].delivery_month === "202610" && o[1].strike === 46200, J(o));
+    const sel = find(tree, (e) => e.type === "select" && Array.isArray(e.props.children) && JSON.stringify(e.props.children).includes("10/23（五）週選・明天到期"));
+    check("週選：到期日選單列出序列的標籤", sel.length === 1, J(sel.length));
+    const src = fs.readFileSync(path.join(FRONT, "components", "OrderPanel.tsx"), "utf8");
+    check("週選：查履約價與報價也帶類別", src.includes(".optionStrikes(deliveryMonth, right, optCategory)") && src.includes(".optionQuote(deliveryMonth, Number(strike), right, optCategory)"));
   }
 
   // ── 〈建議停損停利〉卡：只在期貨模式、帶入會填停損與停利兩格 ──

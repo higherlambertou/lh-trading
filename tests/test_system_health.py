@@ -106,7 +106,7 @@ def test_collect_survives_missing_everything(tmp_path):
     r = sh.collect(NOW, "live", True, None, {"last_quote_age": 1.0}, None, 10.0, lambda: {"available": False, "reason": "x"}, tmp_path / "bk",
                    watchdog_log=tmp_path / "no.log", app_log=tmp_path / "no_app.log", taifex_state=tmp_path / "no.json")
     keys = [i["key"] for i in r["items"]]
-    assert keys == ["broker", "restarts", "backup", "taifex", "intel", "disk"] and r["overall"] == "bad"
+    assert keys == ["broker", "tasks", "restarts", "backup", "taifex", "intel", "disk"] and r["overall"] == "bad"
     assert next(i for i in r["items"] if i["key"] == "restarts")["status"] == "off"
 
 
@@ -131,7 +131,7 @@ def test_api_route_reads_memory_and_temp_files(monkeypatch, tmp_path):
     monkeypatch.setitem(sh.APP_LOG, "sim", tmp_path / "app.log")
     monkeypatch.setattr(sh, "TAIFEX_STATE", tmp_path / "st.json")
     r = asyncio.run(rs.get_health())
-    assert r["mode"] in ("live", "sim") and len(r["items"]) == 6 and r["overall"] in ("ok", "warn", "bad")
+    assert r["mode"] in ("live", "sim") and len(r["items"]) == 7 and r["overall"] in ("ok", "warn", "bad")
     import shioaji
     assert f"SDK {shioaji.__version__}" in r["items"][0]["text"]                       # 跑測試的那個 Python 的版本
     assert next(i for i in r["items"] if i["key"] == "intel")["status"] == "bad"           # 測試沒有 lh-intel
@@ -141,3 +141,56 @@ def test_not_used_by_trading_modules():
     root = Path(sh.__file__).resolve().parent.parent
     for p in list((root / "strategies").glob("*.py")) + [root / "core" / n for n in ("broker.py", "manual_monitor.py", "quote_hub.py", "shioaji_worker.py")]:
         assert "system_health" not in p.read_text(encoding="utf-8"), p
+
+
+
+# ── 背景工作（發現 69）───────────────────────────────────────────
+
+def test_tasks_item():
+    assert sh.tasks_item(None)["status"] == "off"
+    ok = sh.tasks_item([{"name": "部位刷新", "state": "running", "error": None}, {"name": "開機訂閱", "state": "done", "error": None},
+                        {"name": "期交所資料更新", "state": "off", "error": None}])
+    assert ok["status"] == "ok" and ok["text"] == "1 個在跑、1 個開機工作已完成、1 個依設定關閉（期交所資料更新）"
+    bad = sh.tasks_item([{"name": "部位刷新", "state": "running", "error": None}, {"name": "傍晚摘要", "state": "crashed", "error": "KeyError: 'x'"}])
+    assert bad["status"] == "bad" and "1 個意外停止：傍晚摘要" in bad["text"] and "停了（KeyError: 'x'）" in bad["detail"]
+
+
+def test_task_watch_states_and_alert(monkeypatch):
+    from core import task_watch as tw
+    sent = []
+    monkeypatch.setattr("core.notify.notify", lambda title, body, **k: sent.append((title, body, k)) or True)
+    tw.clear()
+
+    async def scenario():
+        async def forever():
+            await asyncio.sleep(3600)
+
+        async def boom():
+            raise KeyError("x")
+
+        async def quiet():
+            return None
+        tw.register("部位刷新", asyncio.ensure_future(forever()))
+        tw.register("傍晚摘要", asyncio.ensure_future(boom()))
+        tw.register("期交所資料更新", asyncio.ensure_future(quiet()))
+        tw.register("開機訂閱", asyncio.ensure_future(quiet()))
+        tw.register("沒有建立", None)
+        await asyncio.sleep(0.05)
+        st = {s["name"]: (s["state"], s["error"]) for s in tw.status()}
+        for t in list(tw._tasks.values()):
+            t.cancel()
+        return st
+    st = asyncio.run(scenario())
+    assert st == {"部位刷新": ("running", None), "傍晚摘要": ("crashed", "KeyError: 'x'"), "期交所資料更新": ("off", None), "開機訂閱": ("done", None)}
+    assert len(sent) == 1 and sent[0][0] == "⚠️ 後端的背景工作停了：傍晚摘要" and sent[0][2]["key"] == "taskdead:傍晚摘要"
+    tw.clear()
+
+
+def test_main_registers_every_background_task():
+    import re
+    src = (Path(sh.__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
+    created = set(re.findall(r"^\s+(\w+_task)\s*=\s*\(?loop\.create_task", src, re.M))
+    block = src[src.index("for _name, _t in ("):src.index("task_watch.register(_name, _t)")]
+    registered = set(re.findall(r"(\w+_task)\)", block))
+    assert created and created <= registered, created - registered                     # 新增背景工作時記得登記
+    assert "manual_monitor._task" in block
