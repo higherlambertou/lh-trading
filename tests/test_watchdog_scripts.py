@@ -114,7 +114,7 @@ def test_health_state_says_noiface_without_asking_the_backend(tmp_path):
 def test_the_loop_treats_noiface_as_not_a_failure():
     """（靜態檢查）迴圈裡 noiface 要在『異常』判斷之前就 continue，而且啟動前要先 wait_iface；這兩段被改掉了會在這裡被抓到。"""
     t = (ROOT / "run_live.sh").read_text(encoding="utf-8")
-    assert t.index('if [ "$state" = "noiface" ]') < t.index('# 異常（down=凍結 / nobroker=沒連上券商）') < t.index('fails=$((fails + 1))')
+    assert t.index('if [ "$state" = "noiface" ]') < t.index('# 異常（down=凍結 / nobroker=沒連上券商 / stale=連線假死）') < t.index('fails=$((fails + 1))')
     assert t.index("    wait_iface\n    free_port") > 0 and "continue" in t[t.index('if [ "$state" = "noiface" ]'):t.index('# 異常（down=凍結')]
 
 
@@ -225,6 +225,8 @@ def test_term_during_isleep_exits_promptly_and_leaves_no_sleep_behind(tmp_path, 
     ('{"status":"ok","broker_connected":"True","restart_wanted":"rollover"}', "rollover"),
     ('{"status":"ok","broker_connected":"False","restart_wanted":"rollover"}', "nobroker"),        # 沒連上券商：先當斷線處理，不是換月
     ('{"status":"ok","broker_connected":"True","restart_wanted":"something_else"}', "healthy"),
+    ('{"status":"ok","broker_connected":"False","session":"stale","stale_reason":"日盤中 200 秒沒有收到任何報價"}', "stale"),   # 連線假死（發現 65）
+    ('{"status":"ok","broker_connected":"False"}', "nobroker"),
 ])
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
 def test_health_state_understands_the_rollover_flag(tmp_path, script, body, expect):
@@ -305,6 +307,85 @@ def test_rollover_flag_restarts_the_backend_once_without_backoff(tmp_path, scrip
         out = (sim / "wd.out").read_text()
         assert out.count("換月：後端要求重啟") == 1
         assert "退避等待" not in out and "連續第" not in out, out
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        p.wait(timeout=15)
+        log.close()
+        for x in pids():
+            if _alive(x):
+                os.kill(x, signal.SIGKILL)
+
+
+# ── 連線假死（update.md 發現 65）：後端 health 帶 session=stale，watchdog 正常關閉並重啟；算短命重啟（會退避）──────────
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_stale_branch_stops_gracefully(script):
+    """（靜態檢查）stale 在故障門檻之後、kill -9 的一般分支之前處理：先 kill（正常關閉）、等最多 10 秒、才 -9；不是有計畫的重啟（不設 planned）。"""
+    text = script.read_text(encoding="utf-8")
+    i = text.index('if [ "$state" = "stale" ]; then')
+    assert text.index('if [ "$fails" -ge "$FAIL_THRESHOLD" ]; then') < i < text.index('log "判定故障(${state}) → kill -9')
+    branch = text[i:text.index('log "判定故障(${state}) → kill -9')]
+    assert branch.index('kill "$CHILD_PID"') < branch.index('kill -9 "$CHILD_PID"') and "break" in branch and "planned=1" not in branch
+    if script.name == "run_live.sh":
+        assert "notify_trouble freeze stale" in branch and "notify_stale" in branch
+        fn = function_source("notify_stale", script)
+        assert "core.notify send" in fn and '--key "watchdog:stale:live"' in fn and "--cooldown 1800" in fn and "& )" in fn      # 背景送、不拖慢重啟
+
+
+@pytest.mark.skipif(not HAS_BASH or shutil.which("pgrep") is None, reason="需要 bash")
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_stale_restarts_the_backend(tmp_path, script):
+    """整支腳本（常數縮短、假的 curl／後端）：健康 → 後端說連線假死 → 連續 2 次後正常關閉並重啟；正式盤會推播（背景）；
+    這次重啟算短命（之後會退避），保護登入次數。"""
+    work, sim = tmp_path / "work", tmp_path / "sim"
+    (sim / "bin").mkdir(parents=True)
+    work.mkdir()
+    for name, body in {
+        "ifconfig": IFCONFIG_CMD,
+        "lsof": "exit 0",
+        "curl": 'printf \'%s\\n200\' "$(cat "$SIM/health.body")"',
+        "stub_py": 'if [ "$1" = "main.py" ] || [ "$1" = "main_sim.py" ]; then echo "$$" >> "$SIM/backend_pids"; exec sleep 600; fi\necho "$@" >> "$SIM/py_calls"\nexit 0',
+    }.items():
+        p = sim / "bin" / name
+        p.write_text("#!/bin/sh\n" + body + "\n")
+        p.chmod(0o755)
+    stub = str(sim / "bin" / "stub_py")
+    text = script.read_text(encoding="utf-8")
+    for pat, repl in [
+        (r"(?m)^PY=.*$", f"PY={stub}"), (r"(?m)^LOCK_DIR=.*$", f'LOCK_DIR="{sim}/lock.d"'), (r"(?m)^APP_LOG=.*$", f'APP_LOG="{sim}/app.log"'),
+        (r"(?m)^PORT=\d+$", "PORT=18998"), (r"(?m)^CHECK_INTERVAL=\d+", "CHECK_INTERVAL=1"), (r"(?m)^GRACE_PERIOD=\d+", "GRACE_PERIOD=3"),
+        (r"(?m)^BACKOFF_STEPS=.*$", "BACKOFF_STEPS=(0 1 1 1)"), (r"/Users/lambert/anaconda3/bin/python3\.11", stub),
+    ]:
+        text = re.sub(pat, repl, text)
+    (work / "wd.sh").write_text(text)
+    (work / ".env").write_text("BIND_HOST=100.127.125.13\n")
+    (work / "main.py").write_text("")
+    (work / "main_sim.py").write_text("")
+    (sim / "health.body").write_text('{"status":"ok","broker_connected":"True"}')
+    env = {**os.environ, "SIM": str(sim), "PATH": f"{sim / 'bin'}:{os.environ['PATH']}", "NOTIFY_SKIP_DOTENV": "1"}
+    log = open(sim / "wd.out", "w")
+    p = subprocess.Popen(["bash", "wd.sh"], cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    pids = lambda: [int(x) for x in (sim / "backend_pids").read_text().split()] if (sim / "backend_pids").exists() else []  # noqa: E731
+    try:
+        assert _wait(lambda: len(pids()) == 1, 15), "後端沒啟動"
+        first = pids()[0]
+        assert _wait(lambda: "進入正常監看" in (sim / "wd.out").read_text(), 15), "沒進入正常監看"
+        (sim / "health.body").write_text('{"status":"ok","broker_connected":"False","session":"stale","stale_reason":"日盤中 200 秒沒有收到任何報價"}')
+        assert _wait(lambda: len(pids()) == 2, 20), "連線假死沒有重啟"
+        assert not _alive(first), "舊的後端沒被關掉"
+        (sim / "health.body").write_text('{"status":"ok","broker_connected":"True"}')
+        out = (sim / "wd.out").read_text()
+        assert "異常 state=stale（連續 1/2" in out and "判定券商連線假死(stale) → 正常關閉" in out and "判定故障(stale)" not in out
+        assert "連續第 1 次短命重啟" in out, out                                     # 不是有計畫的重啟：會退避
+        if script.name == "run_live.sh":
+            assert _wait(lambda: (sim / "py_calls").exists() and "core.notify send" in (sim / "py_calls").read_text(), 5)
+            calls = (sim / "py_calls").read_text()
+            assert "watchdog --event freeze --detail stale --mode live" in calls and "watchdog:stale:live" in calls
+        else:
+            assert not (sim / "py_calls").exists() or "core.notify" not in (sim / "py_calls").read_text()      # 模擬盤不推播
     finally:
         try:
             os.killpg(p.pid, signal.SIGTERM)

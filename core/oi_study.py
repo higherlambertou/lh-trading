@@ -46,6 +46,15 @@ OI_HEADER = "日期,商品名稱,身份別"
 TX_HEADER = "交易日期,契約,到期月份"
 
 
+def period_complete(f: Path, end: date) -> bool:
+    """那一期結束之後才下載的檔才算完整。月中下載的（例如 2026-10 的檔是 10/12 抓的），月份結束後要再抓一次補齊；
+    以前只看「檔案在、那一期已結束」，月中抓的檔就永遠停在那天（update.md 發現 65）。"""
+    try:
+        return datetime.fromtimestamp(f.stat().st_mtime).date() > end
+    except OSError:
+        return False
+
+
 def verdict(t: float) -> str:
     return "過關" if abs(t) >= Z_CLAIM else ("線索" if abs(t) >= Z_HINT else "沒有")
 
@@ -222,7 +231,7 @@ def fetch(directory: Path = DEFAULT_DIR, start_year: int = START_YEAR, today: Op
         out.mkdir(parents=True, exist_ok=True)
         for name, a, b in items:
             f = out / name
-            if f.exists() and f.stat().st_size > 0 and b < today:
+            if f.exists() and f.stat().st_size > 0 and b < today and period_complete(f, b):
                 got["skipped"] += 1
                 continue
             body = urllib.parse.urlencode({"queryStartDate": f"{a:%Y/%m/%d}", "queryEndDate": f"{b:%Y/%m/%d}", **extra}).encode()

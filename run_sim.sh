@@ -87,6 +87,8 @@ health_state() {
                 *'"restart_wanted":"rollover"'*) echo "rollover" ;;
                 *) echo "healthy" ;;
             esac ;;
+        # session=stale：後端行程活著、但券商那邊沒報價或查詢一直失敗（連線假死，update.md 發現 65）
+        *'"session":"stale"'*) echo "stale" ;;
         *) echo "nobroker" ;;
     esac
 }
@@ -171,6 +173,17 @@ while true; do
         fails=$((fails + 1))
         log "異常 state=${state}（連續 ${fails}/${FAIL_THRESHOLD}，elapsed=${elapsed}s）"
         if [ "$fails" -ge "$FAIL_THRESHOLD" ]; then
+            if [ "$state" = "stale" ]; then        # 連線假死：後端還活著，先請它正常關閉（worker 才會登出券商、不留孤兒連線），逾時才 -9
+                log "判定券商連線假死(stale) → 正常關閉 PID=${CHILD_PID} 後重啟"
+                kill "$CHILD_PID" 2>/dev/null
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    kill -0 "$CHILD_PID" 2>/dev/null || break
+                    sleep 1
+                done
+                kill -9 "$CHILD_PID" 2>/dev/null
+                sleep 3
+                break
+            fi
             log "判定故障(${state}) → kill -9 PID=${CHILD_PID} 並重啟（自動重連）"
             kill -9 "$CHILD_PID" 2>/dev/null
             sleep 3

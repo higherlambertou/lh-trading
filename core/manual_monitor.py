@@ -9,6 +9,7 @@ from pathlib import Path
 
 from core.broker import broker
 from core.daytrade import close_octype
+from core.log_throttle import ErrorThrottle, signature as err_signature
 from core.notify import notify
 from core.quote_hub import quote_hub
 from core.trade_log import current_mode, trade_log
@@ -178,6 +179,7 @@ class ManualOrderMonitor:
     def __init__(self) -> None:
         self._watches: dict[str, ManualWatch] = {}
         self._task: asyncio.Task | None = None
+        self._log_throttle = ErrorThrottle()      # 每秒查一次：券商斷線時同樣的警告只記第一次＋每 5 分鐘一行（update.md 發現 65）
         self._clock = time.monotonic          # 測試可替換
         self.state_path: Path | None = None   # 落地檔；None ＝ 不落地（測試預設；後端啟動時 setup() 才指定）
         self.last_restore: dict | None = None
@@ -373,11 +375,12 @@ class ManualOrderMonitor:
             try:
                 positions = await asyncio.wait_for(broker.list_positions(), timeout=5)
             except asyncio.TimeoutError:
-                logger.warning("ManualMonitor 查詢部位逾時")
+                self._warn("positions", "ManualMonitor 查詢部位逾時")
                 continue
             except Exception as e:
-                logger.warning("ManualMonitor 查詢部位失敗: %s", e)
+                self._warn("positions", "ManualMonitor 查詢部位失敗", e)
                 continue
+            self._recovered("positions")
 
             order_status: dict[str, str] = {}
             order_fills: dict[str, int] = {}
@@ -385,13 +388,33 @@ class ManualOrderMonitor:
                 try:
                     trades = await asyncio.wait_for(broker.list_trades_with_status(), timeout=5)
                     order_status, order_fills = self._index_trades(trades)
+                    self._recovered("trades")
                 except asyncio.TimeoutError:
-                    logger.warning("ManualMonitor 查詢委託狀態逾時")
+                    self._warn("trades", "ManualMonitor 查詢委託狀態逾時")
                 except Exception as e:
-                    logger.warning("ManualMonitor 查詢委託狀態失敗: %s", e)
+                    self._warn("trades", "ManualMonitor 查詢委託狀態失敗", e)
 
             for watch in list(self._watches.values()):
                 await self._check(watch, positions, order_status, order_fills)
+
+    def _warn(self, key: str, text: str, e: BaseException | None = None) -> None:
+        """只影響 log：同一種失敗第一次照記，之後每 5 分鐘一行『又發生 n 次』。絕不丟例外（在停損監控迴圈的 except 裡呼叫）。"""
+        try:
+            verdict, n = self._log_throttle.error(key, err_signature(e) if e is not None else text, time.time())
+            if verdict == "full":
+                logger.warning("%s%s", text, f": {e}" if e is not None else "")
+            elif verdict == "summary":
+                logger.warning("%s（同樣的情況，過去 %d 分鐘又發生 %d 次）%s", text, int(self._log_throttle.window // 60), n, f": {e}" if e is not None else "")
+        except Exception:  # noqa: BLE001
+            logger.warning("%s", text)
+
+    def _recovered(self, key: str) -> None:
+        try:
+            rec = self._log_throttle.success(key, time.time())
+            if rec and rec[0] >= 2:
+                logger.info("ManualMonitor 查詢%s恢復（先前連續失敗 %d 次、%.0f 秒）", "部位" if key == "positions" else "委託狀態", rec[0], rec[1])
+        except Exception:  # noqa: BLE001
+            pass
 
     _LIVE_ORDER_STATES = {"PendingSubmit", "PreSubmitted", "Submitted", "PartFilled"}
     _DEAD_ORDER_STATES = {"Cancelled", "Canceled", "Failed", "Inactive", "Expired"}

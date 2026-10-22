@@ -39,6 +39,9 @@ from core.daily_summary import market_state
 from core.vol_watch import vol_watch_loop
 from core.daily_brief import brief_loop
 from core import weekly_report
+from core.premarket_log import TwCalendar
+from core.session_watch import TradingDays, session_watch, session_watch_loop
+from core.taifex_update import taifex_update_loop
 from core.signal_shadow import shadow_loop
 from core import entry_log
 from core.live_state import live_state
@@ -112,6 +115,8 @@ async def lifespan(app: FastAPI):
         lambda m, s: weekly_report.stop_counts(trade_log.path, current_mode(), m, s)))
     shadow_task = loop.create_task(shadow_loop(market_state.store))      # 順勢爆量訊號的影子模式（只記錄與通知、不下單；SIGNAL_SHADOW=false 關閉）
     rollover_task = loop.create_task(rollover.rollover_loop(lambda: broker.resolved_codes))   # 近月合約結算後要求 watchdog 重啟換月（ROLLOVER_RESTART=false 關閉）
+    session_task = loop.create_task(session_watch_loop(lambda: bool(broker._known_subs), TradingDays(TwCalendar().check)))   # 券商連線假死偵測（/api/health 回報 stale → watchdog 重啟；SESSION_WATCH=false 關閉）
+    taifex_task = loop.create_task(taifex_update_loop())                  # 期交所日資料自動更新（獨立子行程；只有正式盤跑；TAIFEX_UPDATE=false 關閉）
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
     startup_task.cancel()
@@ -129,6 +134,8 @@ async def lifespan(app: FastAPI):
     brief_task.cancel()
     weekly_task.cancel()
     rollover_task.cancel()
+    session_task.cancel()
+    taifex_task.cancel()
     shadow_task.cancel()
     tick_recorder.stop()
     flow_recorder.stop()
@@ -178,13 +185,23 @@ app.include_router(intel_router,    prefix="/api/intel",    tags=["intel"])
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
+    stale = session_watch.stale_reason                # 連線假死（行程活著、券商那邊沒報價或查詢一直失敗；update.md 發現 65）：當成沒連上，watchdog 才會重啟
     out = {
         "status": "ok",
-        "broker_connected": str(broker.is_connected),
+        "broker_connected": str(broker.is_connected and not stale),
     }
+    if stale:
+        out["session"] = "stale"
+        out["stale_reason"] = stale
     if rollover.wanted():                           # 近月合約已結算、要 watchdog 重啟換月（core/rollover.py）；只讀記憶體
         out["restart_wanted"] = rollover.wanted() or ""
     return out
+
+
+@app.get("/api/health/session")
+def health_session() -> dict:
+    """連線假死偵測的內部狀態（除錯用；只讀記憶體）。"""
+    return session_watch.snapshot()
 
 
 if __name__ == "__main__":

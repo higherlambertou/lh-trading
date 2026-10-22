@@ -111,6 +111,7 @@ def test_watchdog_message_content():
     t2, m2 = build_watchdog_message("exit", "gone", state([pos()], [{"code": "TMFJ6", "direction": "Buy", "quantity": 1}]), now=1010.0)
     assert t2 == "⚠️ 後端進程結束，持倉暫時沒有停損保護" and "原因：進程已不存在。" in m2 and "（凍結前就沒有停損保護的：TMFJ6 多 1 口）" in m2
     assert "原因：沒有連上券商。" in build_watchdog_message("freeze", "nobroker", state([pos()]), now=1010.0)[1]
+    assert "原因：券商連線假死（後端還在，但報價停了或查詢一直失敗）。" in build_watchdog_message("freeze", "stale", state([pos()]), now=1010.0)[1]
     assert "原因：怪事。" in build_watchdog_message("freeze", "怪事", state([pos()]), now=1010.0)[1]
 
 

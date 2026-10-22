@@ -106,7 +106,8 @@ def _age_text(sec: float) -> str:
 # ── 警示訊息 ─────────────────────────────────────────────────────
 
 _EVENT_TEXT = {"freeze": "後端凍結或斷線", "exit": "後端進程結束"}
-_DETAIL_TEXT = {"down": "連 /health 都沒有回應", "nobroker": "沒有連上券商", "gone": "進程已不存在"}
+_DETAIL_TEXT = {"down": "連 /health 都沒有回應", "nobroker": "沒有連上券商", "gone": "進程已不存在",
+                "stale": "券商連線假死（後端還在，但報價停了或查詢一直失敗）"}
 
 
 def build_watchdog_message(event: str, detail: str, state: Optional[dict[str, Any]], now: Optional[float] = None) -> Optional[tuple[str, str]]:

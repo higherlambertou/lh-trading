@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -11,12 +12,14 @@ from core.daytrade import OCTYPES, check_octype, note_open as note_daytrade_open
 from core.manual_monitor import manual_monitor, _txo_round_tick
 from core.quote_hub import quote_hub
 from core.trade_log import trade_log
+from core.session_watch import TAIPEI, weekend_quiet
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ── Trades 背景快取（避免多 tab 同時打 worker 積爆佇列）──────────────────
 _trades_cache: list = []
+WEEKEND_TRADES_SEC = 120
 _trades_updated_at: float = 0.0
 
 
@@ -25,7 +28,7 @@ async def trades_refresh_loop() -> None:
     用較長 timeout（12s），確保即使 api.list_trades() 偶爾緩慢也能成功。"""
     await asyncio.sleep(3)
     while True:
-        await asyncio.sleep(8)
+        await asyncio.sleep(WEEKEND_TRADES_SEC if weekend_quiet(datetime.now(TAIPEI)) else 8)     # 週末沒有盤：委託不會變（發現 65）
         if not broker.is_connected:
             continue
         try:

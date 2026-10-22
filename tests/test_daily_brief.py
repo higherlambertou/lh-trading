@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -193,9 +194,9 @@ def _run(brief, now, store=None, is_open=lambda d: True):
 
 @pytest.fixture(autouse=True)
 def _no_real_ticks(monkeypatch):
-    """gather 預設會讀本機 ticks.db；測試一律指到不存在的路徑（不碰真實資料庫）。"""
+    """gather 預設會讀本機 ticks.db 與期交所資料；測試沒指定就一律指到不存在的路徑（不碰真實資料）。"""
     real = db.gather
-    monkeypatch.setattr(db, "gather", lambda *a, **k: real(*a, **{**k, "ticks_path": NO_TICKS}))
+    monkeypatch.setattr(db, "gather", lambda *a, **k: real(*a, **{"ticks_path": NO_TICKS, "tx_dir": Path("/nonexistent/tx"), **k}))
 
 
 def test_sends_once_at_the_time(rec):
@@ -240,3 +241,54 @@ def test_loop_is_off_when_disabled(monkeypatch, rec):
     monkeypatch.setenv("DAILY_BRIEF", "false")
     asyncio.run(asyncio.wait_for(db.brief_loop(lambda: STATE, Store()), timeout=3))        # 直接返回
     assert rec.calls == []
+
+
+# ── 換月後第一天的夜盤報酬（發現 65）─────────────────────────────
+
+TX_HEAD = "交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,漲跌價,漲跌%,成交量,結算價,未沖銷契約數,最後最佳買價,最後最佳賣價,歷史最高價,歷史最低價,是否因訊息面暫停交易,交易時段,價差對單式委託成交量"
+
+
+def tx_file(d: Path, rows):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "tx_2026_10.csv").write_bytes(("\n".join([TX_HEAD] + rows) + "\n").encode("cp950"))
+
+
+def ticks_db(p: Path, rows):
+    with sqlite3.connect(p) as c:
+        c.execute("CREATE TABLE ticks(code TEXT, ts REAL, price REAL, volume INTEGER)")
+        c.executemany("INSERT INTO ticks VALUES (?,?,?,?)", rows)
+
+
+def test_taifex_month():
+    assert db.taifex_month("TXFK6", date(2026, 10, 21)) == "202611"
+    assert db.taifex_month("TXFA7", date(2026, 12, 16)) == "202701"
+    assert db.taifex_month("TXFJ6", date(2026, 10, 21)) == "202610"
+    assert db.taifex_month("TXFJ6", date(2026, 11, 2)) is None                          # 已經過了的月份（十年內找不到）：不猜
+    assert db.taifex_month("TXF202611", date(2026, 10, 1)) is None and db.taifex_month("", date(2026, 10, 1)) is None
+
+
+def test_night_fallback_uses_the_official_close(tmp_path):
+    tx_file(tmp_path / "tx", ["2026/10/21,TX,202610  ,1,1,1,47000,0,0%,100,47000,1,1,1,1,1,,一般,",
+                              "2026/10/21,TX,202611  ,1,1,1,46900,0,0%,100,46900,1,1,1,1,1,,盤後,",      # 夜盤列排前面：也只能取日盤列
+                              "2026/10/21,TX,202611  ,1,1,1,47100,0,0%,100,47100,1,1,1,1,1,,一般,"])
+    p = tmp_path / "ticks.db"
+    ticks_db(p, [("TXFK6", tpe(2026, 10, 21, 15, 0).timestamp(), 47050, 1), ("TXFK6", tpe(2026, 10, 22, 4, 59).timestamp(), 47571, 1)])
+    feat = {"value": None, "missing_reason": "no_ticks: TXFK6 在 2026-10-21 日盤沒有成交紀錄"}
+    fb = db.night_fallback(feat, p, date(2026, 10, 21), tmp_path / "tx")
+    assert fb["value"] == pytest.approx(47571 / 47100 - 1) and fb["detail"]["prev_close"] == 47100 and fb["fallback"] == "taifex_close"
+    assert db.night_fallback({"missing_reason": "incomplete_session: …"}, p, date(2026, 10, 21), tmp_path / "tx") is None     # 別的原因：照原樣
+    assert db.night_fallback(feat, p, date(2026, 10, 21), tmp_path / "nothing") is None                                       # 沒有期交所資料
+    p2 = tmp_path / "t2.db"
+    ticks_db(p2, [("TXFK6", tpe(2026, 10, 22, 3, 0).timestamp(), 47571, 1)])                                                   # 夜盤最後一筆離收盤太遠
+    assert db.night_fallback(feat, p2, date(2026, 10, 21), tmp_path / "tx") is None
+    line = db._night_line({**fb, "detail": {**fb["detail"]}})
+    assert line.startswith("夜盤 TXF：+1.00%") and "換月後第一天：前一日收盤取自期交所日行情" in line
+
+
+def test_gather_uses_the_fallback_after_rollover(tmp_path):
+    tx_file(tmp_path / "tx", ["2026/10/21,TX,202611  ,1,1,1,47100,0,0%,100,47100,1,1,1,1,1,,一般,"])
+    p = tmp_path / "ticks.db"
+    ticks_db(p, [("TXFJ6", tpe(2026, 10, 21, 13, 44).timestamp(), 47000, 1),                    # 結算日白天只有舊合約
+                 ("TXFK6", tpe(2026, 10, 21, 15, 0).timestamp(), 47050, 5), ("TXFK6", tpe(2026, 10, 22, 4, 59).timestamp(), 47571, 5)])
+    d = db.gather(tpe(2026, 10, 22, 8, 35), Store(_bars(DATES)), STATE, lambda x: True, lambda x: date(2026, 10, 21), ticks_path=p, tx_dir=tmp_path / "tx")
+    assert d["night"]["fallback"] == "taifex_close" and d["night"]["value"] == pytest.approx(47571 / 47100 - 1)

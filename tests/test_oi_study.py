@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import random
 import urllib.parse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
 
 import numpy as np
@@ -290,3 +290,29 @@ def test_after_hours_and_spread_rows_are_ignored_even_when_they_come_first(tmp_p
         tx_row("2026/09/01", "202609", 100, 105, vol=90000),
     ])
     assert oi.load_tx_day_sessions(tmp_path) == {"2026-09-01": (100.0, 105.0)}
+
+
+def test_a_month_downloaded_before_it_ended_is_fetched_again(tmp_path):
+    """月中下載的檔，月份結束後要再抓一次補齊（2026-10 的檔是 10/12 抓的；以前會永遠停在那天，發現 65）。"""
+    import os
+    calls = []
+
+    def opener(req, timeout=0):
+        form = dict(urllib.parse.parse_qsl(req.data.decode()))
+        calls.append(form["queryStartDate"])
+        return FakeResponse((oi.TX_HEADER + "\r\nx\r\n").encode("cp950"))
+    d = tmp_path / "tx"
+    d.mkdir()
+    f = d / "tx_2024_01.csv"
+    f.write_bytes((oi.TX_HEADER + "\r\nold\r\n").encode("cp950"))
+    mid = datetime(2024, 1, 15, 12, 0).timestamp()
+    os.utime(f, (mid, mid))                                                              # 1/15 抓的：1 月還沒結束
+    assert not oi.period_complete(f, date(2024, 1, 31))
+    oi.fetch(tmp_path, start_year=2024, today=date(2024, 2, 15), pause=0, opener=opener, only=("tx",))
+    assert "2024/01/01" in calls and b"old" not in f.read_bytes()
+    calls.clear()
+    oi.fetch(tmp_path, start_year=2024, today=date(2024, 2, 15), pause=0, opener=opener, only=("tx",))
+    assert calls == ["2024/02/01"]                                                       # 補齊之後就不再抓；當月照樣重抓
+    late = datetime(2024, 2, 1, 9, 0).timestamp()
+    os.utime(f, (late, late))
+    assert oi.period_complete(f, date(2024, 1, 31)) and not oi.period_complete(tmp_path / "nope.csv", date(2024, 1, 31))

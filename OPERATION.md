@@ -93,6 +93,15 @@ curl http://100.127.125.13:8002/api/health
 curl http://localhost:8003/api/health
 ```
 
+連線假死偵測的內部狀態（最近一次報價／成功回覆是幾秒前、連續錯誤幾次；update.md 發現 65）：
+```bash
+curl http://100.127.125.13:8002/api/health/session
+```
+後端判定假死時，`/api/health` 會回 `"broker_connected":"False","session":"stale","stale_reason":"…"`，app log 有一行 `券商連線假死：…`，
+watchdog log 有 `判定券商連線假死(stale) → 正常關閉 PID=… 後重啟`；正式盤會推播「⚠️ 券商連線假死，正在重啟」。
+同一種錯誤重複發生時，app log 只記第一次的完整 traceback，之後每 5 分鐘一行「（同樣的錯誤，過去 5 分鐘又發生 n 次…）」，恢復時記「恢復（先前連續失敗 n 次）」。
+關閉：`.env` 設 `SESSION_WATCH=false`（重啟後端）。期交所日資料的自動更新：`data/taifex/update_state.json` 是最後成功的日期，app log 搜「期交所資料更新」；關閉 `TAIFEX_UPDATE=false`。
+
 ### 查看策略列表
 
 ```bash

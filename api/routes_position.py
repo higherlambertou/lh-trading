@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -9,6 +10,7 @@ from core import protection
 from core.broker import broker
 from core.manual_monitor import manual_monitor
 from core.margin_watch import margin_watcher
+from core.session_watch import TAIPEI, weekend_quiet
 from core.trade_log import current_mode
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,8 @@ POSITION_REFRESH_SEC = 5        # 部位背景刷新間隔
 PNL_REFRESH_IDLE_SEC = 60       # 已實現損益（帳務查詢，較慢）：沒有策略在跑時
 PNL_REFRESH_BUSY_SEC = 300      # 策略執行中降頻：worker 單執行緒，別在下單時搶時間
 POSITION_BACKOFF_MAX_SEC = 60    # 部位刷新連續失敗時，間隔最長拉到這麼久
+WEEKEND_POSITION_SEC = 120       # 週末沒有任何盤（週六 05:30～週一 07:30）：部位不會變，查慢一點（券商週末維護時也不會每幾秒失敗一次；發現 65）
+WEEKEND_CACHE_SEC = 600          # 週末：保證金、流量每 10 分鐘（流量照樣隔一輪）
 BACKOFF_NOTICE = 3              # 連續失敗幾次就記一行 warning（恢復時再記一行 info）
 
 _cache: dict[str, Any] = {
@@ -59,7 +63,7 @@ async def cache_refresh_loop() -> None:
                 except Exception as e:
                     logger.debug("usage cache 刷新失敗（保留舊值）: %s", e)
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(WEEKEND_CACHE_SEC if weekend_quiet(datetime.now(TAIPEI)) else 60)
 
 
 async def refresh_positions() -> bool:
@@ -116,6 +120,12 @@ def _write_position_state() -> None:
         logger.debug("持倉狀態檔寫入失敗（略過）: %r", e)
 
 
+def loop_delay(fails: int, now: datetime) -> float:
+    """部位刷新迴圈實際要睡多久：平常照 next_delay；週末至少 WEEKEND_POSITION_SEC。"""
+    d = next_delay(fails)
+    return max(d, WEEKEND_POSITION_SEC) if weekend_quiet(now) else d
+
+
 def next_delay(fails: int) -> float:
     """部位刷新的下一次間隔：成功 ＝ 5 秒；連續失敗 n 次 ＝ 5×2ⁿ 秒（上限 60）。
     券商端故障時（曾在 12:35 連續回 500／逾時）不要 5 秒一次地重試：每次失敗都在 worker 上佔最多 5 秒（下單要排隊），
@@ -152,7 +162,7 @@ async def positions_refresh_loop() -> None:
                 if fails == BACKOFF_NOTICE:
                     logger.warning("部位刷新連續失敗 %d 次（券商端異常？最近一次：%s），間隔拉長到 %.0f 秒，恢復後自動回到 %d 秒",
                                    fails, _last_error, next_delay(fails), POSITION_REFRESH_SEC)
-        await asyncio.sleep(next_delay(fails))
+        await asyncio.sleep(loop_delay(fails, datetime.now(TAIPEI)))
 
 
 @router.get("/")

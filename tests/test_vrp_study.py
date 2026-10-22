@@ -433,3 +433,24 @@ def test_a_gap_in_the_data_is_left_out_of_the_realised_volatility_exactly():
     assert len(valid) < len(ks)                                                                         # 確實有無效的期被排除
     k_ds = list(ds["dates"]).index(x)
     assert ds["rv"][k_ds] == pytest.approx(np.sqrt(np.mean(valid ** 2) * 252) * 100)
+
+
+def test_a_month_computed_before_it_ended_is_fetched_again(tmp_path, monkeypatch):
+    """月中算的 IV 檔，月份結束後要重算一次（發現 65）。"""
+    import os
+    from datetime import datetime
+    monkeypatch.setattr(vs.time, "sleep", lambda s: None)
+    calls = []
+
+    def opener(req, timeout=0):
+        form = dict(urllib.parse.parse_qsl(req.data.decode()))
+        calls.append(form["queryStartDate"])
+        y, m = int(form["queryStartDate"][:4]), int(form["queryStartDate"][5:7])
+        return FakeResponse(month_text(y, m).encode("cp950"))
+    vs.fetch(tmp_path, start_year=2024, today=date(2024, 2, 20), pause=0, opener=opener)
+    f = tmp_path / "vrp" / "iv_2024_02.csv"
+    mid = datetime(2024, 2, 20, 16, 0).timestamp()
+    os.utime(f, (mid, mid))
+    calls.clear()
+    vs.fetch(tmp_path, start_year=2024, today=date(2024, 3, 15), pause=0, opener=opener)
+    assert calls == ["2024/02/01", "2024/03/01"]                                        # 2 月是月中算的：補算；1 月早就完整

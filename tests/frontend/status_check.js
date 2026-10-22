@@ -1,0 +1,24 @@
+// 連線狀態燈（frontend/components/StatusDot.tsx）：/health 的回覆 → 燈號；連線假死（session=stale）要和一般沒連上分開。
+const path = require("path"), fs = require("fs"), os = require("os"), Module = require("module");
+const ROOT = path.resolve(__dirname, "..", ".."), FRONT = path.join(ROOT, "frontend");
+process.env.NODE_PATH = path.join(FRONT, "node_modules"); Module._initPaths();
+const ts = require("typescript");
+const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "status-check-")));
+process.on("exit", () => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* 忽略 */ } });
+const tr = (src, out) => { fs.writeFileSync(out, ts.transpileModule(fs.readFileSync(src, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText); return require(out); };
+const map = { "@/lib/api": path.join(TMP, "api.js") };
+const orig = Module._resolveFilename;
+Module._resolveFilename = function (req, ...r) { return map[req] || orig.call(this, req, ...r); };
+tr(path.join(FRONT, "lib", "api.ts"), path.join(TMP, "api.js"));
+const S = tr(path.join(FRONT, "components", "StatusDot.tsx"), path.join(TMP, "status.js"));
+let fail = 0;
+const check = (n, ok, x = "") => { console.log((ok ? "PASS " : "FAIL ") + n + (ok ? "" : "  " + String(x))); if (!ok) fail++; };
+check("連著", S.healthState({ broker_connected: "True" }) === "ok");
+check("沒連上", S.healthState({ broker_connected: "False" }) === "nobroker");
+check("連線假死", S.healthState({ broker_connected: "False", session: "stale" }) === "stale");
+check("旗標是 True 就以它為準", S.healthState({ broker_connected: "True", session: "stale" }) === "ok");
+const src = fs.readFileSync(path.join(FRONT, "components", "StatusDot.tsx"), "utf8");
+check("假死的燈有自己的顏色與文字", /stale: \{ color: "#f97316", label: "券商連線假死・重啟中" \}/.test(src));
+check("滑過去看得到原因", src.includes("title={reason ? `${m.label}：${reason}` : m.label}"));
+console.log(fail ? `\n${fail} 項失敗` : "\n全部通過");
+process.exit(fail ? 1 : 0);

@@ -78,6 +78,9 @@ def test_fit_needs_enough_history():
     assert dr.fit(sessions, iv) is None and dr.fit(sessions, {}) is None
 
 
+STUDY_IV_END = "2026-10-12"            # 發現 54 跑的時候 data/taifex/vrp 的最後一天
+
+
 @pytest.mark.skipif(not (dr.IV_DIR.exists() and any(dr.IV_DIR.glob("iv_*.csv"))), reason="本機沒有 data/taifex/vrp")
 def test_the_full_sample_fit_reproduces_the_registered_study_coefficients_on_real_data():
     import json
@@ -87,7 +90,8 @@ def test_the_full_sample_fit_reproduces_the_registered_study_coefficients_on_rea
     from core.intraday_context import load_sessions
     from core.market_store import MarketStore
     old = json.loads(res.read_text(encoding="utf-8"))["tests"]["range"]["coef"]
-    m = dr.fit(load_sessions(MarketStore(), "TXF"), dr.load_iv_history())
+    iv = {d: v for d, v in dr.load_iv_history().items() if d <= STUDY_IV_END}                  # 期交所資料現在每天自動更新（發現 65）：只用登記研究當時的資料
+    m = dr.fit(load_sessions(MarketStore(), "TXF"), iv)
     assert m.b_iv == pytest.approx(old["x_iv"], abs=1e-6) and m.b_ref == pytest.approx(old["lnR"], abs=1e-6)                # 與已登記的研究同一個模型
 
 

@@ -11,6 +11,8 @@ import traceback
 from multiprocessing import Queue as MPQueue
 from typing import Any
 
+from core.log_throttle import ErrorThrottle, signature as _err_sig
+
 logger = logging.getLogger(__name__)
 
 
@@ -282,6 +284,30 @@ def _extract_profit_loss(p) -> dict:
     }
 
 
+# ── 錯誤 log 節流（update.md 發現 65）──────────────────────────────────
+
+def log_failure(throttle: ErrorThrottle, method: str, e: BaseException, now: float, tb: str) -> None:
+    """同一個查詢、同一種錯誤：第一次記完整 traceback，之後每 5 分鐘一行彙總（券商維護時不會每幾秒洗一段 traceback）。絕不丟例外。"""
+    try:
+        verdict, n = throttle.error(method, _err_sig(e), now)
+    except Exception:  # noqa: BLE001
+        verdict, n = "full", 0
+    if verdict == "full":
+        logger.error("Worker 執行 %s 失敗: %s", method, tb)
+    elif verdict == "summary":
+        logger.error("Worker 執行 %s 失敗（同樣的錯誤，過去 %d 分鐘又發生 %d 次；完整內容只記第一次）: %s",
+                     method, int(throttle.window // 60), n, str(e)[:200])
+
+
+def log_success(throttle: ErrorThrottle, method: str, now: float) -> None:
+    try:
+        rec = throttle.success(method, now)
+        if rec and rec[0] >= 2:
+            logger.info("Worker 執行 %s 恢復（先前連續失敗 %d 次、%.0f 秒）", method, rec[0], rec[1])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ── Worker 主函式 ─────────────────────────────────────────────────────
 
 def parent_alive() -> bool:
@@ -391,6 +417,7 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
     # ── command loop ──────────────────────────────────────────────────
 
     orphaned = False
+    throttle = ErrorThrottle()
     while True:
         try:
             cmd = cmd_q.get(timeout=1.0)
@@ -595,9 +622,10 @@ def run_worker(cmd_q: MPQueue, event_q: MPQueue) -> None:
 
             if req_id:
                 event_q.put({"type": "response", "req_id": req_id, "result": result})
+            log_success(throttle, method, time.time())
 
         except Exception as e:
-            logger.error("Worker 執行 %s 失敗: %s", method, traceback.format_exc())
+            log_failure(throttle, method, e, time.time(), traceback.format_exc())
             if req_id:
                 event_q.put({"type": "response", "req_id": req_id, "error": str(e)})
 

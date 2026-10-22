@@ -9,9 +9,18 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+from core.session_watch import session_watch
 from core.trade_log import trade_log
 
 logger = logging.getLogger(__name__)
+
+
+def _watch(fn: Callable[..., Any], *a: Any) -> None:
+    """連線假死偵測的鉤子（update.md 發現 65）：無論如何不能讓它的例外打斷回報派發或下單。"""
+    try:
+        fn(*a)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class BrokerClient:
@@ -85,6 +94,7 @@ class BrokerClient:
 
         if mtype == "connected":
             self._is_connected = True
+            _watch(session_watch.on_connected, time.time())     # 連線假死偵測（update.md 發現 65）：新的 worker，計數歸零
             logger.info("Worker 已連線，重新訂閱 %d 個期貨 / %d 個選擇權",
                         len(self._known_subs), len(self._known_opt_subs))
             self.resolved_codes.clear()                 # 新的 worker 會重新解析近月：舊的紀錄作廢，等重新訂閱的回覆再填
@@ -103,6 +113,7 @@ class BrokerClient:
             logger.error("Worker 錯誤: %s", msg.get("msg"))
 
         elif mtype == "quote":
+            _watch(session_watch.on_quote, time.time())
             if self._loop and self._loop.is_running():
                 from core.quote_hub import quote_hub
                 self._loop.call_soon_threadsafe(
@@ -120,6 +131,7 @@ class BrokerClient:
                 )
 
         elif mtype == "response":
+            _watch(session_watch.on_response, time.time(), msg.get("error"))
             res = msg.get("result")
             if isinstance(res, dict) and res.get("prefix") and ("target_code" in res or "code" in res):
                 try:
@@ -156,6 +168,7 @@ class BrokerClient:
         except Exception as e:
             self._pending.pop(req_id, None)
             raise RuntimeError(f"無法傳送指令給 worker: {e}") from e
+        _watch(session_watch.on_request, time.time())
         try:
             return await asyncio.wait_for(asyncio.shield(fut), timeout)
         except asyncio.TimeoutError:

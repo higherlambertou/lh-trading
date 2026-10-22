@@ -96,6 +96,7 @@ notify_trouble() {   # $1 = freeze | exit    $2 = down | nobroker | gone
 # 回傳健康狀態：
 #   healthy  = HTTP 200 且 broker_connected:True（真正可用）
 #   nobroker = HTTP 200 但 broker 沒連上券商（登入中 or 斷線）
+#   stale    = HTTP 200 但後端說券商連線假死（行程活著、報價停了或查詢一直失敗）：和 nobroker 一樣會重啟，但先請它正常關閉
 #   noiface  = BIND_HOST 這個位址不在本機（Tailscale 斷線）：不是後端的問題，不判定故障
 #   down     = 沒回應/逾時/非 200（凍結：threadpool 被卡死的 Solace 呼叫佔光，
 #              連 /health 都拿不到執行緒 → 0 bytes 逾時）
@@ -113,8 +114,15 @@ health_state() {
                 *'"restart_wanted":"rollover"'*) echo "rollover" ;;
                 *) echo "healthy" ;;
             esac ;;
+        # session=stale：後端行程活著、但券商那邊沒報價或查詢一直失敗（連線假死，update.md 發現 65）
+        *'"session":"stale"'*) echo "stale" ;;
         *) echo "nobroker" ;;
     esac
+}
+
+notify_stale() {   # 連線假死：不看有沒有持倉（畫面沒報價你會想知道），冷卻 30 分鐘、跨進程；有持倉的另外由 notify_trouble 送緊急警示
+    ( "$PY" -m core.notify send "⚠️ 券商連線假死，正在重啟" "正式盤後端還在跑，但券商那邊沒有報價或查詢一直失敗（原因見 ${APP_LOG} 的「券商連線假死」）。watchdog 正在重啟，通常 1～2 分鐘恢復；這段期間畫面價格不會動、停損監控不會觸發。" \
+        --key "watchdog:stale:live" --cooldown 1800 >> "$APP_LOG" 2>&1 & ) 2>/dev/null
 }
 
 # ── BIND_HOST（Tailscale 位址）在不在本機（update.md 發現 36）──────────────
@@ -244,7 +252,7 @@ while true; do
             continue
         fi
 
-        # 異常（down=凍結 / nobroker=沒連上券商）
+        # 異常（down=凍結 / nobroker=沒連上券商 / stale=連線假死）
         if [ "$ready" -eq 0 ] && [ "$elapsed" -lt "$GRACE_PERIOD" ]; then
             log "登入中…(${elapsed}s, state=${state})"
             continue
@@ -253,6 +261,19 @@ while true; do
         fails=$((fails + 1))
         log "異常 state=${state}（連續 ${fails}/${FAIL_THRESHOLD}，elapsed=${elapsed}s）"
         if [ "$fails" -ge "$FAIL_THRESHOLD" ]; then
+            if [ "$state" = "stale" ]; then        # 連線假死：後端還活著，先請它正常關閉（worker 才會登出券商、不留孤兒連線），逾時才 -9
+                log "判定券商連線假死(stale) → 正常關閉 PID=${CHILD_PID} 後重啟"
+                notify_trouble freeze stale
+                notify_stale
+                kill "$CHILD_PID" 2>/dev/null
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    kill -0 "$CHILD_PID" 2>/dev/null || break
+                    sleep 1
+                done
+                kill -9 "$CHILD_PID" 2>/dev/null
+                sleep 3
+                break
+            fi
             log "判定故障(${state}) → kill -9 PID=${CHILD_PID} 並重啟（自動重連）"
             notify_trouble freeze "$state"
             kill -9 "$CHILD_PID" 2>/dev/null

@@ -35,7 +35,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 ```
 **Windows（PowerShell，開發機）**：`.sh` 用了 `lsof`／`/tmp`／`trap`，改用 `run_sim.ps1`／`run_live.ps1`（`powershell -ExecutionPolicy Bypass -File .\run_live.ps1`；Ctrl+C 停止；log 在 `%TEMP%\lh_*.out.log`／`.err.log`，每次重啟覆寫）。長期掛機正式交易請用 Linux／macOS 家機的 `.sh`；`.ps1` 沒有位址檢查與換月。
 
-**watchdog 要點**（完整行為見 ARCHITECTURE.md〈watchdog〉）：每 15s 看 `/health`，五態——`healthy`／`nobroker`（200 但沒連券商）／`down`（逾時＝凍結）／`noiface`（`BIND_HOST` 不在本機＝Tailscale 斷線，不殺後端）／`rollover`（後端要求換月重啟，正常關閉後重啟）。
+**watchdog 要點**（完整行為見 ARCHITECTURE.md〈watchdog〉）：每 15s 看 `/health`，六態——`healthy`／`nobroker`（200 但沒連券商）／`down`（逾時＝凍結）／`noiface`（`BIND_HOST` 不在本機＝Tailscale 斷線，不殺後端）／`rollover`（後端要求換月重啟，正常關閉後重啟）／`stale`（後端說券商連線假死：行程活著但查詢一直連線錯誤或報價停了，`core/session_watch.py`，正常關閉後重啟；只在交易時段判斷，發現 65）。
 連上過之後 `nobroker`／`down` 連續 2 次（≈30s）就 kill -9 並重啟。**腳本鐵則**：log 用 `>>`（`>` 會清空正在跑那個的 log）；變數後面緊接全形標點要寫 `${var}`；
 長等待一律用 `isleep`（背景 sleep＋wait，否則 `pkill` 會被拖最長 10 分鐘）；`main.py` 啟動前先試綁 `BIND_HOST`（`core/bind_check.py`）。測試 `tests/test_watchdog_scripts.py`。
 
@@ -107,7 +107,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 ### 資料與記錄（純加法，不影響交易）
 - trade_log、進場市場狀態紀錄、盤前跨市場資訊紀錄、flow_1m、ticks 落地：**寫入失敗不擋交易**；**沒有任何策略或風控模組可以讀這些欄位**（`tests/test_entry_log.py`、`tests/test_premarket_log.py` 靜態檢查；只通知的 `daily_brief.py`、`reminders.py`、`weekly_report.py`（週報，只數停損監控觸發次數）是明列的例外）。
 - **信息收集（籌碼、總經事件、全球市場、新聞）在另一個 repo `lh-intel`**（`~/Documents/GitHub/lh-intel`，獨立常駐服務、獨立 `.env`；操作見它的 `OPERATION.md`）：交易系統**只能唯讀**它的 `data/intel.db`：〈資訊〉分頁用 `core/intel_reader.py` 顯示「現在已知的全部」（只顯示）；**研究、回測、進決策的程式必須照它的 `intel/read.py` 的 as_of 規則讀（回補列預設不可見），不能用 `intel_reader.py`**。**目前沒有任何策略或風控讀它**，要讀之前先登記驗證標準；例外只有幾個**只顯示／只通知／只記錄**的：`core/event_reminder.py`（事件提醒，發現 52）、`core/iv_day_range.py`（開盤前預期日盤振幅，發現 55）、`core/precheck.py`（下單前檢查，經由 `intel_reader.upcoming_events`，發現 60）、`core/premarket_log.py` 的 `intel` 來源（盤前快照的費半／TSM／VIX，只用已抓到的列，發現 60）。
-- **無法回補、請備份**：`data/trade_log.db`、IV 歷史與手動備註（`market_state.db`）、`data/option_spread.db`、`data/signals.db`（影子訊號的前向資料）（備份 `core/backup.py`，交易日 14:00；`option_spread.db` 沒進備份）。`tick_store compact` 的 VACUUM 要先停服務。
+- **無法回補、請備份**：`data/trade_log.db`、IV 歷史與手動備註（`market_state.db`）、`data/option_spread.db`、`data/signals.db`（影子訊號的前向資料）（備份 `core/backup.py`，交易日 14:00）。`tick_store compact` 的 VACUUM 要先停服務。
 - **`bars_1m` 的 hhmm 是 K 棒「結束」時間，`flow_1m` 的 ts 是分鐘「起點」**，序號差 1（`tests/test_vol_watch.py` 有對照）；`flow-fetch` 只補整天缺的日子。
 - 盤前紀錄：資料時間戳晚於 T 的拒絕、美股休市日 null＋原因（不沿用前一天）、更正＝新增 correction（資料庫觸發器擋 UPDATE／DELETE）。
 
@@ -140,7 +140,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 | **同一 person_id 連線數** | 最多 **5 條** | sim＋live 同跑佔 2 條；**重啟可能漏出孤兒 worker**（強殺時 shioaji 子進程來不及登出，PPID=1 帶著連線一直活著）；滿了新 worker 就登不進去。`parent_alive()` 已修（需重啟後端才生效）；檢查與清理見 OPERATION.md〈孤兒 worker〉。**唯讀歷史工具（`hurst_study fetch`、`indicator_history flow-fetch`）每次再佔 1 條**，登入前會先問後端（`core/broker_guard.py`）。完整說明見 ARCHITECTURE.md。 |
 | **登入次數** | **1000 次/日** | 每次 watchdog 重啟都會 login。正常夠用，但若 session 一直不穩狂 flapping 重啟會燒額度。 |
 | **委託操作** | **10 秒 250 次**（下單/改單/取消） | `scalp.py` 掃單頻率高；連反手平倉一次 tick 可能 2 單，掃太密要留意。 |
-| **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、`positions_refresh_loop`(部位 5s 一次、已實現損益 60s／300s 一次)、scalp 進場把關(每次進場前 2 次：部位＋委託；被擋下後 3 秒內不再查)、前端 PositionPanel(2s)、TradesPanel(3s)、週報（一週 1 次已實現損益）。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |
+| **帳務查詢** | **5 秒 25 次**（list_positions / margin / list_trades 等） | 加總來源：keepalive(240s 一次)、`manual_monitor`(1s 一次)、`positions_refresh_loop`(部位 5s 一次、已實現損益 60s／300s 一次)、scalp 進場把關(每次進場前 2 次：部位＋委託；被擋下後 3 秒內不再查)、前端 PositionPanel(2s)、TradesPanel(3s)、週報（一週 1 次已實現損益）；週末（週六 05:30～週一 07:30）部位與委託降到 120s、保證金 600s。目前總和遠低於上限，但**之後加輪詢或縮短間隔前先估一下總和**。 |
 | **行情查詢** | **5 秒 50 次**（snapshots/ticks/kbars，盤中 ticks 另限 10 次/5s） | 即時報價走訂閱推播（QuoteHub）不算查詢；但若策略改用主動拉 kbars/snapshot 要算進來。 |
 | **每日流量** | **500MB / 2GB / 10GB**（依近 30 日成交量分級，**開盤日 08:00 重置**） | 訂閱報價會吃流量。同時訂多合約、或多策略各自訂閱會放大用量——`QuoteHub` 已做集中訂閱去重，別繞過它各自 `quote.subscribe`。 |
 | **報價訂閱數** | **200 個** | 本專案只訂 TMF/MXF/TXF，遠低於上限，無虞。 |

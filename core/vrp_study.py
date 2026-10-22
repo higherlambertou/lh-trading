@@ -37,7 +37,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from core.iv_monitor import IV_SANE_RANGE, atm_iv_from_quotes, expiry_of
-from core.oi_study import DEFAULT_DIR, _iso, _num
+from core.oi_study import DEFAULT_DIR, _iso, _num, period_complete
 from core.trend_study import build_series, load_tx_contracts
 
 OPT_URL = "https://www.taifex.com.tw/cht/3/optDataDown"
@@ -130,7 +130,7 @@ def fetch(directory: Path = DEFAULT_DIR, start_year: int = START_YEAR, today: Op
     got = {"downloaded": 0, "skipped": 0, "failed": 0}
     for name, a, b in _months(start_year, today):
         f = out / name
-        if f.exists() and f.stat().st_size > 0 and b < today:
+        if f.exists() and f.stat().st_size > 0 and b < today and period_complete(f, b):     # 月中算的檔，月份結束後要重算一次（發現 65）
             got["skipped"] += 1
             continue
         body = urllib.parse.urlencode({"down_type": "1", "commodity_id": "TXO", "commodity_id2": "",

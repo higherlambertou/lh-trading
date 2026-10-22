@@ -498,7 +498,7 @@ export const api = {
       req<{ status: string; name: string; warning?: string }>(`/strategy/${name}/stop${force ? "?force=true" : ""}`, { method: "POST" }),
   },
   health: () =>
-    req<{ status: string; broker_connected: string }>("/health"),
+    req<{ status: string; broker_connected: string; session?: string; stale_reason?: string }>("/health"),
   quote: {
     last: () => req<Record<string, number>>("/quote/last"),
   },

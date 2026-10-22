@@ -167,3 +167,16 @@ def test_partial_failure_counts_as_failure(svc, monkeypatch):
     freeze(monkeypatch, datetime(2026, 10, 8, 14, 5))
     asyncio.run(svc.tick({}))
     assert svc._backup_done == "" and svc._retry_at["backup"] > 0
+
+
+def test_option_spread_db_is_backed_up(data_dir, tmp_path):
+    """盤中選擇權價差取樣補不回來（發現 65 起進備份）。"""
+    from core.backup import DB_FILES
+    assert DB_FILES == ("market_state.db", "trade_log.db", "signals.db", "option_spread.db")
+    with closing(sqlite3.connect(data_dir / "option_spread.db")) as c:
+        c.execute("CREATE TABLE spread(ts REAL, v REAL)")
+        c.execute("INSERT INTO spread VALUES (1, 2)")
+        c.commit()
+    r = backup_databases("2026-10-22", data_dir=data_dir, dest_root=tmp_path / "bk")
+    assert "option_spread.db" in [f["file"] for f in r["files"] if f["ok"]]
+    assert count(tmp_path / "bk" / "2026-10-22" / "option_spread.db", "spread") == 1

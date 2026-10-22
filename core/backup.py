@@ -4,7 +4,7 @@
 備份到 data/backup/YYYY-MM-DD/（BACKUP_DIR 可改到別的磁碟或雲端同步資料夾——備份和原檔放同一顆硬碟，
 擋得住誤刪與資料庫損毀，擋不住硬碟壞掉），保留最近 BACKUP_KEEP_DAYS 天（預設 14）。
 
-備份對象：market_state.db、trade_log.db、signals.db（小、無法重建）。
+備份對象：market_state.db、trade_log.db、signals.db、option_spread.db（小、無法重建；option_spread.db＝盤中選擇權價差取樣，2026-10-22 起才備份）。
 不備份 ticks.db：大、且價格路徑可由 1 分 K 重建到分鐘精度。
 
 排程：交易日 BACKUP_TIME（預設 14:00，盤後流程之後）由 daily_summary 的背景排程呼叫；
@@ -25,7 +25,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DB_FILES = ("market_state.db", "trade_log.db", "signals.db")        # signals.db＝影子訊號的前向資料（補不回來）
+DB_FILES = ("market_state.db", "trade_log.db", "signals.db", "option_spread.db")   # signals.db＝影子訊號的前向資料、option_spread.db＝盤中價差取樣（都補不回來）
 _DAY_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
