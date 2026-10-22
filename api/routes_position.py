@@ -193,3 +193,26 @@ def get_usage() -> dict[str, Any]:
     if _cache["usage"] is None:
         raise HTTPException(503, "流量資料尚未就緒（首次查詢中，請稍後再試）")
     return _cache["usage"]
+
+
+_weekly_cache: dict[str, Any] = {"at": 0.0, "data": None}
+
+
+@router.get("/weekly")
+async def get_weekly() -> dict[str, Any]:
+    """週報預覽（update.md 發現 63）：和週六推播同一份（上一個完整的週一～週六）。會查一次券商帳務，60 秒內重複按用快取。只顯示。"""
+    from datetime import datetime
+    from core import weekly_report
+    from core.trade_log import trade_log
+    now = time.time()
+    if _weekly_cache["data"] is not None and now - _weekly_cache["at"] < 60:
+        return _weekly_cache["data"]
+    try:
+        s = await weekly_report.build(datetime.now(weekly_report.TAIPEI), lambda b, e: broker.list_profit_loss(b, e),
+                                      lambda m, sat: weekly_report.stop_counts(trade_log.path, current_mode(), m, sat))
+    except Exception as e:
+        raise HTTPException(503, f"查不到已實現損益：{type(e).__name__}")
+    title, body = weekly_report.compose(s)
+    data = {"summary": s, "title": title, "text": body}
+    _weekly_cache.update(at=now, data=data)
+    return data

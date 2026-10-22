@@ -38,6 +38,7 @@ from core.event_reminder import event_reminder_loop
 from core.daily_summary import market_state
 from core.vol_watch import vol_watch_loop
 from core.daily_brief import brief_loop
+from core import weekly_report
 from core.signal_shadow import shadow_loop
 from core import entry_log
 from core.live_state import live_state
@@ -46,7 +47,7 @@ from api.routes_signals import router as signals_router
 from core import rollover
 from core.tick_store import tick_recorder
 from core.flow_store import flow_recorder
-from core.trade_log import trade_log
+from core.trade_log import current_mode, trade_log
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,6 +107,9 @@ async def lifespan(app: FastAPI):
     protect_task = loop.create_task(protect_after_start())                # 重啟後：恢復手動停損監控、報告沒有保護的持倉（自己等券商連上；不下單）
     vol_task = loop.create_task(vol_watch_loop(lambda: _position_cache["positions"], manual_monitor.list_watches, market_state.store))   # 波動放大提醒（有沒有持倉都發；只通知；VOL_WATCH=false 關閉）
     brief_task = loop.create_task(brief_loop(market_state.snapshot, market_state.store))   # 盤前摘要（只通知；DAILY_BRIEF=false 關閉）
+    weekly_task = loop.create_task(weekly_report.weekly_loop(          # 週報（週六 10:00；券商已實現損益一週查一次；只通知；WEEKLY_REPORT=false 關閉）
+        lambda b, e: broker.list_profit_loss(b, e),
+        lambda m, s: weekly_report.stop_counts(trade_log.path, current_mode(), m, s)))
     shadow_task = loop.create_task(shadow_loop(market_state.store))      # 順勢爆量訊號的影子模式（只記錄與通知、不下單；SIGNAL_SHADOW=false 關閉）
     rollover_task = loop.create_task(rollover.rollover_loop(lambda: broker.resolved_codes))   # 近月合約結算後要求 watchdog 重啟換月（ROLLOVER_RESTART=false 關閉）
     logger.info("系統啟動完成（等待 worker 連線中…）")
@@ -123,6 +127,7 @@ async def lifespan(app: FastAPI):
     cpi_task.cancel()
     vol_task.cancel()
     brief_task.cancel()
+    weekly_task.cancel()
     rollover_task.cancel()
     shadow_task.cancel()
     tick_recorder.stop()
