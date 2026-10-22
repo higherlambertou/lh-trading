@@ -25,7 +25,16 @@ def test_precheck_card(tmp_path):
     full = pc.build({"day_iv": day}, {"ready": True, "iv": {"value": 27.12, "percentile": 85.0, "label": "偏高", "history_n": 252, "note": ""}}, pc.upcoming_major(now, [cpi]), now)
     quiet = pc.build({"day_iv": day}, {"ready": True, "iv": {"value": 18.0, "percentile": None, "label": "累積中", "history_n": 10, "note": "x"}}, [], now)
     empty = pc.build(None, {"ready": False}, None, now)
-    (tmp_path / "fixtures.json").write_text(json.dumps({"full": full, "quiet": quiet, "empty": empty}, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    eve = datetime(2026, 11, 10, 17, 0, tzinfo=er.TAIPEI).timestamp()                     # 傍晚：今天的日盤那一行沒有了，換成夜盤與下一個日盤（發現 67）
+    iv = {"ready": True, "iv": {"value": 27.12, "percentile": 85.0, "label": "偏高", "history_n": 252, "note": ""}}
+    night = {"expect": {"lo": 599.5, "mid": 898.9, "hi": 1363.5}, "r20n": 683.6, "vix": 30.31, "vix_date": "2026-11-10", "day_range": 1120.0, "prev_day": "2026-11-10", "n": 2276}
+    nxt = {"expect": {"lo": 497.0, "mid": 693.4, "hi": 1016.9}, "r20": 579.8, "vix": 30.31, "vix_date": "2026-11-10", "atm_equiv": 28.19, "n": 1578}
+    evening = pc.build(None, iv, [], eve, {"prev_day": "2026-11-10", "night": night, "next_day": nxt})
+    waiting = pc.build(None, iv, [], eve, {"prev_day": "2026-11-10", "night": {"note": "等 11-10 收盤的臺指選擇權波動率指數（lh-intel 約 16:15 抓到）"},
+                                           "next_day": {"note": "等 11-10 收盤的臺指選擇權波動率指數（lh-intel 約 16:15 抓到）"}})
+    broken = pc.build(None, iv, [], eve, {"error": "RuntimeError"})
+    (tmp_path / "fixtures.json").write_text(json.dumps({"full": full, "quiet": quiet, "empty": empty, "evening": evening, "waiting": waiting, "broken": broken},
+                                                       ensure_ascii=False, allow_nan=False), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP")}
     env["PC_FIXTURES"] = str(tmp_path)
     r = subprocess.run(["node", str(ROOT / "tests" / "frontend" / "precheck_check.js")], capture_output=True, text=True, timeout=120, env=env)

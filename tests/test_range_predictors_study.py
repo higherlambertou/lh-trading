@@ -175,7 +175,7 @@ def test_too_few_days():
 def test_not_imported_by_trading_modules():
     for d in ("strategies", "api", "core"):
         for p in (ROOT / d).rglob("*.py"):
-            if p.name == "range_predictors_study.py":
+            if p.name in ("range_predictors_study.py", "night_range_study.py"):     # night_range_study＝另一個離線研究，借用同一個巢狀模型比較（發現 67）
                 continue
             tree = ast.parse(p.read_text(encoding="utf-8"))
             names = [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]

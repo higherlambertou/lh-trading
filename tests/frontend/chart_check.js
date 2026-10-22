@@ -219,5 +219,18 @@ const text = (el) => (el == null || typeof el === "boolean") ? "" : typeof el ==
   ok(few.includes("夜盤實測樣本少"), "夜盤樣本少要說");
 }
 
+// ── 回補的 K 棒（發現 66）──
+{
+  const s = 1_760_000_100 - (1_760_000_100 % 300);
+  const one = [bar(s, 10, 12, 9, 11), { ...bar(s + 60, 11, 15, 10, 14, 7, 0, 0, 0), f: 1 }, bar(s + 300, 9, 10, 9, 10)];
+  const five = C.aggregate(one, 5);
+  eq([five[0].f, five[1].f], [1, undefined], "桶裡有一分鐘是回補的，那一根就標回補；沒有的不標");
+  eq(one[0].f, undefined, "合併時不改動原本的棒");
+  const a = [bar(s, 1, 1, 1, 1)], b = [{ ...bar(s, 1, 1, 1, 1), f: 1 }];
+  ok(!C.sameBars(a, b), "同一分鐘從真實換成回補（或反過來）要重畫");
+  ok(C.needsReload(0, 5) && !C.needsReload(5, 5) && !C.needsReload(5, undefined) && !C.needsReload(5, 3), "fills_at 變大才整段重抓");
+  ok(typeof C.FILL_COLOR === "string" && C.FILL_COLOR.startsWith("#"), "回補的顏色");
+}
+
 console.log(`${passed} PASS, ${failed} FAIL`);
 process.exit(failed ? 1 : 0);

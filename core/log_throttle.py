@@ -5,6 +5,8 @@
 2026-10-15～22 的 /tmp/lh_live.log 有 6,000 多段完整 traceback（週末券商維護時每幾秒一段），log 長到 80 MB，真正的問題反而被淹沒。"""
 from __future__ import annotations
 
+import logging
+import os
 import re
 from typing import Any, Optional
 
@@ -39,3 +41,30 @@ class ErrorThrottle:
         """這個 key 之前在失敗：回傳（總共失敗幾次, 從第一次失敗到現在幾秒）並清掉；沒有在失敗回 None。"""
         st = self._s.pop(key, None)
         return None if st is None else (int(st["count"]), now - st["first"])
+
+
+# ── uvicorn 的存取紀錄（update.md 發現 66）─────────────────────────
+
+class QuietAccessFilter(logging.Filter):
+    """成功的 GET／HEAD／OPTIONS（2xx、3xx）不記：畫面每 2～5 秒輪詢，2026-10-15～22 有 107 萬行、占 app log 的 96%，真正的錯誤被淹沒。
+    錯誤回應（4xx、5xx）與 POST／DELETE／PUT（下單、改設定）照記。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 5:              # 不是 uvicorn 存取紀錄的格式：照記
+            return True
+        try:
+            method, status = str(args[1]).upper(), int(args[4])
+        except (TypeError, ValueError):
+            return True
+        return not (method in ("GET", "HEAD", "OPTIONS") and status < 400)
+
+
+def install_access_filter(logger_name: str = "uvicorn.access") -> bool:
+    """在 uvicorn 設定完 logging 之後呼叫（lifespan 開頭）；重複呼叫不會加兩次。ACCESS_LOG=all 全記。回傳有沒有裝上。"""
+    if os.getenv("ACCESS_LOG", "").lower() == "all":
+        return False
+    lg = logging.getLogger(logger_name)
+    if not any(isinstance(f, QuietAccessFilter) for f in lg.filters):
+        lg.addFilter(QuietAccessFilter())
+    return True

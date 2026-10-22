@@ -277,7 +277,7 @@ def test_compute_survives_a_failing_day_iv(monkeypatch):
 # ── 只顯示：誰可以引用它 ─────────────────────────────────────────
 
 def test_only_the_context_module_uses_it_and_no_trading_path_does():
-    allowed = {"intraday_context.py", "iv_day_range.py", "iv_monitor.py"}            # iv_monitor 只借用歷史 IV 檔的讀取函式（回填 iv_history，發現 60）
+    allowed = {"intraday_context.py", "iv_day_range.py", "iv_monitor.py", "precheck.py", "night_range.py"}   # iv_monitor 只借讀取函式（發現 60）；precheck 與 night_range 是只顯示的（發現 67）
     for p in list((ROOT / "core").glob("*.py")) + list((ROOT / "api").glob("*.py")) + list((ROOT / "strategies").glob("*.py")) + [ROOT / "main.py"]:
         if p.name in allowed:
             continue

@@ -304,3 +304,17 @@ def summary(now: Optional[float] = None, path: Optional[Path] = None) -> dict[st
         return {"available": False, "reason": f"資訊面板資料組裝失敗：{type(e).__name__}: {e}", "as_of": now}
     _cache.update(key=key, at=now, data=data)
     return data
+
+
+def collector_status(now: Optional[float] = None, path: Optional[Path] = None) -> dict[str, Any]:
+    """系統健康面板用（update.md 發現 66）：只讀各收集器的最後成功／連續失敗與服務心跳。永遠不丟例外。"""
+    now = time.time() if now is None else now
+    path = path or default_path()
+    if not path.exists():
+        return {"available": False, "reason": f"找不到 {path}"}
+    try:
+        with closing(connect_ro(path)) as conn:
+            out = collectors(conn, now, _heartbeat(path))
+        return {"available": True, **out}
+    except Exception as e:  # noqa: BLE001
+        return {"available": False, "reason": f"{type(e).__name__}: {e}"}

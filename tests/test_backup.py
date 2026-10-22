@@ -180,3 +180,63 @@ def test_option_spread_db_is_backed_up(data_dir, tmp_path):
     r = backup_databases("2026-10-22", data_dir=data_dir, dest_root=tmp_path / "bk")
     assert "option_spread.db" in [f["file"] for f in r["files"] if f["ok"]]
     assert count(tmp_path / "bk" / "2026-10-22" / "option_spread.db", "spread") == 1
+
+
+# ── 雲端副本（發現 66）───────────────────────────────────────────
+
+def test_mirror_copy_prune_and_state(data_dir, tmp_path):
+    import json
+    from core.backup import MIRROR_STATE
+    cloud = tmp_path / "GoogleDrive" / "我的雲端硬碟"
+    cloud.mkdir(parents=True)
+    old = cloud / "lh-backup" / "2026-09-01"
+    old.mkdir(parents=True)
+    root = tmp_path / "bk"
+    r = backup_databases("2026-10-22", data_dir=data_dir, dest_root=root, mirror=cloud / "lh-backup")
+    m = r["mirror"]
+    assert m["status"] == "ok" and sorted(m["files"]) == ["market_state.db", "trade_log.db"] and m["pruned"] == ["2026-09-01"]
+    assert count(cloud / "lh-backup" / "2026-10-22" / "market_state.db", "iv_history") == 30
+    assert not list((cloud / "lh-backup" / "2026-10-22").glob("*.tmp"))
+    st = json.loads((root / MIRROR_STATE).read_text())
+    assert st["last_ok_day"] == "2026-10-22" and st["last_status"] == "ok"
+
+
+def test_mirror_is_skipped_when_the_cloud_folder_is_not_mounted(data_dir, tmp_path):
+    import json
+    from core.backup import MIRROR_STATE
+    root = tmp_path / "bk"
+    gone = tmp_path / "CloudStorage" / "GoogleDrive-x" / "我的雲端硬碟" / "lh-backup"
+    r = backup_databases("2026-10-22", data_dir=data_dir, dest_root=root, mirror=gone)
+    assert r["mirror"]["status"] == "skipped" and "Google Drive 沒開" in r["mirror"]["reason"]
+    assert not gone.parent.exists()                                                     # 不在掛載點建一般資料夾
+    assert all(f["ok"] for f in r["files"])                                             # 本機那份照樣好
+    (root / MIRROR_STATE).write_text(json.dumps({"last_ok_day": "2026-10-20"}))
+    backup_databases("2026-10-23", data_dir=data_dir, dest_root=root, mirror=gone)
+    st = json.loads((root / MIRROR_STATE).read_text())
+    assert st["last_ok_day"] == "2026-10-20" and st["last_status"] == "skipped"        # 略過不會蓋掉上一次成功
+
+
+def test_mirror_follows_the_env_and_is_off_by_default(data_dir, tmp_path, monkeypatch):
+    monkeypatch.delenv("BACKUP_MIRROR_DIR", raising=False)
+    r = backup_databases("2026-10-22", data_dir=data_dir, dest_root=tmp_path / "bk")
+    assert "mirror" not in r
+    (tmp_path / "drive").mkdir()
+    monkeypatch.setenv("BACKUP_MIRROR_DIR", f'"{tmp_path / "drive" / "lh"}"')         # 引號會去掉
+    r2 = backup_databases("2026-10-22", data_dir=data_dir, dest_root=tmp_path / "bk")
+    assert r2["mirror"]["status"] == "ok" and (tmp_path / "drive" / "lh" / "2026-10-22" / "trade_log.db").exists()
+
+
+def test_mirror_failure_does_not_fail_the_backup(data_dir, tmp_path, monkeypatch):
+    import core.backup as bk
+    (tmp_path / "drive").mkdir()
+    monkeypatch.setattr(bk.shutil, "copyfile", lambda a, b: (_ for _ in ()).throw(PermissionError("Operation not permitted")))
+    r = backup_databases("2026-10-22", data_dir=data_dir, dest_root=tmp_path / "bk", mirror=tmp_path / "drive" / "lh")
+    assert r["mirror"]["status"] == "failed" and "Operation not permitted" in r["mirror"]["error"] and all(f["ok"] for f in r["files"])
+
+
+def test_tests_never_touch_the_real_backup_locations():
+    import os
+    import main  # noqa: F401  （會 load_dotenv）
+    from core.backup import backup_root, mirror_root
+    assert mirror_root() is None and "backup_root" in str(backup_root())
+    assert "BACKUP_MIRROR_DIR" not in os.environ

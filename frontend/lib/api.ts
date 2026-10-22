@@ -1,4 +1,5 @@
 import type { BarsResponse } from "./chart";
+import type { SystemHealth } from "./systemHealth";
 // 後端位址依「載入此頁面的 host」自動推導，而不是寫死／烤進 bundle：
 // 本機開 localhost:3002 → 打 localhost:8002；手機開 100.97.169.26:3002 → 打 100.97.169.26:8002。
 // 一份 bundle 兩邊都正確，也避開「本機自連自己 Tailscale IP timeout」的問題。
@@ -496,6 +497,9 @@ export const api = {
     // 持倉時後端預設回 409；force=true 才會停（停止＝不再檢查停損停利＋取消帳戶內所有未成交委託）
     stop: (name: string, force = false) =>
       req<{ status: string; name: string; warning?: string }>(`/strategy/${name}/stop${force ? "?force=true" : ""}`, { method: "POST" }),
+  },
+  system: {
+    health: () => req<SystemHealth>("/system/health"),          // 系統健康（發現 66）：只讀檔案與記憶體
   },
   health: () =>
     req<{ status: string; broker_connected: string; session?: string; stale_reason?: string }>("/health"),

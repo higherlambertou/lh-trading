@@ -43,6 +43,8 @@ def _no_real_pushes_or_state_files(monkeypatch, tmp_path):
     monkeypatch.setattr(pml, "_default_store", pml.PremarketStore(tmp_path / "default_premarket.db"))
     monkeypatch.setattr(pml, "_intel_path", lambda: tmp_path / "no_intel.db")       # 盤前快照的 lh-intel 來源：測試不能讀真的 intel.db（不存在＝這個來源失敗、改用下一個）
     monkeypatch.setenv("INTEL_DB", str(tmp_path / "no_intel.db"))                  # 其他讀 lh-intel 的地方（intel_reader.default_path）同樣不能讀真的；要資料的測試自己給路徑
+    monkeypatch.delenv("BACKUP_MIRROR_DIR", raising=False)                          # main.py 一 import 就 load_dotenv：測試不能把假資料庫複製到真的 Google Drive（發現 66）
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backup_root"))                  # 也不能寫進真的 data/backup
 
 
 @pytest.fixture(autouse=True)

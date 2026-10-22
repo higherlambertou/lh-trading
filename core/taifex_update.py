@@ -31,6 +31,7 @@ MAX_TRIES = 3
 TIMEOUT_SEC = 900.0
 JOBS: dict[str, dict[str, Any]] = {
     "tx": {"every_days": 1, "argv": ["-m", "core.oi_study", "fetch", "--only", "tx"], "text": "TX 日行情"},
+    "night": {"every_days": 1, "argv": ["-m", "core.night_range", "fit"], "text": "夜盤預期振幅模型（發現 67）"},      # 排在 TX 之後：用剛更新的夜盤資料擬合
     "vrp": {"every_days": 7, "argv": ["-m", "core.vrp_study", "fetch"], "text": "TXO 每日 ATM IV"},
 }
 

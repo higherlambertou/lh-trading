@@ -67,7 +67,8 @@ async def get_precheck() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         logger.debug("precheck：取不到盤中脈絡（略過）", exc_info=True)
     events = await asyncio.to_thread(precheck.fetch_events, now)
-    return precheck.build(ctx, market_state.snapshot(), events, now)
+    evening = await asyncio.to_thread(precheck.fetch_evening, now, market_state.store)       # 13:45～05:00：今晚夜盤與下一個日盤的預期振幅（發現 67）
+    return precheck.build(ctx, market_state.snapshot(), events, now, evening)
 
 
 @router.get("/live")
@@ -100,6 +101,16 @@ async def get_bars(minutes: int = Query(default=1500, ge=5, le=4000), since: Opt
     lo = since if since is not None else now - minutes * 60
     rows = await asyncio.to_thread(market_state.store.flow_1m, "TMF", lo)
     bars = [b for b in (_bar(r) for r in rows) if b is not None]
+    fills_at = 0.0
+    try:                                    # 後端沒在記錄的分鐘：用盤後回補的券商 1 分 K 補畫（f＝1，畫成灰色；沒有外內盤；發現 66）
+        fills, fills_at = await asyncio.to_thread(lambda: (market_state.store.fill_1m("TMF", lo), market_state.store.fills_at("TMF")))
+        have = {b["t"] for b in bars}
+        extra = [{"t": int(f["ts"]), "o": f["open"], "h": f["high"], "l": f["low"], "c": f["close"], "v": int(f["volume"] or 0), "b": 0, "s": 0, "n": 0, "f": 1}
+                 for f in fills if int(f["ts"]) not in have and f["open"] and f["close"]]
+        if extra:
+            bars = sorted(bars + extra, key=lambda b: b["t"])
+    except Exception:  # noqa: BLE001
+        logger.debug("bars：讀回補的 K 棒失敗（略過）", exc_info=True)
     live = None
     try:
         cur = flow_recorder.current_row()
@@ -108,7 +119,7 @@ async def get_bars(minutes: int = Query(default=1500, ge=5, le=4000), since: Opt
         logger.debug("bars：取不到進行中的 K 棒（略過）", exc_info=True)
     if live is not None and since is not None and live["t"] < since:
         live = None
-    return {"contract": "TMF", "interval": 60, "now": now, "bars": bars, "live": live}
+    return {"contract": "TMF", "interval": 60, "now": now, "bars": bars, "live": live, "fills_at": fills_at}
 
 
 @router.get("/suggest")

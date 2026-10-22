@@ -17,6 +17,7 @@ import PremarketPanel from "./PremarketPanel";
 import IntelPanel from "./IntelPanel";
 import PriceChart from "./PriceChart";
 import Folded from "./Folded";
+import SystemHealthPanel from "./SystemHealthPanel";
 import { isSimMode } from "@/lib/api";
 
 type Tab = "trade" | "market" | "intel" | "analysis";
@@ -25,7 +26,7 @@ const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: "trade", label: "交易", hint: "部位、策略、盤中即時、委託、成交" },
   { id: "market", label: "市場", hint: "盤前判斷、盤中買賣力道、盤前跨市場快照" },
   { id: "intel", label: "資訊", hint: "事件倒數、全球市場、籌碼、新聞（唯讀自 lh-intel，只顯示、不影響交易）" },
-  { id: "analysis", label: "分析", hint: "破產機率驗證、市場指標回放、策略回測、選擇權試算（只試算，不影響交易）" },
+  { id: "analysis", label: "分析", hint: "系統健康、破產機率驗證、市場指標回放、策略回測、選擇權試算（只試算，不影響交易）" },
 ];
 
 const isTab = (x: string): x is Tab => TABS.some((t) => t.id === x);
@@ -114,6 +115,7 @@ export default function DashboardTabs() {
 
             {(tab === "analysis" || analysisOpened) && (
               <div className={tab === "analysis" ? GRID : "hidden"}>
+                <SystemHealthPanel />
                 <RiskPanel />
                 <Folded id="replay" title="市場指標回放（歷史）"
                   why="Hurst＋IV＋買賣力道的組合在歷史上沒有顯著差異（update.md 發現 14），沒有做即時版；展開後後端會算一次排列檢定。">

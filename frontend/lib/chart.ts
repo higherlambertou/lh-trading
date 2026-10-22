@@ -13,6 +13,7 @@ export interface Bar {
   b: number;   // 外盤口數（買方主動）
   s: number;   // 內盤口數（賣方主動）
   n: number;   // 成交筆數
+  f?: number;  // 1＝後端沒記到、盤後用券商 1 分 K 回補的（沒有外內盤，畫成灰色；update.md 發現 66）
 }
 
 export interface BarsResponse {
@@ -21,7 +22,14 @@ export interface BarsResponse {
   now: number;
   bars: Bar[];
   live: Bar | null;
+  fills_at?: number;   // 最近一次回補的時間：變了就要整段重抓（回補的是舊的分鐘，增量抓不到）
 }
+
+/** 回補的 K 棒（f＝1）用的顏色。 */
+export const FILL_COLOR = "#5a5a7a";
+
+/** 這次的 fills_at 比上次大 → 有新的回補，下一次要整段重抓。 */
+export const needsReload = (prev: number, next: number | undefined): boolean => (next ?? 0) > prev;
 
 /** lightweight-charts 的時間軸一律當 UTC 顯示；加 8 小時就是台北時間。 */
 export const TZ_OFFSET = 8 * 3600;
@@ -41,7 +49,7 @@ export function mergeBars(base: Bar[], incoming: Bar[], live: Bar | null): Bar[]
 /** 兩份 K 棒陣列內容一樣嗎（長度、頭尾與最後三根的每個欄位）；沒變就不必重畫。 */
 export function sameBars(a: Bar[], b: Bar[]): boolean {
   if (a.length !== b.length) return false;
-  const k = (x: Bar) => `${x.t}|${x.o}|${x.h}|${x.l}|${x.c}|${x.v}|${x.b}|${x.s}|${x.n}`;
+  const k = (x: Bar) => `${x.t}|${x.o}|${x.h}|${x.l}|${x.c}|${x.v}|${x.b}|${x.s}|${x.n}|${x.f ?? 0}`;
   const n = a.length;
   if (n === 0) return true;
   if (a[0].t !== b[0].t) return false;
@@ -62,6 +70,7 @@ export function aggregate(bars: Bar[], minutes: number): Bar[] {
       last.l = Math.min(last.l, b.l);
       last.c = b.c;
       last.v += b.v; last.b += b.b; last.s += b.s; last.n += b.n;
+      if (b.f) last.f = 1;                                            // 只要有一分鐘是回補的，這根就標回補
     } else {
       out.push({ ...b, t });
     }

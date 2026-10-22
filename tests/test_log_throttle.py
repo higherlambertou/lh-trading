@@ -82,3 +82,32 @@ def test_throttle_errors_never_escape(monkeypatch, caplog):
     w.log_failure(Broken(), "list_positions", ERR, 0.0, "Traceback ...")
     w.log_success(Broken(), "list_positions", 1.0)
     assert "ManualMonitor 查詢部位失敗" in caplog.text and "Worker 執行 list_positions 失敗" in caplog.text
+
+
+# ── uvicorn 存取紀錄（發現 66）───────────────────────────────────
+
+def access_record(method, status, path="/api/quote/last"):
+    return logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d', ("100.97.169.26:51234", method, path, "1.1", status), None)
+
+
+def test_quiet_access_filter():
+    f = lt.QuietAccessFilter()
+    assert not f.filter(access_record("GET", 200)) and not f.filter(access_record("GET", 304)) and not f.filter(access_record("OPTIONS", 200))
+    assert f.filter(access_record("GET", 404)) and f.filter(access_record("GET", 503)) and f.filter(access_record("GET", 500))
+    assert f.filter(access_record("POST", 200, "/api/order/place")) and f.filter(access_record("DELETE", 200))
+    other = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "別的訊息 %s", ("x",), None)
+    assert f.filter(other)
+
+
+def test_install_access_filter(monkeypatch):
+    name = "test.access.logger"
+    lg = logging.getLogger(name)
+    monkeypatch.delenv("ACCESS_LOG", raising=False)
+    assert lt.install_access_filter(name) and lt.install_access_filter(name)
+    assert sum(isinstance(x, lt.QuietAccessFilter) for x in lg.filters) == 1                   # 不會裝兩次
+    for x in list(lg.filters):
+        lg.removeFilter(x)
+    monkeypatch.setenv("ACCESS_LOG", "all")
+    assert not lt.install_access_filter(name) and not lg.filters
+    src = (lt.__file__.rsplit("/core/", 1)[0] + "/main.py")
+    assert "install_access_filter()" in open(src, encoding="utf-8").read()

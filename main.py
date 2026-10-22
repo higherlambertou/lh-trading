@@ -41,12 +41,15 @@ from core.daily_brief import brief_loop
 from core import weekly_report
 from core.premarket_log import TwCalendar
 from core.session_watch import TradingDays, session_watch, session_watch_loop
+from core.log_throttle import install_access_filter
 from core.taifex_update import taifex_update_loop
+from core.bar_gapfill import gapfill_loop
 from core.signal_shadow import shadow_loop
 from core import entry_log
 from core.live_state import live_state
 from api.routes_intel import router as intel_router
 from api.routes_signals import router as signals_router
+from api.routes_system import router as system_router
 from core import rollover
 from core.tick_store import tick_recorder
 from core.flow_store import flow_recorder
@@ -85,6 +88,7 @@ async def _startup_bg() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    install_access_filter()                  # 成功的 GET 輪詢不記存取紀錄（占 app log 96%；update.md 發現 66；ACCESS_LOG=all 全記）
     loop = asyncio.get_event_loop()
     broker.setup(loop)
     broker.login()           # 啟動 shioaji_worker 子進程（非阻塞）
@@ -117,6 +121,7 @@ async def lifespan(app: FastAPI):
     rollover_task = loop.create_task(rollover.rollover_loop(lambda: broker.resolved_codes))   # 近月合約結算後要求 watchdog 重啟換月（ROLLOVER_RESTART=false 關閉）
     session_task = loop.create_task(session_watch_loop(lambda: bool(broker._known_subs), TradingDays(TwCalendar().check)))   # 券商連線假死偵測（/api/health 回報 stale → watchdog 重啟；SESSION_WATCH=false 關閉）
     taifex_task = loop.create_task(taifex_update_loop())                  # 期交所日資料自動更新（獨立子行程；只有正式盤跑；TAIFEX_UPDATE=false 關閉）
+    gapfill_task = loop.create_task(gapfill_loop(market_state.store, broker.kbars, lambda: broker.is_connected))   # 走勢圖缺口回補（盤前／盤後各一次；只有正式盤；GAPFILL=false 關閉）
     logger.info("系統啟動完成（等待 worker 連線中…）")
     yield
     startup_task.cancel()
@@ -136,6 +141,7 @@ async def lifespan(app: FastAPI):
     rollover_task.cancel()
     session_task.cancel()
     taifex_task.cancel()
+    gapfill_task.cancel()
     shadow_task.cancel()
     tick_recorder.stop()
     flow_recorder.stop()
@@ -181,6 +187,7 @@ app.include_router(options_router,  prefix="/api/options",  tags=["options"])
 app.include_router(premarket_router, prefix="/api/premarket", tags=["premarket"])
 app.include_router(signals_router,  prefix="/api/signals",  tags=["signals"])
 app.include_router(intel_router,    prefix="/api/intel",    tags=["intel"])
+app.include_router(system_router,   prefix="/api/system",   tags=["system"])
 
 
 @app.get("/api/health")

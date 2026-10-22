@@ -31,7 +31,7 @@ class Runner:
 def test_due_schedule(tmp_path):
     u = tu.TaifexUpdater(tmp_path / "s.json", Runner())
     assert u.due(tpe(2026, 10, 22, 15, 9)) == []
-    assert u.due(tpe(2026, 10, 22, 15, 10)) == ["tx", "vrp"]
+    assert u.due(tpe(2026, 10, 22, 15, 10)) == ["tx", "night", "vrp"]                 # 夜盤模型排在 TX 之後
     assert u.due(tpe(2026, 10, 24, 16, 0)) == []                                      # 週末不跑
 
 
@@ -39,26 +39,26 @@ def test_success_is_remembered_across_restarts(tmp_path):
     p = tmp_path / "s.json"
     r = Runner()
     u = tu.TaifexUpdater(p, r)
-    assert asyncio.run(u.tick(tpe(2026, 10, 22, 15, 15))) == {"tx": True, "vrp": True}
-    assert r.calls == ["tx", "vrp"]
+    assert asyncio.run(u.tick(tpe(2026, 10, 22, 15, 15))) == {"tx": True, "night": True, "vrp": True}
+    assert r.calls == ["tx", "night", "vrp"]
     assert json.loads(p.read_text())["tx"]["ok_date"] == "2026-10-22"
     u2 = tu.TaifexUpdater(p, r)                                                       # 重啟
     assert u2.due(tpe(2026, 10, 22, 18, 0)) == []
-    assert u2.due(tpe(2026, 10, 23, 15, 10)) == ["tx"]                                 # TX 每天；IV 每 7 天
-    assert u2.due(tpe(2026, 10, 29, 15, 10)) == ["tx", "vrp"]
+    assert u2.due(tpe(2026, 10, 23, 15, 10)) == ["tx", "night"]                        # TX 與夜盤模型每天；IV 每 7 天
+    assert u2.due(tpe(2026, 10, 29, 15, 10)) == ["tx", "night", "vrp"]
 
 
 def test_failures_retry_later_and_stop_after_three(tmp_path):
-    r = Runner({"tx": (False, "下載失敗 tx_2026_10.csv：timeout"), "vrp": RuntimeError("boom")})
+    r = Runner({"tx": (False, "下載失敗 tx_2026_10.csv：timeout"), "night": (False, "x"), "vrp": RuntimeError("boom")})
     u = tu.TaifexUpdater(tmp_path / "s.json", r)
     t = tpe(2026, 10, 22, 15, 10)
-    assert asyncio.run(u.tick(t)) == {"tx": False, "vrp": False}
+    assert asyncio.run(u.tick(t)) == {"tx": False, "night": False, "vrp": False}
     assert u.due(datetime.fromtimestamp(t.timestamp() + 1799, TAIPEI)) == []
     for k in (1, 2):
-        assert asyncio.run(u.tick(datetime.fromtimestamp(t.timestamp() + 1800 * k, TAIPEI))) == {"tx": False, "vrp": False}
+        assert asyncio.run(u.tick(datetime.fromtimestamp(t.timestamp() + 1800 * k, TAIPEI))) == {"tx": False, "night": False, "vrp": False}
     assert u.due(datetime.fromtimestamp(t.timestamp() + 1800 * 3, TAIPEI)) == []        # 一天最多 3 次
     assert r.calls.count("tx") == 3 and not (tmp_path / "s.json").exists()
-    assert u.due(tpe(2026, 10, 23, 15, 10)) == ["tx", "vrp"]                            # 隔天重新來
+    assert u.due(tpe(2026, 10, 23, 15, 10)) == ["tx", "night", "vrp"]                   # 隔天重新來
 
 
 def test_command_is_a_low_priority_subprocess():

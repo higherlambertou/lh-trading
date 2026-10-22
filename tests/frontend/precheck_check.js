@@ -25,6 +25,14 @@ for (const [n, p] of Object.entries(fx)) {
   const t = html(React.createElement(C.PrecheckBody, { p }));
   check(`畫面(${n})：沒有怪值`, !BAD.test(t), t);
 }
+const ev = fx.evening, wt = fx.waiting, br = fx.broken;
+check("白天沒有夜盤那一行", L.nightLine(f) === null && L.nextDayLine(f) === null && L.showDayLine(f));
+check("傍晚：夜盤與下一個日盤", L.nightLine(ev) === "11/10 晚上的夜盤預期振幅約 899 點（68% 區間 600～1,364；近 20 個夜盤平均 684）"
+  && L.nextDayLine(ev) === "下一個日盤預期振幅約 693 點（68% 區間 497～1,017；近 20 日均 580）", [L.nightLine(ev), L.nextDayLine(ev)]);
+check("傍晚：今天日盤的『還沒有』不顯示", !L.showDayLine(ev) && !html(React.createElement(C.PrecheckBody, { p: ev })).includes("今天預期日盤振幅"));
+check("等資料時寫原因", L.nightLine(wt).startsWith("11/10 晚上的夜盤預期振幅：等 11-10 收盤") && L.nextDayLine(wt).startsWith("下一個日盤預期振幅：等 11-10 收盤"), [L.nightLine(wt), L.nextDayLine(wt)]);
+check("計算失敗只影響那一行", L.nightLine(br) === "夜盤預期振幅：計算失敗（細節在後端 log）" && L.nextDayLine(br) === null && html(React.createElement(C.PrecheckBody, { p: br })).includes("隱含波動"));
+check("夜盤那一行有月亮", html(React.createElement(C.PrecheckBody, { p: ev })).includes("🌙 11/10 晚上的夜盤"));
 const raw = renderToStaticMarkup(React.createElement(C.PrecheckBody, { p: f }));
 check("IV 偏高與有事件時標黃色、有 📅", (raw.match(/color:#ffc107/g) || []).length >= 2 && raw.includes("📅"), raw);
 check("沒事件時不標黃", !renderToStaticMarkup(React.createElement(C.PrecheckBody, { p: q })).includes("📅"));

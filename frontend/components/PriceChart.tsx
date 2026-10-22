@@ -7,8 +7,7 @@ import type { IChartApi, IPriceLine, ISeriesApi, UTCTimestamp } from "lightweigh
 import { api } from "@/lib/api";
 import {
   aggregate, DEFAULT_TOGGLES, INTERVALS, mergeBars, parseToggles, positionLines, sameBars, sessionLevels, sma, TZ_OFFSET, vwap,
-  type Bar, type Interval, type Toggles,
-} from "@/lib/chart";
+  type Bar, type Interval, type Toggles, FILL_COLOR, needsReload } from "@/lib/chart";
 import type { Position, Watch } from "@/lib/api";
 import { BAND_KEYS, KINDS, bandLines, bandText, edge, fmt as fmtP, hasClose, pickBand, type BandKey, type Kind, type RangeData } from "@/lib/range";
 
@@ -76,6 +75,7 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
   const [range, setRange] = useState<RangeData | null>(null);
   const [rangeErr, setRangeErr] = useState<string | null>(null);
   const lastT = useRef<number>(0);
+  const fillsAt = useRef(0);                                         // 最近一次回補的時間（發現 66）
 
   // 讀回上次的設定（隱私模式等沒有 localStorage 就用預設）
   useEffect(() => {
@@ -148,7 +148,9 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
         const [r, pos, w] = await Promise.allSettled([api.market.bars(q), api.position.list(), api.order.watches()]);
         if (stop) return;
         if (r.status === "fulfilled") {
-          first = false;
+          const reload = needsReload(fillsAt.current, r.value.fills_at) && !first;
+          fillsAt.current = Math.max(fillsAt.current, r.value.fills_at ?? 0);
+          first = reload;                                              // 有新的回補（舊的分鐘）：下一次整段重抓
           setBars((prev) => {
             const m = mergeBars(prev, r.value.bars, r.value.live);
             lastT.current = m.length ? m[m.length - 1].t : lastT.current;
@@ -195,7 +197,8 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
     const key = `${interval}|${agg.length ? agg[0].t : 0}`;           // 換週期或換了起點才重設視野；開關均線不動使用者的縮放
     const range = ts.getVisibleLogicalRange();
     const atEnd = !range || drawn.current.n === 0 || range.to >= drawn.current.n - 1;   // 使用者本來就看著最新那一根才跟著走
-    r.candle.setData(agg.map((b) => ({ time: time(b.t), open: b.o, high: b.h, low: b.l, close: b.c })));
+    r.candle.setData(agg.map((b) => ({ time: time(b.t), open: b.o, high: b.h, low: b.l, close: b.c,
+      ...(b.f ? { color: FILL_COLOR, wickColor: FILL_COLOR, borderColor: FILL_COLOR } : {}) })));      // 回補的 K 棒畫成灰色（發現 66）
     r.volume.setData(agg.map((b) => ({ time: time(b.t), value: b.v, color: b.c >= b.o ? `${UP}66` : `${DOWN}66` })));
     const closes = agg.map((b) => b.c);
     const series = (vals: (number | null)[], on: boolean) =>

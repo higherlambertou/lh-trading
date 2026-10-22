@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS flow_1m(
   buy_vol INTEGER NOT NULL, sell_vol INTEGER NOT NULL, unk_vol INTEGER NOT NULL,
   open REAL, high REAL, low REAL, close REAL, source TEXT DEFAULT 'live',
   PRIMARY KEY(code, ts));
+CREATE TABLE IF NOT EXISTS bars_fill_1m(
+  code TEXT NOT NULL, ts INTEGER NOT NULL,
+  open REAL, high REAL, low REAL, close REAL, volume INTEGER, filled_at REAL,
+  PRIMARY KEY(code, ts));
 CREATE TABLE IF NOT EXISTS indicator_daily(
   date TEXT PRIMARY KEY,
   hurst REAL, hurst_z REAL, hurst_state TEXT, direction INTEGER,
@@ -176,6 +180,33 @@ class MarketStore:
             args.append(int(until_ts))
         with closing(self._conn()) as c:
             return [dict(r) for r in c.execute(sql + " ORDER BY ts", args).fetchall()]
+
+    # ── 走勢圖缺口的回補 K 棒（update.md 發現 66；只給走勢圖用，flow_1m 與研究都不讀）────────
+    def flow_minutes(self, code: str, since_ts: float, until_ts: float) -> set[int]:
+        """flow_1m 在 [since, until) 有資料的分鐘（起點 epoch 秒）。"""
+        with closing(self._conn()) as c:
+            return {int(r[0]) for r in c.execute("SELECT ts FROM flow_1m WHERE code=? AND ts>=? AND ts<?", (code, int(since_ts), int(until_ts)))}
+
+    def upsert_fill_1m(self, code: str, rows: list[tuple[int, float, float, float, float, int]], filled_at: float) -> int:
+        if not rows:
+            return 0
+        with closing(self._conn()) as c:
+            c.executemany("INSERT OR REPLACE INTO bars_fill_1m VALUES (?,?,?,?,?,?,?,?)", [(code, *r, filled_at) for r in rows])
+            c.commit()
+        return len(rows)
+
+    def fill_1m(self, code: str, since_ts: float) -> list[dict[str, Any]]:
+        with closing(self._conn()) as c:
+            return [dict(r) for r in c.execute("SELECT * FROM bars_fill_1m WHERE code=? AND ts>=? ORDER BY ts", (code, int(since_ts)))]
+
+    def fill_minutes(self, code: str, since_ts: float, until_ts: float) -> set[int]:
+        with closing(self._conn()) as c:
+            return {int(r[0]) for r in c.execute("SELECT ts FROM bars_fill_1m WHERE code=? AND ts>=? AND ts<?", (code, int(since_ts), int(until_ts)))}
+
+    def fills_at(self, code: str) -> float:
+        with closing(self._conn()) as c:
+            v = c.execute("SELECT MAX(filled_at) FROM bars_fill_1m WHERE code=?", (code,)).fetchone()[0]
+        return float(v or 0.0)
 
     def flow_1m_span(self, code: str) -> dict[str, Any]:
         with closing(self._conn()) as c:

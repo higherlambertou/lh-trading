@@ -102,6 +102,17 @@ watchdog log 有 `判定券商連線假死(stale) → 正常關閉 PID=… 後�
 同一種錯誤重複發生時，app log 只記第一次的完整 traceback，之後每 5 分鐘一行「（同樣的錯誤，過去 5 分鐘又發生 n 次…）」，恢復時記「恢復（先前連續失敗 n 次）」。
 關閉：`.env` 設 `SESSION_WATCH=false`（重啟後端）。期交所日資料的自動更新：`data/taifex/update_state.json` 是最後成功的日期，app log 搜「期交所資料更新」；關閉 `TAIFEX_UPDATE=false`。
 
+### 系統健康、備份的雲端副本（update.md 發現 66）
+
+〈分析〉頁最上面的〈系統健康〉一次看：券商連線、近 7 天自動重啟、備份與雲端副本、期交所資料更新、lh-intel、磁碟與 log（API：`/api/system/health`）。
+
+**備份的雲端副本（Google Drive）**：
+1. 裝「Google Drive 電腦版」並登入，Finder 側邊欄會出現 Google Drive（路徑在 `~/Library/CloudStorage/GoogleDrive-你的帳號/我的雲端硬碟`）。
+2. `.env` 加一行 `BACKUP_MIRROR_DIR="/Users/…/Library/CloudStorage/GoogleDrive-你的帳號/我的雲端硬碟/lh-trading-backup"`，重啟後端。
+3. 手動跑一次確認：`python -m core.backup`（最後一行會印「雲端副本：ok → …」）。第一次 macOS 可能跳出「要存取 Google Drive 的檔案」，按允許。
+之後每個交易日 14:00 本機備份完就複製一份過去（保留 14 天）；Google Drive 沒開時只略過、不影響本機備份，〈系統健康〉會變黃。
+備份內容是成交紀錄、IV 歷史、日誌等資料庫；**不含** `.env`、憑證與金鑰。
+
 ### 查看策略列表
 
 ```bash
