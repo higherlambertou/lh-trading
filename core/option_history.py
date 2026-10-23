@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import html
 import io
 import re
 import sys
@@ -49,6 +50,12 @@ FIELDS = ("date", "kind", "expiry", "expiry_date", "session", "right", "strike",
 MONTHLY = re.compile(r"\d{6}")
 WEEKLY = re.compile(r"\d{6}[WF]\d")
 SESSION = {"一般": "G", "": "G", "盤後": "A"}
+FSP_URL = "https://www.taifex.com.tw/cht/5/optIndxFSP"
+FSP_FILE = "opt_fsp.csv"
+SHORT_DIR = "optw"
+SHORT_START = (2012, 11)          # 週選擇權 2012-11-28 第一次到期
+SHORT_MAX_DAYS = 7                # 短天期：距到期不超過這麼多個日曆天
+SHORT_BAND = 0.06
 
 
 def _fmt(x: Optional[float]) -> str:
@@ -235,9 +242,146 @@ def status(directory: Path = DEFAULT_DIR) -> dict[str, Any]:
     return {"files": len(files), "first": files[0].name if files else None, "last": files[-1].name if files else None, "mb": round(size / 1e6, 1)}
 
 
+# ── 短天期（週選研究用，update.md 發現 71）─────────────────────────
+# 2025-12 以前的原始檔沒有「契約到期日」，上面的近價鏈因此沒有週選擇權。到期日與最終結算價改用期交所〈最後結算價—指數選擇權〉
+# 這張官方表（每個到期代碼一列：最後結算日、代碼、最後結算價，含週三與週五週選），短天期的鏈另外存在 data/taifex/optw/。
+
+def parse_fsp(text: str) -> list[tuple[str, str, float]]:
+    """〈最後結算價—指數選擇權〉查詢結果（HTML，只勾臺指選擇權）→ [(最後結算日 ISO, 到期代碼, 最後結算價)]，依日期排序。
+    期交所的表有的列少了 </TR>，兩組擠在同一列，所以依序找「日期、代碼、數字」三格一組。"""
+    if "TXO" not in text:
+        raise ValueError("不是臺指選擇權的最後結算價表")
+    cells = [html.unescape(re.sub(r"<[^>]+>", "", c)).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", text, re.S | re.I)]
+    out: set[tuple[str, str, float]] = set()
+    i = 0
+    while i + 2 < len(cells):
+        d, code, px = cells[i], cells[i + 1], cells[i + 2].replace(",", "")
+        if re.fullmatch(r"\d{4}/\d{2}/\d{2}", d) and (MONTHLY.fullmatch(code) or WEEKLY.fullmatch(code)) and re.fullmatch(r"\d+(\.\d+)?", px):
+            if float(px) > 0:
+                out.add((d.replace("/", "-"), code, float(px)))
+            i += 3
+        else:
+            i += 1
+    return sorted(out)
+
+
+def fetch_fsp(directory: Path = DEFAULT_DIR, start_year: int = SHORT_START[0], today: Optional[date] = None,
+              opener: Callable[..., Any] = urllib.request.urlopen) -> int:
+    """下載臺指選擇權全部的最後結算價（一次查整段）存成 data/taifex/opt_fsp.csv；回傳列數。"""
+    today = today or date.today()
+    body = urllib.parse.urlencode({"commodityIds": "2", "_all": "on", "start_year": str(start_year), "start_month": "01",
+                                   "end_year": str(today.year), "end_month": f"{today.month:02d}", "button": "送出查詢"}).encode()
+    with opener(urllib.request.Request(FSP_URL, data=body, headers={"User-Agent": "Mozilla/5.0"}), timeout=180) as resp:
+        rows = parse_fsp(resp.read().decode("utf-8", errors="replace"))
+    if len(rows) < 12:
+        raise ValueError(f"最後結算價只有 {len(rows)} 列（查詢失敗？）")
+    path = directory / FSP_FILE
+    tmp = path.with_suffix(".part")
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(("date", "code", "fsp"))
+        w.writerows((d, c, _fmt(v)) for d, c, v in rows)
+    tmp.replace(path)
+    return len(rows)
+
+
+def load_fsp(directory: Path = DEFAULT_DIR) -> dict[str, tuple[date, float]]:
+    """到期代碼 → (最後結算日, 最後結算價)。"""
+    with open(directory / FSP_FILE, encoding="utf-8", newline="") as f:
+        return {r["code"]: (date.fromisoformat(r["date"]), float(r["fsp"])) for r in csv.DictReader(f)}
+
+
+def code_kind(code: str) -> str:
+    """'202610' 月選 M；'202610W2' 週三週選 W；'202610F3' 週五週選 F。"""
+    return "M" if MONTHLY.fullmatch(code) else code[6]
+
+
+def reduce_short(text: str, fsp: dict[str, tuple[date, float]]) -> list[dict[str, Any]]:
+    """一個月的原始行情 → 短天期的列：到期代碼在最後結算價表裡、距到期 0～SHORT_MAX_DAYS 個日曆天、一般時段、履約價在遠期價 ± SHORT_BAND 內。
+    遠期價：到期前用當天結算價的買賣權平價；到期當天直接用最後結算價（官方值，不再反推）。"""
+    recs: list[dict[str, Any]] = []
+    pairs: dict[tuple[str, str], dict[float, dict[str, float]]] = {}
+    for r in csv.DictReader(io.StringIO(text.lstrip("﻿"))):
+        code = (r.get("到期月份(週別)") or "").strip()
+        if (r.get("契約") or "").strip() != "TXO" or code not in fsp or SESSION.get((r.get("交易時段") or "").strip()) != "G":
+            continue
+        side = {"買權": "C", "賣權": "P"}.get((r.get("買賣權") or "").strip())
+        strike = _num(r.get("履約價", ""))
+        if side is None or not strike:
+            continue
+        day = _iso(r["交易日期"])
+        dte = (fsp[code][0] - date.fromisoformat(day)).days
+        if not 0 <= dte <= SHORT_MAX_DAYS:
+            continue
+        rec = {"date": day, "expiry": code, "session": "G", "right": side, "strike": strike, "settle": _num(r.get("結算價", "")),
+               "close": _num(r.get("收盤價", "")), "bid": _num(r.get("最後最佳買價", "")), "ask": _num(r.get("最後最佳賣價", "")),
+               "volume": _num(r.get("成交量", "")), "oi": _num(r.get("未沖銷契約數", ""))}
+        recs.append(rec)
+        if rec["settle"] is not None and rec["settle"] > 0:
+            pairs.setdefault((day, code), {}).setdefault(strike, {})[side] = rec["settle"]
+    fwd: dict[tuple[str, str], Optional[float]] = {}
+    out = []
+    for rec in recs:
+        key = (rec["date"], rec["expiry"])
+        if key not in fwd:
+            ed, px = fsp[rec["expiry"]]
+            fwd[key] = px if ed.isoformat() == rec["date"] else parity_forward(pairs.get(key, {}))
+        F = fwd[key]
+        if not F or abs(rec["strike"] - F) > F * SHORT_BAND:
+            continue
+        out.append({**rec, "kind": code_kind(rec["expiry"]), "expiry_date": fsp[rec["expiry"]][0].isoformat(), "F": round(F, 2)})
+    out.sort(key=lambda x: (x["date"], x["expiry"], x["right"], x["strike"]))
+    return out
+
+
+def fetch_short(directory: Path = DEFAULT_DIR, today: Optional[date] = None, pause: float = 1.0,
+                opener: Callable[..., Any] = urllib.request.urlopen, log: Callable[[str], None] = print) -> dict[str, int]:
+    """每個月下載一次原始行情、整理成短天期的列存成 optw/short_YYYY_MM.csv.gz（要先有 opt_fsp.csv）；已經有而且那個月已結束的不重抓。"""
+    today = today or date.today()
+    fsp = load_fsp(directory)
+    out = directory / SHORT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    got = {"downloaded": 0, "skipped": 0, "failed": 0, "rows": 0}
+    for name, a, b in months(SHORT_START[0], today):
+        if (a.year, a.month) < SHORT_START:
+            continue
+        f = out / name.replace("chain_", "short_")
+        if f.exists() and f.stat().st_size > 0 and b < today:
+            got["skipped"] += 1
+            continue
+        body = urllib.parse.urlencode({"down_type": "1", "commodity_id": "TXO", "commodity_id2": "",
+                                       "queryStartDate": f"{a:%Y/%m/%d}", "queryEndDate": f"{b:%Y/%m/%d}"}).encode()
+        try:
+            with opener(urllib.request.Request(OPT_URL, data=body), timeout=180) as resp:
+                text = resp.read().decode("cp950", errors="replace")
+            if not text.lstrip("﻿").startswith(OPT_HEADER):
+                raise ValueError("不是預期的 CSV（可能是錯誤頁）")
+            rows = reduce_short(text, fsp)
+            if not rows:
+                raise ValueError("這個月整理不出任何一列")
+            got["rows"] += write_rows(f, rows)
+            got["downloaded"] += 1
+            log(f"  {f.name}：{len(rows)} 列")
+        except Exception as e:                                                        # noqa: BLE001
+            got["failed"] += 1
+            print(f"下載失敗 {f.name}：{e}", file=sys.stderr)
+        time.sleep(pause)
+    return got
+
+
+def iter_short(directory: Path = DEFAULT_DIR) -> Iterator[dict[str, Any]]:
+    """依日期順序讀回短天期的列（數字欄位轉成 float，空的是 None）。"""
+    for f in sorted((directory / SHORT_DIR).glob("short_*.csv.gz")):
+        with gzip.open(f, "rt", encoding="utf-8", newline="") as fh:
+            for r in csv.DictReader(fh):
+                for k in ("strike", "F", "settle", "close", "bid", "ask", "volume", "oi"):
+                    r[k] = float(r[k]) if r[k] != "" else None
+                yield r
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m core.option_history", description="期交所選擇權近價鏈歷史（回測用）")
-    ap.add_argument("what", choices=("fetch", "status"))
+    ap.add_argument("what", choices=("fetch", "status", "fetch-short"))
     ap.add_argument("--dir", default=str(DEFAULT_DIR))
     ap.add_argument("--start-year", type=int, default=START_YEAR)
     a = ap.parse_args(argv)
@@ -245,6 +389,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if a.what == "status":
         print(status(d))
         return 0
+    if a.what == "fetch-short":
+        print(f"最後結算價 {fetch_fsp(d)} 列 → {d / FSP_FILE}")
+        r = fetch_short(d)
+        print(f"短天期：下載 {r['downloaded']} 個月（{r['rows']:,} 列）、略過 {r['skipped']} 個月、失敗 {r['failed']} 個月 → {d / SHORT_DIR}")
+        return 0 if not r["failed"] else 1
     r = fetch(d, a.start_year)
     print(f"下載 {r['downloaded']} 個月（{r['rows']:,} 列）、略過 {r['skipped']} 個月、失敗 {r['failed']} 個月 → {d / 'opt'}")
     return 0 if not r["failed"] else 1

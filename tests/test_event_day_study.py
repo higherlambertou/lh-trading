@@ -306,7 +306,7 @@ def test_study_not_imported_by_trading_modules():
     import pathlib
     root = pathlib.Path(ed.__file__).resolve().parent.parent
     for p in list((root / "strategies").glob("*.py")) + list((root / "core").glob("*.py")) + list((root / "api").glob("*.py")) + [root / "main.py"]:
-        if p.name == "event_day_study.py":
+        if p.name in ("event_day_study.py", "weekly_straddle_study.py", "call_put_study.py"):   # 另外兩個離線研究借用 CPI 日期做描述（發現 71、74）
             continue
         assert "event_day_study" not in p.read_text(encoding="utf-8"), p
 

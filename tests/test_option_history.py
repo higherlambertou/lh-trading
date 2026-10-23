@@ -258,3 +258,86 @@ def test_status(tmp_path):
         f.write("x")
     s = oh.status(tmp_path)
     assert s["files"] == 1 and s["first"] == s["last"] == "chain_2026_01.csv.gz"
+
+
+# ── 短天期（週選研究，發現 71）──────────────────────────────────────
+
+FSP_ROWS = [("2026/10/21", "202610 ", "46650"), ("2026/10/16", "202610F3", "47260"), ("2026/10/14", "202610W2", "48,868"), ("2026/10/07", "202610W1", "-")]
+FSP_HTML = ("<html><title>最後結算價-指數選擇權</title><table><thead><TR><th>最後<br>結算日</th><th>契約<br>月份</th><th>臺指選擇權<br> （TXO）</th></TR></thead><tbody>"
+            "<TR class='12bk'><TD width='14%'>2026/10/21</TD><TD>202610 </TD><TD align=right>46650</TD>"          # 真實的表：這一列少了 </TR>
+            "<TR><TD>2026/10/16</TD><TD>202610F3</TD><TD>47260</TD></TR><TR><TD>2026/10/14</TD><TD>202610W2</TD><TD>48,868</TD></TR>"
+            "<TR><TD>2026/10/07</TD><TD>202610W1</TD><TD>-</TD></TR><TR><TD>備註</TD><TD>x</TD><TD>2026/01/01</TD></TR></tbody></table></html>")
+
+
+def test_parse_fsp_reads_triplets_even_when_a_row_lost_its_closing_tag():
+    assert oh.parse_fsp(FSP_HTML) == [("2026-10-14", "202610W2", 48868.0), ("2026-10-16", "202610F3", 47260.0), ("2026-10-21", "202610", 46650.0)]
+    with pytest.raises(ValueError):
+        oh.parse_fsp("<html>錯誤頁</html>")
+
+
+def test_code_kind():
+    assert [oh.code_kind(c) for c in ("202610", "202610W2", "202610F3")] == ["M", "W", "F"]
+
+
+FSP = {"202610W2": (date(2026, 10, 14), 46123.0), "202610": (date(2026, 10, 21), 46650.0)}
+
+
+def test_reduce_short_keeps_codes_in_the_fsp_table_within_7_days_one_session_and_the_band():
+    raw = text(chain_lines("2026/10/06", "202610W2", 46000.0, days=8),                     # 距到期 8 天：不要
+               chain_lines("2026/10/07", "202610W2", 46100.0, days=7),
+               chain_lines("2026/10/13", "202610W2", 46200.0, days=1),
+               chain_lines("2026/10/13", "202610W2", 46200.0, days=1, session="盤後"),       # 盤後：不要
+               chain_lines("2026/10/13", "202610", 46210.0, days=8),                        # 月選距到期 8 天：不要
+               chain_lines("2026/10/14", "202610", 46220.0, days=7),
+               chain_lines("2026/10/13", "202611W1", 46200.0, days=9),                      # 不在最後結算價表：不要
+               [line("2026/10/14", "202610W2", k, r, "0", close="0.1") for k in range(43400, 48900, 100) for r in ("C", "P")])   # 到期當天
+    rows = oh.reduce_short(raw, FSP)
+    keys = sorted({(r["date"], r["expiry"]) for r in rows})
+    assert keys == [("2026-10-07", "202610W2"), ("2026-10-13", "202610W2"), ("2026-10-14", "202610"), ("2026-10-14", "202610W2")]
+    assert all(r["session"] == "G" and abs(r["strike"] - r["F"]) <= r["F"] * oh.SHORT_BAND for r in rows)
+    assert len(rows) == len({(r["date"], r["expiry"], r["right"], r["strike"]) for r in rows})            # 盤後的列沒有混進來變成重複
+    F = {(r["date"], r["expiry"]): r["F"] for r in rows}
+    assert F[("2026-10-13", "202610W2")] == pytest.approx(46200.0, abs=0.5) and F[("2026-10-14", "202610")] == pytest.approx(46220.0, abs=0.5)
+    assert F[("2026-10-14", "202610W2")] == 46123.0                                         # 到期當天：遠期價＝官方最後結算價
+    assert {r["kind"] for r in rows if r["expiry"] == "202610W2"} == {"W"} and {r["expiry_date"] for r in rows if r["expiry"] == "202610"} == {"2026-10-21"}
+    assert [(r["date"], r["expiry"], r["right"], r["strike"]) for r in rows] == sorted((r["date"], r["expiry"], r["right"], r["strike"]) for r in rows)
+
+
+def test_reduce_short_skips_a_day_whose_forward_cannot_be_found():
+    raw = text([line("2026/10/13", "202610W2", 46000, "C", "300")])                          # 只有一檔：平價算不出遠期價
+    assert oh.reduce_short(raw, FSP) == []
+
+
+def fsp_file(tmp_path, rows):
+    with open(tmp_path / oh.FSP_FILE, "w", encoding="utf-8") as f:
+        f.write("date,code,fsp\n" + "".join(f"{d},{c},{v}\n" for d, c, v in rows))
+
+
+def test_fetch_fsp_posts_the_query_and_saves_the_table(tmp_path):
+    many = FSP_HTML.replace("</tbody>", "".join(f"<TR><TD>2025/{m:02d}/15</TD><TD>2025{m:02d}</TD><TD>{20000 + m}</TD></TR>" for m in range(1, 13)) + "</tbody>")
+    calls = []
+
+    def opener(req, timeout=0):
+        calls.append(req.data.decode())
+        return Resp(many.encode("utf-8"))
+    assert oh.fetch_fsp(tmp_path, 2012, today=date(2026, 10, 22), opener=opener) == 15
+    assert "commodityIds=2" in calls[0] and "start_year=2012" in calls[0] and "end_year=2026" in calls[0] and "end_month=10" in calls[0]
+    got = oh.load_fsp(tmp_path)
+    assert got["202610W2"] == (date(2026, 10, 14), 48868.0) and got["202501"] == (date(2025, 1, 15), 20001.0) and len(got) == 15
+    with pytest.raises(ValueError):                                                         # 只有幾列：當成查詢失敗，不覆蓋
+        oh.fetch_fsp(tmp_path, 2012, today=date(2026, 10, 22), opener=lambda req, timeout=0: Resp(FSP_HTML.encode("utf-8")))
+    assert len(oh.load_fsp(tmp_path)) == 15
+
+
+def test_fetch_short_saves_each_month_skips_finished_ones_and_reads_back(tmp_path, capsys):
+    fsp_file(tmp_path, [("2012-11-28", "201211W4", "7300"), ("2012-12-05", "201212W1", "7400")])
+    good = text(chain_lines("2012/11/27", "201211W4", 7300.0, days=1, step=50), chain_lines("2012/11/30", "201212W1", 7350.0, days=5, step=50))
+    calls = []
+    got = oh.fetch_short(tmp_path, today=date(2013, 1, 10), pause=0, opener=fake_opener([good, "<html>錯誤</html>", good], calls), log=lambda s: None)
+    assert got["downloaded"] == 2 and got["failed"] == 1 and len(calls) == 3 and "queryStartDate=2012%2F11%2F01" in calls[0]
+    assert sorted(p.name for p in (tmp_path / oh.SHORT_DIR).glob("*.gz")) == ["short_2012_11.csv.gz", "short_2013_01.csv.gz"]
+    assert "short_2012_12" in capsys.readouterr().err
+    got2 = oh.fetch_short(tmp_path, today=date(2013, 1, 10), pause=0, opener=fake_opener([good, good], []), log=lambda s: None)
+    assert got2["skipped"] == 1 and got2["downloaded"] == 2                                  # 失敗的月補抓、當月重抓
+    rows = list(oh.iter_short(tmp_path))
+    assert {r["expiry"] for r in rows} == {"201211W4", "201212W1"} and isinstance(rows[0]["strike"], float) and rows[0]["date"] <= rows[-1]["date"]
