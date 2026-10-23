@@ -35,7 +35,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 ```
 **Windows（PowerShell，開發機）**：`.sh` 用了 `lsof`／`/tmp`／`trap`，改用 `run_sim.ps1`／`run_live.ps1`（`powershell -ExecutionPolicy Bypass -File .\run_live.ps1`；Ctrl+C 停止；log 在 `%TEMP%\lh_*.out.log`／`.err.log`，每次重啟覆寫）。長期掛機正式交易請用 Linux／macOS 家機的 `.sh`；`.ps1` 沒有位址檢查與換月。
 
-**watchdog 要點**（完整行為見 ARCHITECTURE.md〈watchdog〉）：每 15s 看 `/health`，六態——`healthy`／`nobroker`（200 但沒連券商）／`down`（逾時＝凍結）／`noiface`（`BIND_HOST` 不在本機＝Tailscale 斷線，不殺後端）／`rollover`（後端要求換月重啟，正常關閉後重啟）／`stale`（後端說券商連線假死：行程活著但查詢一直連線錯誤或報價停了，`core/session_watch.py`，正常關閉後重啟；只在交易時段判斷，發現 65）。
+**watchdog 要點**（完整行為見 ARCHITECTURE.md〈watchdog〉）：每 15s 看 `/health`，六態——`healthy`／`nobroker`（200 但沒連券商）／`down`（逾時＝凍結）／`noiface`（`BIND_HOST` 不在本機＝Tailscale 斷線，不殺後端）／`rollover`（後端要求換月重啟，正常關閉後重啟）／`stale`（後端說券商連線假死：行程活著但查詢一直連線錯誤或報價停了，`core/session_watch.py`，正常關閉後重啟；只在交易時段判斷，發現 65；颱風假這類沒開盤的日子：日盤重啟一次後新連線仍沒有任何報價就不再重啟、推播一次，發現 76）。
 連上過之後 `nobroker`／`down` 連續 2 次（≈30s）就 kill -9 並重啟。**腳本鐵則**：log 用 `>>`（`>` 會清空正在跑那個的 log）；變數後面緊接全形標點要寫 `${var}`；
 長等待一律用 `isleep`（背景 sleep＋wait，否則 `pkill` 會被拖最長 10 分鐘）；`main.py` 啟動前先試綁 `BIND_HOST`（`core/bind_check.py`）。測試 `tests/test_watchdog_scripts.py`。
 

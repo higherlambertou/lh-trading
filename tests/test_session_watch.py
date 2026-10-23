@@ -3,6 +3,7 @@ broker 的鉤子、/api/health 的回報、休市日曆的快取、週末放慢�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import date, datetime, timedelta
 
@@ -177,6 +178,171 @@ def test_b_night_needs_a_quote_tonight():
     assert "夜盤中" in evb(w, tpe(2026, 10, 22, 0, 30))                                 # 過了午夜還是同一個夜盤
     w.on_quote(ts(2026, 10, 22, 4, 58))
     assert evb(w, tpe(2026, 10, 22, 5, 30)) is None                                     # 05:00 以後不判斷
+
+
+# ── 颱風假：重啟之後還是沒有報價＝沒開盤（發現 76）────────────────────
+
+def chk(w, now, subs=True):
+    return w.check(now.timestamp(), now, sw.live_window(now, UNKNOWN), subs)
+
+
+def test_typhoon_day_replay_one_restart_then_quiet(tmp_path, monkeypatch):
+    """2026-10-23 颱風假：昨晚的行程 08:48 判假死 → watchdog 重啟 → 新行程連上之後 180 秒仍沒有報價 → 不再回報 stale，之後整個日盤都安靜。"""
+    sent = []
+    monkeypatch.setattr("core.notify.notify", lambda *a, **k: sent.append((a, k)))
+    state = tmp_path / "state.json"
+    old = watch(ts(2026, 10, 22, 23, 26))
+    old.load_state(state)
+    old.on_quote(ts(2026, 10, 23, 4, 59))                                                     # 夜盤收到 04:59 為止
+    assert chk(old, tpe(2026, 10, 23, 8, 47, 59)) is None
+    r = chk(old, tpe(2026, 10, 23, 8, 48))
+    assert r and "日盤中 180 秒" in r and old.stale_reason                                      # 第一次：照舊判定（兩次真實事故重啟都會好）
+    assert chk(old, tpe(2026, 10, 23, 8, 48, 15)) and sent == []                                # 還是 stale；沒有「沒開盤」的通知
+    assert json.loads(state.read_text(encoding="utf-8"))["day_stale"]["date"] == "2026-10-23"
+
+    new = watch(ts(2026, 10, 23, 8, 49))                                                      # watchdog 重啟：新行程、新連線、狀態檔讀回
+    new.load_state(state)
+    assert chk(new, tpe(2026, 10, 23, 8, 51, 59)) is None and new.closed_reason is None          # 剛連上的寬限
+    assert chk(new, tpe(2026, 10, 23, 8, 52)) is None                                          # 180 秒了：這次不是 stale
+    assert new.stale_reason is None and "仍沒有任何報價" in new.closed_reason
+    assert len(sent) == 1 and "沒開" in sent[0][0][0] and sent[0][1]["key"] == "sessionwatch:closed:2026-10-23"
+    for m in range(53, 60):                                                                   # 之後整個日盤都不再 stale、不再重複通知
+        assert chk(new, tpe(2026, 10, 23, 9, m % 60 if m < 60 else 0)) is None
+    assert chk(new, tpe(2026, 10, 23, 13, 44)) is None and len(sent) == 1
+    snap = new.snapshot(ts(2026, 10, 23, 14, 21))                                              # 日盤窗口結束以後，畫面還看得到今天的備註
+    assert snap["stale_reason"] is None and "仍沒有任何報價" in snap["closed_guess"]
+    assert new.snapshot(ts(2026, 10, 24, 8, 0))["closed_guess"] is None                       # 隔天就不顯示
+
+
+def test_reconnect_inside_the_same_process_counts_like_a_restart(monkeypatch):
+    """判了假死、watchdog 還沒來得及重啟，broker 自己重連了：新連線 180 秒仍沒報價，同樣是沒開盤（記憶體裡的紀錄要對）。"""
+    monkeypatch.setattr("core.notify.notify", lambda *a, **k: None)
+    w = watch(ts(2026, 10, 23, 8, 0))
+    w.on_quote(ts(2026, 10, 23, 4, 59))
+    assert chk(w, tpe(2026, 10, 23, 8, 48)) and w.prior_day_stale == {"date": "2026-10-23", "at": ts(2026, 10, 23, 8, 48)}
+    assert chk(w, tpe(2026, 10, 23, 8, 48, 15))                                               # 同一個連線：還是 stale，不能自己豁免自己
+    w.on_connected(ts(2026, 10, 23, 8, 49))
+    assert chk(w, tpe(2026, 10, 23, 8, 50)) is None and w.stale_reason is None and w.closed_reason is None      # 重連：stale 解除，還在寬限
+    assert chk(w, tpe(2026, 10, 23, 8, 52)) is None and "仍沒有任何報價" in w.closed_reason
+
+
+def test_typhoon_rule_never_hides_a_real_stale_after_quotes_return(monkeypatch):
+    monkeypatch.setattr("core.notify.notify", lambda *a, **k: None)
+    w = watch(ts(2026, 10, 23, 8, 49))
+    w.prior_day_stale = {"date": "2026-10-23", "at": ts(2026, 10, 23, 8, 48)}
+    assert chk(w, tpe(2026, 10, 23, 8, 52)) is None and w.closed_reason                       # 沒開盤的猜測
+    w.on_quote(ts(2026, 10, 23, 9, 30))                                                       # 其實 09:30 才有報價（遲開盤之類）
+    assert chk(w, tpe(2026, 10, 23, 9, 31)) is None and w.closed_reason is None and w.closed_note is None
+    r = chk(w, tpe(2026, 10, 23, 9, 33))                                                      # 之後又安靜 180 秒＝真的假死，照舊
+    assert r and "日盤中 180 秒" in r and w.stale_reason
+
+
+def test_futile_needs_all_conditions():
+    """prior 是今天、比這次連線早、連線之後沒有任何報價，三個都要。"""
+    now = tpe(2026, 10, 23, 8, 52)
+
+    def verdict(prior, conn, quote=None):
+        w = watch(conn)
+        w.prior_day_stale = prior
+        if quote:
+            w.on_quote(quote)
+        return w.evaluate(now.timestamp(), now, "day", True), w.closed_guess(now.timestamp(), now, "day", True)
+    prior = {"date": "2026-10-23", "at": ts(2026, 10, 23, 8, 48)}
+    assert verdict(prior, ts(2026, 10, 23, 8, 49)) == (None, "重啟後 180 秒仍沒有任何報價")
+    assert verdict(None, ts(2026, 10, 23, 8, 49))[0] and verdict(None, ts(2026, 10, 23, 8, 49))[1] is None          # 沒有 prior：照舊 stale
+    assert verdict({**prior, "date": "2026-10-22"}, ts(2026, 10, 23, 8, 49))[0]                                     # 昨天的 prior 不算
+    assert verdict({**prior, "at": ts(2026, 10, 23, 8, 50)}, ts(2026, 10, 23, 8, 49))[0]                            # 同一個連線自己判的：不能自己豁免自己
+    assert verdict(prior, ts(2026, 10, 23, 8, 49), quote=ts(2026, 10, 23, 8, 50)) == (None, None)                    # 連線後有過報價：靜了 <180 秒，兩邊都沒有
+    # 連線後有過報價、又靜了 180 秒以上：正常規則（stale），不是沒開盤
+    now2 = tpe(2026, 10, 23, 8, 54)
+    w = watch(ts(2026, 10, 23, 8, 49))
+    w.prior_day_stale = prior
+    w.on_quote(ts(2026, 10, 23, 8, 50))
+    assert w.evaluate(now2.timestamp(), now2, "day", True) and w.closed_guess(now2.timestamp(), now2, "day", True) is None
+
+
+def test_other_stale_reasons_still_win_on_a_closed_day():
+    """沒開盤的猜測只管「沒報價」；查詢一直連線錯誤是真的壞了，照樣回報。"""
+    w = watch(ts(2026, 10, 23, 8, 49))
+    w.prior_day_stale = {"date": "2026-10-23", "at": ts(2026, 10, 23, 8, 48)}
+    for k in range(4):
+        w.on_response(ts(2026, 10, 23, 8, 50) + 20 * k, SESSION_ERR)
+    now = tpe(2026, 10, 23, 8, 53)
+    assert "連線錯誤" in w.evaluate(now.timestamp(), now, "day", True) and w.closed_guess(now.timestamp(), now, "day", True) is None
+
+
+def test_night_and_no_subscription_are_unchanged_by_the_rule():
+    w = watch(ts(2026, 10, 23, 14, 50))
+    w.prior_day_stale = {"date": "2026-10-23", "at": ts(2026, 10, 23, 8, 48)}
+    w.on_quote(ts(2026, 10, 23, 23, 0))
+    assert "夜盤中 300 秒" in evb(w, tpe(2026, 10, 23, 23, 5)) and w.closed_guess(ts(2026, 10, 23, 23, 5), tpe(2026, 10, 23, 23, 5), "night", True) is None
+    w2 = watch(ts(2026, 10, 23, 8, 49))
+    w2.prior_day_stale = {"date": "2026-10-23", "at": ts(2026, 10, 23, 8, 48)}
+    now = tpe(2026, 10, 23, 8, 53)
+    assert w2.closed_guess(now.timestamp(), now, "day", False) is None
+
+
+def test_only_a_day_quiet_verdict_is_remembered(tmp_path):
+    state = tmp_path / "state.json"
+    w = watch(ts(2026, 10, 23, 9, 0))
+    w.load_state(state)
+    for k in range(4):
+        w.on_response(ts(2026, 10, 23, 9, 1) + 20 * k, SESSION_ERR)
+    assert chk(w, tpe(2026, 10, 23, 9, 3)) and not state.exists() and w.prior_day_stale is None   # 連線錯誤引起的：不記（重啟就會好）
+    n = watch(ts(2026, 10, 23, 23, 0))
+    n.load_state(state)
+    n.on_quote(ts(2026, 10, 23, 23, 1))
+    assert chk(n, tpe(2026, 10, 23, 23, 7)) and not state.exists()                           # 夜盤的也不記
+
+
+def test_state_file_roundtrip_and_bad_files(tmp_path):
+    state = tmp_path / "sub" / "state.json"
+    w = watch()
+    w.load_state(state)                                                                       # 檔案、資料夾都還不存在
+    assert w.prior_day_stale is None
+    w.prior_day_stale = None
+    w._remember_day_stale(1234.5, "2026-10-23")
+    assert state.exists() and not (tmp_path / "sub" / "state.part").exists()
+    w2 = watch()
+    w2.load_state(state)
+    assert w2.prior_day_stale == {"date": "2026-10-23", "at": 1234.5}
+    for bad in ("not json", "[]", "{}", '{"day_stale": 5}', '{"day_stale": {"date": 20261023, "at": 1}}', '{"day_stale": {"date": "2026-10-23", "at": "x"}}',
+                '{"day_stale": {"date": "2026-10-23", "at": true}}'):
+        state.write_text(bad, encoding="utf-8")
+        w3 = watch()
+        w3.prior_day_stale = {"date": "x", "at": 1.0}
+        w3.load_state(state)
+        assert w3.prior_day_stale is None, bad
+    w4 = sw.SessionWatch()
+    w4._remember_day_stale(1.0, "2026-10-23")                                                 # 沒有設狀態檔（測試預設）：什麼都不寫
+    assert w4.state_path is None
+    ro = tmp_path / "ro"
+    ro.write_text("x", encoding="utf-8")
+    w5 = watch()
+    w5.state_path = ro / "state.json"                                                         # 寫不進去（資料夾其實是檔案）：只警告、不丟例外
+    w5._remember_day_stale(1.0, "2026-10-23")
+
+
+def test_loop_loads_the_state_file(tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"day_stale": {"date": "2026-10-23", "at": 5.0}}), encoding="utf-8")
+    fresh = sw.SessionWatch()
+    monkeypatch.setattr(sw, "session_watch", fresh)
+    monkeypatch.setattr(sw, "POLL_SEC", 0.01)
+
+    async def go():
+        t = asyncio.create_task(sw.session_watch_loop(lambda: False, state_path=state))
+        await asyncio.sleep(0.1)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+    asyncio.run(go())
+    assert fresh.state_path == state and fresh.prior_day_stale == {"date": "2026-10-23", "at": 5.0}
+
+
+def test_production_state_path_is_in_data():
+    assert sw.STATE_PATH.name == "session_watch_state.json" and sw.STATE_PATH.parent.name == "data"
+    assert sw.SessionWatch().state_path is None and sw.session_watch.state_path is None      # 單例預設不碰檔案（測試不會寫到真的 data/）
 
 
 # ── 狀態轉換與 snapshot ──────────────────────────────────────────

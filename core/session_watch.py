@@ -14,21 +14,30 @@
 只在「應該連得上」的時段判斷：交易日 08:00～13:50、交易日晚上 14:50～隔天 05:00。週末、休市日、每天 05:00～08:00（券商維護）不判斷——
 那時候重啟也連不上，只會白白燒登入次數。休市日由 main.py 注入台股休市日曆的查詢函式（在執行緒裡查、一天一次）；沒注入或查不到就當平日。
 結果交給 /api/health：broker_connected=False、session=stale、stale_reason＝原因 → watchdog 連續 2 次（約 30 秒）就正常關閉並重啟
-（run_live.sh／run_sim.sh 的 stale 分支；舊版 watchdog 會當成 nobroker，一樣會重啟）。SESSION_WATCH=false 關閉。"""
+（run_live.sh／run_sim.sh 的 stale 分支；舊版 watchdog 會當成 nobroker，一樣會重啟）。SESSION_WATCH=false 關閉。
+
+颱風假（update.md 發現 76）：證交所的休市日曆不會事先列出臨時休市，2026-10-23 颱風假整天沒開盤，日盤規則（B）卻當成「該有報價」，
+08:48 起每 14 分鐘判一次假死、重啟了 24 次（重啟當然救不了沒開盤）。現在：日盤因為沒報價判了假死、重啟之後，**新的連線 DAY_QUIET_SEC 秒內仍然一筆報價都沒有**
+＝問題不在連線而是沒開盤 → 當天日盤不再因為沒報價回報 stale（snapshot 的 closed_guess 寫原因、推播一次）；之後只要收到報價就恢復正常判斷。
+第一次一定照舊判定並重啟（兩次真實事故都是重啟就好），所以最多多重啟一次，不會漏掉真的假死。「之前判過」記在 data/session_watch_state.json（跨重啟）。"""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 import threading
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.daytrade import TAIPEI
 
 logger = logging.getLogger(__name__)
+
+STATE_PATH = Path(__file__).resolve().parent.parent / "data" / "session_watch_state.json"
 
 ERR_PATTERN = re.compile(r"Session error|SessionNotEstablished|code: NotReady")
 ERR_MIN_COUNT = 3
@@ -88,6 +97,32 @@ class SessionWatch:
         self.reset(None)
         self.stale_reason: Optional[str] = None
         self.stale_since: Optional[float] = None
+        self.closed_reason: Optional[str] = None                 # 重啟過了還是沒有報價 → 判斷今天日盤沒開盤（颱風假之類），不再回報 stale
+        self.closed_note: Optional[dict[str, str]] = None        # 同一件事留給畫面看的當天備註（日盤窗口結束後還在）：{"date", "why"}
+        self.state_path: Optional[Path] = None                   # None＝不讀不寫檔（測試預設）；session_watch_loop 啟動時才設
+        self.prior_day_stale: Optional[dict[str, Any]] = None    # 之前的行程在這一天的日盤判過假死：{"date": "2026-10-23", "at": epoch}
+
+    def load_state(self, path: Path) -> None:
+        """設定狀態檔並讀回；沒有、壞掉、格式不對都當沒有（那就照舊：沒報價就判假死）。"""
+        self.state_path = path
+        self.prior_day_stale = None
+        try:
+            d = json.loads(path.read_text(encoding="utf-8")).get("day_stale")
+            if isinstance(d, dict) and isinstance(d.get("date"), str) and isinstance(d.get("at"), (int, float)) and not isinstance(d.get("at"), bool):
+                self.prior_day_stale = {"date": d["date"], "at": float(d["at"])}
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def _remember_day_stale(self, now_ts: float, today: str) -> None:
+        if self.state_path is None:
+            return
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_path.with_suffix(".part")
+            tmp.write_text(json.dumps({"day_stale": {"date": today, "at": now_ts}}), encoding="utf-8")
+            tmp.replace(self.state_path)                          # 寫到一半被中斷不會留下半個檔
+        except OSError as e:
+            logger.warning("連線假死偵測：狀態檔寫不進去（%r）；重啟後沒辦法判斷是不是休市日", e)
 
     def reset(self, t: Optional[float]) -> None:
         with self._lock:
@@ -125,49 +160,101 @@ class SessionWatch:
         self.last_quote = t
 
     # ── 判斷 ──────────────────────────────────────────────────────
-    def evaluate(self, now_ts: float, now: datetime, window: Optional[str], has_subs: bool) -> Optional[str]:
-        """假死的原因（給人看的一句話）或 None。純計算，不改狀態。"""
-        if window is None or self.connected_at is None:
+    def _day_quiet(self, now_ts: float, now: datetime, window: Optional[str], has_subs: bool) -> Optional[tuple[int, bool]]:
+        """日盤報價停止（B）：(沒報價的秒數, 重啟過了還是沒報價) 或 None（不在日盤判斷時段、沒訂閱、還沒到 DAY_QUIET_SEC）。純計算。
+        第二個值為 True＝這個連線是上一次日盤假死判定之後才連上的、而且連上之後一筆報價都沒有 → 不是連線的問題（沒開盤）。"""
+        if window != "day" or not has_subs or self.connected_at is None:
             return None
+        now = now.astimezone(TAIPEI)
+        if not 8 * 60 + 46 <= _minute(now) <= 13 * 60 + 44:
+            return None
+        with self._lock:
+            last_quote, conn = self.last_quote, self.connected_at
+        open_ts = now.replace(hour=8, minute=45, second=0, microsecond=0).timestamp()
+        ref = max(last_quote or 0.0, conn, open_ts)
+        if now_ts - ref < DAY_QUIET_SEC:
+            return None
+        p = self.prior_day_stale
+        futile = bool(p) and p["date"] == now.date().isoformat() and p["at"] < conn and (last_quote is None or last_quote < conn)
+        return int(now_ts - ref), futile
+
+    def _judge(self, now_ts: float, now: datetime, window: Optional[str], has_subs: bool) -> tuple[Optional[str], Optional[str]]:
+        """(種類, 原因)：種類是 'errors'／'silent'／'day_quiet'／'night_quiet' 或 None。純計算，不改狀態。"""
+        if window is None or self.connected_at is None:
+            return None, None
         with self._lock:
             err_n, err_since, last_ok, last_err = self.err_n, self.err_since, self.last_ok, self.last_err
             un_n, un_since, last_quote, conn = self.unanswered_n, self.unanswered_since, self.last_quote, self.connected_at
         if err_n >= ERR_MIN_COUNT and err_since is not None and now_ts - err_since >= ERR_MIN_SEC and (last_ok is None or last_ok < err_since):
-            return f"券商查詢連續 {err_n} 次連線錯誤、{int(now_ts - err_since)} 秒沒有成功（最近一次：{last_err}）"
+            return "errors", f"券商查詢連續 {err_n} 次連線錯誤、{int(now_ts - err_since)} 秒沒有成功（最近一次：{last_err}）"
         if un_n >= ERR_MIN_COUNT and un_since is not None and now_ts - un_since >= SILENT_SEC:
-            return f"worker {int(now_ts - un_since)} 秒沒有回覆任何查詢（{un_n} 個在等）"
+            return "silent", f"worker {int(now_ts - un_since)} 秒沒有回覆任何查詢（{un_n} 個在等）"
         if not has_subs:
-            return None
+            return None, None
+        dq = self._day_quiet(now_ts, now, window, has_subs)
+        if dq is not None and not dq[1]:
+            return "day_quiet", f"日盤中 {dq[0]} 秒沒有收到任何報價"
         now = now.astimezone(TAIPEI)
         m = _minute(now)
-        if window == "day" and 8 * 60 + 46 <= m <= 13 * 60 + 44:
-            open_ts = now.replace(hour=8, minute=45, second=0, microsecond=0).timestamp()
-            ref = max(last_quote or 0.0, conn, open_ts)
-            if now_ts - ref >= DAY_QUIET_SEC:
-                return f"日盤中 {int(now_ts - ref)} 秒沒有收到任何報價"
-        elif window == "night" and (m >= 15 * 60 + 1 or m <= 4 * 60 + 59):
+        if window == "night" and (m >= 15 * 60 + 1 or m <= 4 * 60 + 59):
             day0 = now.date() if m >= 15 * 60 else now.date() - timedelta(days=1)
             night_ts = datetime(day0.year, day0.month, day0.day, 15, 0, tzinfo=TAIPEI).timestamp()
             if last_quote is not None and last_quote >= night_ts and now_ts - max(last_quote, conn) >= NIGHT_QUIET_SEC:
-                return f"夜盤中 {int(now_ts - max(last_quote, conn))} 秒沒有收到報價"
-        return None
+                return "night_quiet", f"夜盤中 {int(now_ts - max(last_quote, conn))} 秒沒有收到報價"
+        return None, None
+
+    def evaluate(self, now_ts: float, now: datetime, window: Optional[str], has_subs: bool) -> Optional[str]:
+        """假死的原因（給人看的一句話）或 None。純計算，不改狀態。"""
+        return self._judge(now_ts, now, window, has_subs)[1]
+
+    def closed_guess(self, now_ts: float, now: datetime, window: Optional[str], has_subs: bool) -> Optional[str]:
+        """日盤沒開盤的猜測（颱風假之類）：重啟過了、新連線 DAY_QUIET_SEC 秒內仍一筆報價都沒有，而且沒有別的假死原因。純計算。"""
+        if self._judge(now_ts, now, window, has_subs)[0] is not None:
+            return None
+        dq = self._day_quiet(now_ts, now, window, has_subs)
+        return f"重啟後 {dq[0]} 秒仍沒有任何報價" if dq is not None and dq[1] else None
 
     def check(self, now_ts: float, now: datetime, window: Optional[str], has_subs: bool) -> Optional[str]:
-        """判斷並更新 stale_reason（狀態改變時記一行 log）。"""
-        reason = self.evaluate(now_ts, now, window, has_subs)
+        """判斷並更新 stale_reason／closed_reason（狀態改變時記一行 log）。"""
+        kind, reason = self._judge(now_ts, now, window, has_subs)
         if reason and not self.stale_reason:
             self.stale_since = now_ts
             logger.error("券商連線假死：%s → /api/health 回報 stale，watchdog 會正常關閉並重啟", reason)
+            if kind == "day_quiet":                                   # 記下來：重啟之後如果還是沒有報價，就是沒開盤，不要再重啟
+                today = now.astimezone(TAIPEI).date().isoformat()
+                self.prior_day_stale = {"date": today, "at": now_ts}
+                self._remember_day_stale(now_ts, today)
         elif not reason and self.stale_reason:
             logger.info("券商連線恢復（假死狀態解除，持續 %.0f 秒）", now_ts - (self.stale_since or now_ts))
             self.stale_since = None
         self.stale_reason = reason
+        guess = self.closed_guess(now_ts, now, window, has_subs)
+        if guess and not self.closed_reason:
+            today = now.astimezone(TAIPEI).date().isoformat()
+            self.closed_note = {"date": today, "why": guess}
+            self._announce_closed(today, guess)
+        elif not guess and self.closed_reason and window == "day":                # 日盤窗口內猜測消失：收到報價了（或換成別的假死原因）
+            logger.info("日盤收到報價或出現別的假死原因，不再猜今天沒開盤")
+            self.closed_note = None
+        self.closed_reason = guess
         return reason
+
+    def _announce_closed(self, today: str, why: str) -> None:
+        logger.warning("今天日盤可能沒開盤（颱風假／臨時休市？）：上一次判定假死、重新連線之後%s → 不再因為沒報價回報 stale（夜盤與連線錯誤的判斷照舊）", why)
+        try:
+            from core.notify import notify
+            notify("ℹ️ 今天日盤好像沒開（颱風假／臨時休市？）",
+                   f"重啟之後{why}，判斷問題不在連線，而是日盤沒開盤。今天日盤不會再因為沒報價自動重啟；夜盤和券商連線錯誤的偵測照舊。"
+                   "如果其實有開盤，請手動重啟後端。", key=f"sessionwatch:closed:{today}", cooldown=20 * 3600.0, priority="default")
+        except Exception:  # noqa: BLE001
+            logger.debug("沒開盤的通知送不出去", exc_info=True)
 
     def snapshot(self, now_ts: Optional[float] = None) -> dict[str, Any]:
         now_ts = time.time() if now_ts is None else now_ts
         age = lambda t: None if t is None else round(now_ts - t, 1)          # noqa: E731
-        return {"enabled": enabled(), "stale_reason": self.stale_reason, "connected_age": age(self.connected_at), "last_ok_age": age(self.last_ok),
+        note = self.closed_note
+        closed = note["why"] if note and note["date"] == datetime.fromtimestamp(now_ts, TAIPEI).date().isoformat() else None
+        return {"enabled": enabled(), "stale_reason": self.stale_reason, "closed_guess": closed, "connected_age": age(self.connected_at), "last_ok_age": age(self.last_ok),
                 "last_quote_age": age(self.last_quote), "err_n": self.err_n, "err_age": age(self.err_since), "unanswered_n": self.unanswered_n,
                 "unanswered_age": age(self.unanswered_since), "last_err": self.last_err}
 
@@ -207,12 +294,13 @@ class TradingDays:
                 self._known.pop(k, None)
 
 
-async def session_watch_loop(has_subs: Callable[[], bool], days: Optional[TradingDays] = None) -> None:
+async def session_watch_loop(has_subs: Callable[[], bool], days: Optional[TradingDays] = None, state_path: Path = STATE_PATH) -> None:
     """每 POLL_SEC 秒判斷一次。SESSION_WATCH=false 關閉（stale_reason 永遠是 None）。"""
     if not enabled():
         logger.info("連線假死偵測已關閉（SESSION_WATCH=false）")
         return
     days = days or TradingDays()
+    session_watch.load_state(state_path)
     while True:
         await asyncio.sleep(POLL_SEC)
         try:

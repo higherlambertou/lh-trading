@@ -68,6 +68,9 @@ def broker_item(connected: bool, stale: Optional[str], snap: dict[str, Any], usa
         return item("broker", "券商連線", "warn", f"連線假死：{stale}（watchdog 會重啟）", "｜".join(parts))
     n = (usage or {}).get("connections")
     status = "warn" if isinstance(n, int) and n >= CONNECTION_LIMIT - 1 else "ok"
+    closed = snap.get("closed_guess")
+    if closed:                                                                    # 日盤沒開（颱風假之類）：連線本身是好的，只是沒有報價
+        parts.insert(0, f"今天日盤好像沒開盤（{closed}；颱風假／臨時休市？）")
     return item("broker", "券商連線", status, "連線正常｜" + "｜".join(parts),
                 "連線數快到上限：可能有殘留的 worker（見 OPERATION.md〈孤兒 worker〉）" if status == "warn" else None)
 

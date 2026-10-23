@@ -99,6 +99,7 @@ curl http://100.127.125.13:8002/api/health/session
 ```
 後端判定假死時，`/api/health` 會回 `"broker_connected":"False","session":"stale","stale_reason":"…"`，app log 有一行 `券商連線假死：…`，
 watchdog log 有 `判定券商連線假死(stale) → 正常關閉 PID=… 後重啟`；正式盤會推播「⚠️ 券商連線假死，正在重啟」。
+**颱風假／臨時休市日**（發現 76）：日盤開盤後 watchdog 一直 `判定券商連線假死(stale)` 重啟、每次重啟後約 3 分鐘又 stale，多半是這天其實沒開盤（證交所日曆不會事先列出颱風假）。確認：`grep 今天日盤 /tmp/lh_live.log`、app log 的 `券商連線假死：日盤中 … 沒有收到任何報價`、當天 `ticks.db` 08:45 之後沒有任何報價。修好之後的行為：第一次照舊重啟，重啟後 3 分鐘仍沒報價就推播「ℹ️ 今天日盤好像沒開」並停止（`/api/health/session` 的 `closed_guess` 有原因）；如果其實有開盤，手動重啟後端即可。事後記得把當天的盤前快照作廢：`python -m core.premarket_log void 日期 --reason "颱風假，期交所休市"`。
 同一種錯誤重複發生時，app log 只記第一次的完整 traceback，之後每 5 分鐘一行「（同樣的錯誤，過去 5 分鐘又發生 n 次…）」，恢復時記「恢復（先前連續失敗 n 次）」。
 關閉：`.env` 設 `SESSION_WATCH=false`（重啟後端）。期交所日資料的自動更新：`data/taifex/update_state.json` 是最後成功的日期，app log 搜「期交所資料更新」；關閉 `TAIFEX_UPDATE=false`。
 

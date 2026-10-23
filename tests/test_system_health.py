@@ -29,6 +29,9 @@ def test_broker_item():
     assert "SDK 1.5.8" in sh.broker_item(True, None, {"last_quote_age": 3.0}, None, None, "1.5.8")["text"]
     many = sh.broker_item(True, None, {"last_quote_age": 1.0}, {"connections": 4, "percent": 1}, None)
     assert many["status"] == "warn" and "孤兒 worker" in many["detail"]
+    closed = sh.broker_item(True, None, {"last_quote_age": None, "closed_guess": "重啟後 180 秒仍沒有任何報價"}, None, None)
+    assert closed["status"] == "ok" and closed["text"].startswith("連線正常｜今天日盤好像沒開盤（重啟後 180 秒仍沒有任何報價；颱風假／臨時休市？）")
+    assert "沒開盤" not in sh.broker_item(True, None, {"last_quote_age": 3.0, "closed_guess": None}, None, None)["text"]
 
 
 WD = """2026-10-14 09:00:00  [watchdog-live]  判定故障(down) → kill -9 PID=1 並重啟（自動重連）
