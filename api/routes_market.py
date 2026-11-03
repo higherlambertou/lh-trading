@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from api.routes_position import _cache as position_cache
 from api.routes_strategy import strategy_engine
-from core import forecast_log, precheck, range_suggest, stop_suggest
+from core import forecast_log, precheck, range_suggest, stop_suggest, volume_profile
 from core.broker import broker
 from core.daily_summary import TICK_SEC, market_state
 from core.flow_store import flow_recorder
@@ -157,6 +157,26 @@ async def get_range() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         logger.debug("range：取不到進行中的 K 棒（略過）", exc_info=True)
     return range_suggest.range_now(rows, now, live_row=live_row, table=range_suggest.load_table())
+
+
+@router.get("/profile")
+async def get_profile(code: str = Query("TMF", description="TMF／MXF／TXF"), session: str = Query("auto", description="auto／day／night"),
+                      pbin: int = Query(volume_profile.DEFAULT_PBIN, ge=1, le=100, description="價格格寬（點）"),
+                      date_: Optional[str] = Query(None, alias="date", description="YYYY-MM-DD；不給＝最近有成交的那個時段")) -> dict[str, Any]:
+    """價量分布（update.md 發現 77）：一個時段（日盤／夜盤）逐筆成交依價格彙總的量（外盤／內盤分開）、POC、價值區，以及前一個日盤的價位。
+    只讀本機的 ticks.db（有快取）、不對券商發查詢；只顯示，不碰下單。"""
+    prefix = code.upper()
+    if prefix not in volume_profile.PREFIXES:
+        raise HTTPException(400, f"code 必須是 {'／'.join(volume_profile.PREFIXES)}")
+    if session not in ("auto", "day", "night"):
+        raise HTTPException(400, "session 必須是 auto、day 或 night")
+    day: Optional[date] = None
+    if date_:
+        try:
+            day = date.fromisoformat(date_)
+        except ValueError:
+            raise HTTPException(400, "date 要是 YYYY-MM-DD")
+    return await asyncio.to_thread(volume_profile.get_profile, prefix, session, pbin, day, time.time())
 
 
 @router.post("/refresh")

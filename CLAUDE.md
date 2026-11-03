@@ -119,6 +119,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 - **市場狀態**（Hurst＋IV）預設只顯示＋警告（`MARKET_STATE_GATE=off` 關警告）。**不要把 `hurst_analyzer` 搬回 `~/Downloads` 舊版**（R/S 估計器偏誤）；60 根窗口的 H 雜訊約 ±0.13，看 z 值。
 - **建議停損停利**：σ 定義必須與 `stop_calibration.trailing_sigma` 一致；`stop_calibration.json` 是事先登記、跑一次的表，**不要為了數字好看重算**（重算先重新登記）；**勝率不是優勢**——進場沒有資訊時每筆期望值＝−成本。
 - **機率範圍帶**（發現 48）：σ 與建議停損停利共用同一個定義；`range_calibration.json` 是事先登記、跑一次的表（樣本外 44／48 格過），**不要為了數字好看重算**；只說會走多遠、不說方向，**不要當進場訊號**；策略／風控／下單模組不得引用（`tests/test_range_suggest.py` 靜態檢查）。
+- **價量分布**（發現 77，`core/volume_profile.py`）：**只顯示**（走勢圖右側每個價位的量＋前一個日盤的 POC／價值區線）；讀 `ticks.db` 要用唯讀、在 `asyncio.to_thread`；策略／風控／下單不得引用（`tests/test_volume_profile.py` 靜態檢查）；歷史檢驗（發現 78）沒有發現預測力，**不要當進場訊號**。
 - **口數提示**（發現 51，`core/position_size.py`）：**只顯示、不擋單**（下單面板的口數欄旁）；風險＝(停損＋緩衝)×每點價值，沒有停損登記的部位風險未知、只列出不計入；權益取不到或過期、停損沒填一律不給口數（fail-closed）。要做成真正擋單的獨立風控層（《部位大小控管》需求文件）會動到下單路徑，先討論；`tests/test_position_size.py` 靜態檢查下單與策略路徑沒有引用它。
 - **預測紀錄**（`core/forecast_log.py`，發現 68）：日盤／夜盤預期振幅每天一筆、存了不改（觸發器），收盤後對照實際算命中率；只記錄、只顯示，策略／風控／下單不讀。
 - **夜盤預期振幅**（發現 67，`core/night_range.py`）：只顯示；模型在獨立子行程擬合（`data/night_model.json`），後端只讀結果；輸入不齊寫原因、不湊數字；策略／風控／下單不得引用。

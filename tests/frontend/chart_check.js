@@ -116,16 +116,20 @@ const calls = [];
 const store = {};
 global.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } };
 const realApi = transpile(path.join(FRONT, "lib", "api.ts"), path.join(TMP, "real_api.js"));
-fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = { api: { market: { bars: () => Promise.resolve({}), range: () => Promise.resolve({}) }, position: { list: () => Promise.resolve([]) }, order: { watches: () => Promise.resolve([]) } } };");
+fs.writeFileSync(path.join(TMP, "api_stub.js"), "module.exports = { api: { market: { bars: () => Promise.resolve({}), range: () => Promise.resolve({}), profile: () => Promise.resolve({}) }, position: { list: () => Promise.resolve([]) }, order: { watches: () => Promise.resolve([]) } } };");
 const orig = Module._resolveFilename;
 Module._resolveFilename = function (req, ...r) {
   if (req === "@/lib/api") return path.join(TMP, "api_stub.js");
   if (req === "@/lib/chart") return path.join(TMP, "chart.js");
   if (req === "@/lib/range") return path.join(TMP, "range.js");
+  if (req === "@/lib/volumeProfile") return path.join(TMP, "volumeProfile.js");
+  if (req === "@/lib/profilePrimitive") return path.join(TMP, "profilePrimitive.js");
   return orig.call(this, req, ...r);
 };
+transpile(path.join(FRONT, "lib", "volumeProfile.ts"), path.join(TMP, "volumeProfile.js"));
+transpile(path.join(FRONT, "lib", "profilePrimitive.ts"), path.join(TMP, "profilePrimitive.js"));
 const Comp = transpile(path.join(FRONT, "components", "PriceChart.tsx"), path.join(TMP, "panel.js")).default;
-const NAMES = ["ready", "bars", "interval", "toggles", "positions", "watches", "err", "updatedAt", "legend", "bandKey", "bandKind", "range", "rangeErr"];
+const NAMES = ["ready", "bars", "interval", "toggles", "positions", "watches", "err", "updatedAt", "legend", "bandKey", "bandKind", "range", "rangeErr", "profile", "profileErr"];
 function render(forced = {}) {
   const sets = [];
   let n = 0;
@@ -149,7 +153,7 @@ const text = (el) => (el == null || typeof el === "boolean") ? "" : typeof el ==
 {
   const { tree, sets } = render();
   const buttons = find(tree, (e) => e.type === "button");
-  eq(buttons.length, 10, "3 個週期＋7 個線的開關（含範圍帶）");
+  eq(buttons.length, 11, "3 個週期＋8 個線的開關（含範圍帶、價量分布）");
   eq(buttons.find((b) => text(b).includes("範圍帶")).props["aria-pressed"], false, "範圍帶預設關");
   ok(!text(tree).includes("落點範圍"), "範圍帶關著就沒有選擇列與摘要");
   const byText = (t) => buttons.find((b) => text(b).includes(t));
@@ -185,7 +189,7 @@ const text = (el) => (el == null || typeof el === "boolean") ? "" : typeof el ==
   const range = { price: 30000, stale: false, bands: { "15": band }, note: null };
   const { tree, sets } = render({ 3: on });
   const buttons = find(tree, (e) => e.type === "button");
-  eq(buttons.length, 17, "開了範圍帶：多 5 個時間鈕＋2 個種類鈕");
+  eq(buttons.length, 18, "開了範圍帶：多 5 個時間鈕＋2 個種類鈕");
   const bn = (t) => buttons.find((b) => text(b).trim() === t);
   eq([bn("15 分").props["aria-pressed"], bn("5 分").props["aria-pressed"]].length, 2, "時間鈕有 aria-pressed");
   const bandRow = buttons.filter((b) => ["5 分", "15 分", "30 分", "60 分", "到收盤"].includes(text(b).trim()));
@@ -204,7 +208,7 @@ const text = (el) => (el == null || typeof el === "boolean") ? "" : typeof el ==
   ok(t.includes("落點範圍（15 分鐘）") && t.includes("50% ±10 ") && t.includes("80% ±20.2") && t.includes("95% ±34.3"), "摘要：三個層級的距離");
   ok(t.includes(`80% ＝ ${29979} ~ ${30021}`.replace(/(\d{2})(\d{3})/g, "$1,$2")) , "摘要：80% 的價位範圍（下緣取整往下、上緣往上）");
   ok(t.includes("只說會走多遠、不說往哪個方向"), "摘要寫明不說方向");
-  ok(buttons.length === 17 && find(withData, (e) => e.type === "button" && text(e).trim() === "到收盤")[0].props.disabled === true, "沒有到收盤的資料時仍停用");
+  ok(buttons.length === 18 && find(withData, (e) => e.type === "button" && text(e).trim() === "到收盤")[0].props.disabled === true, "沒有到收盤的資料時仍停用");
   const withClose = render({ 3: on, 11: { ...range, bands: { ...range.bands, close: { ...band, minutes: 45, bucket: "c31_60" } } } }).tree;
   ok(find(withClose, (e) => e.type === "button" && text(e).trim() === "到收盤")[0].props.disabled === false, "有到收盤的資料就能按");
   const pathTxt = text(render({ 3: on, 10: "path", 11: range }).tree);
@@ -217,6 +221,31 @@ const text = (el) => (el == null || typeof el === "boolean") ? "" : typeof el ==
   ok(err.includes("範圍帶暫時抓不到"), "抓不到時顯示原因");
   const few = text(render({ 3: on, 11: { ...range, bands: { "15": { ...band, few: true } } } }).tree);
   ok(few.includes("夜盤實測樣本少"), "夜盤樣本少要說");
+}
+
+// ── 價量分布（update.md 發現 77）──
+{
+  const prof = { code: "TMFK6", prefix: "TMF", session: "day", date: "2026-11-03", label: "11/3 日盤", pbin: 10, complete: true,
+    rows: [{ price: 44440, buy: 0, sell: 4, other: 3, total: 7 }, { price: 44450, buy: 3, sell: 0, other: 0, total: 3 }], total: 10, buy: 3, sell: 4, other: 3,
+    poc: 44445, vah: 44460, val: 44440, open: 44444, high: 44460, low: 44444, last: 44455,
+    prev: { date: "2026-11-02", session: "day", label: "11/2 日盤", code: "TMFK6", note: null, poc: 45005, vah: 45020, val: 45000, total: 15, high: 45010, low: 45000, last: 45010 }, note: null, as_of: 1 };
+  ok(C.DEFAULT_TOGGLES.profile === true, "價量分布預設開");
+  eq(C.parseToggles(JSON.stringify({ interval: 5, toggles: { ma5: true } })).toggles.profile, true, "舊版存的設定（沒有價量分布欄位）用預設（開）");
+  eq(C.parseToggles(JSON.stringify({ toggles: { profile: false } })).toggles.profile, false, "關掉會記得");
+  eq(C.parseToggles(JSON.stringify({ toggles: { profile: "no" } })).toggles.profile, true, "型別不對用預設");
+  const { tree, sets } = render();
+  const btn = find(tree, (e) => e.type === "button" && text(e).includes("價量分布"))[0];
+  ok(btn && btn.props["aria-pressed"] === true, "價量分布的開關在、預設是按下的");
+  ok(text(tree).includes("價量分布載入中"), "還沒有資料時寫載入中");
+  btn.props.onClick();
+  eq(sets.find((x) => x[0] === "toggles")[1].profile, false, "按下去會關掉");
+  ok(JSON.parse(store.lh_chart_prefs).toggles.profile === false, "開關記在 localStorage");
+  const withData = text(render({ 13: prof }).tree);
+  ok(withData.includes("價量分布 11/3 日盤") && withData.includes("POC 44,445") && withData.includes("價值區 44,440～44,460") && withData.includes("11/2 日盤：POC 45,005"), "說明列：時段、POC、價值區、前一個日盤");
+  ok(withData.includes("外盤") && withData.includes("內盤") && withData.includes("不是進場訊號") && withData.includes("歷史檢驗沒有發現預測力"), "說明列寫明內外盤顏色、不是進場訊號、歷史檢驗沒有發現預測力");
+  ok(text(render({ 13: prof, 14: "價量分布暫時抓不到（後端要重啟成新版才有這個端點）" }).tree).includes("價量分布暫時抓不到"), "抓不到時顯示原因");
+  const off = text(render({ 3: { ...C.DEFAULT_TOGGLES, profile: false }, 13: prof }).tree);
+  ok(!off.includes("POC 44,445") && !off.includes("價量分布載入中"), "關掉就沒有說明列");
 }
 
 // ── 回補的 K 棒（發現 66）──

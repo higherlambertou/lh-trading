@@ -10,6 +10,8 @@ import {
   type Bar, type Interval, type Toggles, FILL_COLOR, needsReload } from "@/lib/chart";
 import type { Position, Watch } from "@/lib/api";
 import { BAND_KEYS, KINDS, bandLines, bandText, edge, fmt as fmtP, hasClose, pickBand, type BandKey, type Kind, type RangeData } from "@/lib/range";
+import { ProfilePrimitive } from "@/lib/profilePrimitive";
+import { POLL_MS as PROFILE_POLL_MS, captionText, levelLines, type ProfileData } from "@/lib/volumeProfile";
 
 const STORE_KEY = "lh_chart_prefs";
 const POLL_MS = 3000;
@@ -27,6 +29,7 @@ const TOGGLE_LABEL: { key: keyof Toggles; label: string; color: string }[] = [
   { key: "levels", label: "開高低昨收", color: "#9090c0" },
   { key: "position", label: "持倉／停損", color: "#ff9800" },
   { key: "band", label: "範圍帶", color: "#80cbc4" },
+  { key: "profile", label: "價量分布", color: "#ffd400" },
 ];
 
 const BAND_POLL_MS = 10000;                                          // 範圍帶只讀本機資料庫與記憶體
@@ -54,11 +57,12 @@ interface Refs {
   ma20: ISeriesApi<"Line"> | null;
   ma60: ISeriesApi<"Line"> | null;
   vwap: ISeriesApi<"Line"> | null;
+  profile: ProfilePrimitive | null;
 }
 
 export default function PriceChart({ active = true }: { active?: boolean }) {
   const boxRef = useRef<HTMLDivElement | null>(null);
-  const refs = useRef<Refs>({ chart: null, candle: null, volume: null, ma5: null, ma20: null, ma60: null, vwap: null });
+  const refs = useRef<Refs>({ chart: null, candle: null, volume: null, ma5: null, ma20: null, ma60: null, vwap: null, profile: null });
   const lines = useRef<IPriceLine[]>([]);
   const drawn = useRef<{ key: string; n: number }>({ key: "", n: 0 });
   const [ready, setReady] = useState(false);
@@ -74,6 +78,8 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
   const [bandKind, setBandKind] = useState<Kind>("term");
   const [range, setRange] = useState<RangeData | null>(null);
   const [rangeErr, setRangeErr] = useState<string | null>(null);
+  const [profile, setProfile] = useState<ProfileData | null>(null);        // 價量分布（發現 77）
+  const [profileErr, setProfileErr] = useState<string | null>(null);
   const lastT = useRef<number>(0);
   const fillsAt = useRef(0);                                         // 最近一次回補的時間（發現 66）
 
@@ -115,9 +121,11 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
       chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
       const line = (color: string, width: 1 | 2 = 1) =>
         chart.addSeries(lc.LineSeries, { color, lineWidth: width, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+      const profilePrim = new ProfilePrimitive();                                    // 右側價量分布：畫在 K 棒下面，用圖自己的價格軸對齊
+      candle.attachPrimitive(profilePrim);
       refs.current = {
         chart, candle, volume,
-        ma5: line("#ffc107"), ma20: line("#4fc3f7"), ma60: line("#ba68c8"), vwap: line("#ffffff", 1),
+        ma5: line("#ffc107"), ma20: line("#4fc3f7"), ma60: line("#ba68c8"), vwap: line("#ffffff", 1), profile: profilePrim,
       };
       chart.subscribeCrosshairMove((p) => {
         const d = p.seriesData.get(candle) as { open: number; high: number; low: number; close: number } | undefined;
@@ -130,7 +138,7 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
     return () => {
       disposed = true;
       try { refs.current.chart?.remove(); } catch { /* 已經移除 */ }
-      refs.current = { chart: null, candle: null, volume: null, ma5: null, ma20: null, ma60: null, vwap: null };
+      refs.current = { chart: null, candle: null, volume: null, ma5: null, ma20: null, ma60: null, vwap: null, profile: null };
       lines.current = [];
       drawn.current = { key: "", n: 0 };
       setReady(false);
@@ -184,6 +192,25 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
     const id = setInterval(load, BAND_POLL_MS);
     return () => { stop = true; clearInterval(id); };
   }, [active, toggles.band]);
+
+  // 價量分布（開著才抓；只讀本機資料庫，後端有快取）
+  useEffect(() => {
+    if (!active || !toggles.profile) return;
+    let stop = false;
+    const load = async () => {
+      try { const d = await api.market.profile(); if (!stop) { setProfile(d); setProfileErr(null); } }
+      catch { if (!stop) setProfileErr("價量分布暫時抓不到（後端要重啟成新版才有這個端點）"); }
+    };
+    load();
+    const id = setInterval(load, PROFILE_POLL_MS);
+    return () => { stop = true; clearInterval(id); };
+  }, [active, toggles.profile]);
+
+  // 把資料交給圖上的繪圖層（關掉就清空）
+  useEffect(() => {
+    if (!ready) return;
+    refs.current.profile?.setData(toggles.profile ? profile : null);
+  }, [ready, profile, toggles.profile]);
 
   const agg = useMemo(() => aggregate(bars, interval), [bars, interval]);
 
@@ -243,7 +270,10 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
         add(l.price, l.title, st.color, true, st.style);
       }
     }
-  }, [ready, bars, toggles.levels, toggles.position, toggles.band, positions, watches, range, bandKey, bandKind]);
+    if (toggles.profile) {
+      for (const l of levelLines(profile)) add(l.price, l.title, l.color, l.style !== 0, l.style);        // 前一個日盤的 POC／價值區（虛線）與現在的 POC（實線）
+    }
+  }, [ready, bars, toggles.levels, toggles.position, toggles.band, toggles.profile, positions, watches, range, bandKey, bandKind, profile]);
 
   const setI = (i: Interval) => { setIntervalMin(i); save(i, toggles); };
   const setBK = (k: BandKey) => { setBandKey(k); save(interval, toggles, k, bandKind); };
@@ -284,6 +314,12 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
           </button>
         ))}
       </div>
+      {toggles.profile && (
+        <div className="mb-2 text-[10px] leading-snug text-[#7070a0]" aria-live="off">
+          {profileErr ? <span className="text-[#ffc107]">{profileErr}</span> : captionText(profile)}
+          <span className="text-[#404060]">　<span className="text-[#ff5a5f]">紅</span>＝外盤、<span className="text-[#2ecc71]">綠</span>＝內盤｜POC＝成交最多的價位｜價值區＝涵蓋 70% 成交量｜只顯示、不是進場訊號；歷史檢驗沒有發現預測力</span>
+        </div>
+      )}
       {toggles.band && (
         <div className="mb-2 space-y-1">
           <div className="flex flex-wrap items-center gap-1" role="group" aria-label="範圍帶設定">

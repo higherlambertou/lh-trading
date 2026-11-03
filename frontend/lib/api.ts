@@ -53,6 +53,7 @@ import type { PmPreview, PmSnapshot, PmStatus } from "./premarket";
 import type { EntryRow, Trend } from "./entryLabel";
 import type { Unprotected } from "./protection";
 import type { RangeData } from "./range";
+import type { ProfileData } from "./volumeProfile";
 import type { Precheck } from "./precheck";
 import type { Suggest } from "./stopSuggest";
 import type { Size } from "./size";
@@ -442,6 +443,9 @@ export const api = {
       req<BarsResponse>(`/market/bars?${new URLSearchParams(Object.entries(q).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))}`),
     // 機率範圍帶：只讀本機資料庫與記憶體，一次回五組（5／15／30／60 分鐘與到收盤）
     range: () => req<RangeData>("/market/range"),
+    // 價量分布（只顯示）：一個時段（日盤／夜盤）逐筆成交依價格彙總的量、POC、價值區，以及前一個日盤的價位；只讀本機資料庫，後端有快取
+    profile: (q: { code?: string; session?: string; pbin?: number; date?: string } = {}) =>
+      req<ProfileData>(`/market/profile?${new URLSearchParams(Object.entries(q).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))}`),
     // 下單前檢查（只顯示）：預期日盤振幅、IV 百分位、36 小時內的重要事件
     precheck: () => req<Precheck>("/market/precheck"),
     suggest: (contract: string, horizon: number) => req<Suggest>(`/market/suggest?contract=${encodeURIComponent(contract)}&horizon=${horizon}`),

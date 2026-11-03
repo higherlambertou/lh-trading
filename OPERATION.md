@@ -559,6 +559,14 @@ python -m core.notify watchdog --event freeze --detail down --mode live   # watc
   **推播是把這些資訊送到第三方服務**，通道由你自己設定，沒設定就不會送。
 - 測試：`python -m pytest tests/test_notify.py tests/test_protection.py tests/test_manual_restore.py tests/test_startup_protection.py tests/test_frontend_protection.py -q`。
 
+### 價量分布（只顯示、不碰下單；update.md 發現 77）
+
+**需重啟後端＋前端 build**。走勢圖右側多一層「每個價位的成交量」（紅＝外盤、綠＝內盤），圖上多前一個日盤的 POC／價值區上下緣（虛線）與現在時段的 POC（實線）；走勢圖的〈價量分布〉按鈕開關（預設開），圖下面一行寫時段、POC、價值區與內外盤占比。
+- **資料**：`ticks.db` 的逐筆成交（約從 2026-10-07 起）；夜盤 15:00 開始就換成夜盤，開盤前顯示昨晚的夜盤，休市日往前找最近有成交的時段。
+- **看到「價量分布暫時抓不到（後端要重啟成新版才有這個端點）」**：後端還是舊版，重啟即可。檢查：`curl "http://100.127.125.13:8002/api/market/profile?code=TMF"`（`rows` 是空的會有 `note` 寫原因）；`code` 可換 `MXF`、`TXF`，`session=day|night`、`date=YYYY-MM-DD` 看指定時段。
+- **別當進場訊號**：歷史檢驗（發現 78）沒有發現前一日的 POC／價值區有磁吸或擋住的效果；小台與大台同一天的 POC 可能差很多（大台常被收盤前的量帶到收盤價附近）。
+- 測試：`python -m pytest tests/test_volume_profile.py tests/test_frontend_profile.py tests/test_frontend_chart.py -q`。
+
 ### 機率範圍帶（只顯示、不碰下單；update.md 發現 48）
 
 **需重啟後端＋前端 build**。回答「現在的價格，15 分鐘後有 80% 的機率落在哪裡」：以最新成交價為中心、用最近 30 分鐘的 σ（和〈建議停損停利〉同一個）乘上歷史實測的倍數，不是模擬。

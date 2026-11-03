@@ -174,9 +174,10 @@ export interface Toggles {
   levels: boolean;
   position: boolean;
   band: boolean;     // 機率範圍帶（update.md 發現 48）
+  profile: boolean;  // 價量分布（update.md 發現 77）：右側每個價位的成交量＋前一個日盤的 POC／價值區線
 }
 
-export const DEFAULT_TOGGLES: Toggles = { ma5: false, ma20: true, ma60: false, vwap: true, levels: true, position: true, band: false };
+export const DEFAULT_TOGGLES: Toggles = { ma5: false, ma20: true, ma60: false, vwap: true, levels: true, position: true, band: false, profile: true };
 
 export interface Prefs {
   interval: Interval;
