@@ -7,6 +7,7 @@
 - POC＝量最大那一格的中心；價值區＝從 POC 開始、每次往量較大的一邊加兩格，直到涵蓋 70% 的量；VAH／VAL＝價值區最上／最下一格的邊緣。
 - 前一個日盤（prev）＝目前時段開始之前、最近一個已經收完的日盤（夜盤時看的是同一天剛收的日盤）；兩個時段的合約不同（換月）時用該日盤自己的近月並註明。
 - 近月合約（TMFK6 這種）：每個時段取成交量最大的那一檔，不靠「第三個週三」之類的推算。
+畫面用的列是最細的（每 1 點一列，前端依畫面高度合併成適合的粗細）；POC 與價值區另外用 pbin（預設 10 點）一格的粗列算。
 限制（誠實）：只有成交，沒有每個價位的掛單深度歷史、也沒有成交者身分——看得到量落在哪、哪一邊主動，看不出是誰。同一天小台與大台的 POC 可能差很多，要分開看。"""
 from __future__ import annotations
 
@@ -24,7 +25,8 @@ logger = logging.getLogger(__name__)
 
 PREFIXES = ("TMF", "MXF", "TXF")
 VA_FRAC = 0.70
-DEFAULT_PBIN = 10
+DEFAULT_PBIN = 10                       # POC／價值區用的格寬（點）；和離線檢驗（發現 78）的格寬同一個量級
+ROW_BIN = 1                             # 回給畫面的列用的格寬（點）：台指期價格是整數點，這就是最細的；畫面依高度再合併成適合的粗細
 LOOKBACK_DAYS = 10                      # 往回找最近有成交的時段、前一個日盤，最多找幾天（連假、颱風假）
 SAME_CODE_MIN = 0.20                    # 前一個日盤：目前近月那一檔的量至少是當天最大那一檔的這個比例才沿用（換月前後新月份很薄）
 TTL_LIVE, TTL_DONE = 10.0, 3600.0       # 快取秒數：進行中的時段／已收完的時段
@@ -137,13 +139,33 @@ def levels(rows: Sequence[dict[str, Any]], pbin: float, ref_price: Optional[floa
     return {"poc": (lo_i + poc + 0.5) * pbin, "vah": (lo_i + hi + 1) * pbin, "val": (lo_i + lo) * pbin}
 
 
+def _n(x: float) -> float:
+    """整數口數就回整數（JSON 比較短）；不是整數照舊。"""
+    return int(x) if x == int(x) else x
+
+
+def _row(price: float, buy: float, sell: float, other: float) -> dict[str, Any]:
+    return {"price": price, "buy": _n(buy), "sell": _n(sell), "other": _n(other), "total": _n(buy + sell + other)}
+
+
 def to_rows(raw: Sequence[tuple[int, int, float]], pbin: int) -> list[dict[str, Any]]:
     """[(格索引, tick_type, 量)] → 依價格由低到高的列：{"price": 下緣, "buy": 外盤, "sell": 內盤, "other": 無法判定, "total"}。tick_type 1＝外盤、2＝內盤。"""
     acc: dict[int, list[float]] = {}
     for b, tt, v in raw:
         a = acc.setdefault(int(b), [0.0, 0.0, 0.0])
         a[0 if tt == 1 else 1 if tt == 2 else 2] += float(v)
-    return [{"price": b * pbin, "buy": a[0], "sell": a[1], "other": a[2], "total": a[0] + a[1] + a[2]} for b, a in sorted(acc.items())]
+    return [_row(b * pbin, a[0], a[1], a[2]) for b, a in sorted(acc.items())]
+
+
+def rebin_rows(rows: Sequence[dict[str, Any]], step: int) -> list[dict[str, Any]]:
+    """把細的列合併成 step 點一格（下緣是 step 的倍數）；step 小於等於原本的格寬就等於原樣。"""
+    acc: dict[int, list[float]] = {}
+    for r in rows:
+        a = acc.setdefault(int(r["price"] // step), [0.0, 0.0, 0.0])
+        a[0] += r["buy"]
+        a[1] += r["sell"]
+        a[2] += r["other"]
+    return [_row(b * step, a[0], a[1], a[2]) for b, a in sorted(acc.items())]
 
 
 # ── 讀資料庫（唯讀、同步；呼叫端用 asyncio.to_thread）──────────────
@@ -173,7 +195,8 @@ def _edge_prices(conn: sqlite3.Connection, code: str, t0: float, t1: float) -> d
 
 
 def _summary(rows: list[dict[str, Any]], pbin: int, ref: Optional[float]) -> dict[str, Any]:
-    lv = levels(rows, pbin, ref) or {}
+    """rows 是細的列（ROW_BIN）；POC 與價值區用 pbin 點一格的粗列算（POC 在最細的一點上會被單一價位的尖峰帶著跑）。"""
+    lv = levels(rebin_rows(rows, pbin), pbin, ref) or {}
     buy, sell, other = sum(r["buy"] for r in rows), sum(r["sell"] for r in rows), sum(r["other"] for r in rows)
     return {"total": buy + sell + other, "buy": buy, "sell": sell, "other": other, "poc": lv.get("poc"), "vah": lv.get("vah"), "val": lv.get("val")}
 
@@ -208,7 +231,7 @@ def previous_day_session(conn: sqlite3.Connection, prefix: str, before_ts: float
                 code = want_code
             else:
                 note = f"換月：這個日盤的近月是 {cv[0][0]}（目前是 {want_code}），價位可能差一個價差"
-        rows = to_rows(read_raw(conn, code, t0, t1, pbin), pbin)
+        rows = to_rows(read_raw(conn, code, t0, t1, ROW_BIN), ROW_BIN)
         e = _edge_prices(conn, code, t0, t1)
         s = _summary(rows, pbin, None)
         return {"date": d.isoformat(), "session": "day", "label": label(d, "day"), "code": code, "note": note, "poc": s["poc"], "vah": s["vah"], "val": s["val"],
@@ -219,7 +242,7 @@ def previous_day_session(conn: sqlite3.Connection, prefix: str, before_ts: float
 # ── 對外 ─────────────────────────────────────────────────────────
 
 def _empty(prefix: str, session: str, pbin: int, now_ts: float, note: str) -> dict[str, Any]:
-    return {"code": None, "prefix": prefix, "session": session, "date": None, "label": None, "pbin": pbin, "complete": False, "rows": [], "total": 0, "buy": 0, "sell": 0, "other": 0,
+    return {"code": None, "prefix": prefix, "session": session, "date": None, "label": None, "pbin": pbin, "row_bin": ROW_BIN, "complete": False, "rows": [], "total": 0, "buy": 0, "sell": 0, "other": 0,
             "poc": None, "vah": None, "val": None, "open": None, "high": None, "low": None, "last": None, "prev": None, "note": note, "as_of": now_ts}
 
 
@@ -240,14 +263,14 @@ def compute(db_path: Path, prefix: str, session: str, pbin: int, day: Optional[d
             d, s, cv = found
             t0, t1 = window(d, s)
             code = cv[0][0]
-            rows = to_rows(read_raw(conn, code, t0, t1, pbin), pbin)
+            rows = to_rows(read_raw(conn, code, t0, t1, ROW_BIN), ROW_BIN)
             e = _edge_prices(conn, code, t0, t1)
             sm = _summary(rows, pbin, None)
             prev = previous_day_session(conn, prefix, t0, code, pbin)
     except (sqlite3.Error, OSError) as ex:
         logger.warning("價量分布讀不到逐筆成交：%r", ex)
         return _empty(prefix, session, pbin, now_ts, "讀不到逐筆成交資料庫（後端還沒開始記，或資料庫正在維護）")
-    return {"code": code, "prefix": prefix, "session": s, "date": d.isoformat(), "label": label(d, s), "pbin": pbin, "complete": t1 <= now_ts,
+    return {"code": code, "prefix": prefix, "session": s, "date": d.isoformat(), "label": label(d, s), "pbin": pbin, "row_bin": ROW_BIN, "complete": t1 <= now_ts,
             "start": t0, "end": t1, "rows": rows, **sm, **e, "prev": prev, "note": None, "as_of": now_ts}
 
 

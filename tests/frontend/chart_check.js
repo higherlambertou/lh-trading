@@ -242,7 +242,11 @@ const text = (el) => (el == null || typeof el === "boolean") ? "" : typeof el ==
   ok(JSON.parse(store.lh_chart_prefs).toggles.profile === false, "開關記在 localStorage");
   const withData = text(render({ 13: prof }).tree);
   ok(withData.includes("價量分布 11/3 日盤") && withData.includes("POC 44,445") && withData.includes("價值區 44,440～44,460") && withData.includes("11/2 日盤：POC 45,005"), "說明列：時段、POC、價值區、前一個日盤");
-  ok(withData.includes("外盤") && withData.includes("內盤") && withData.includes("不是進場訊號") && withData.includes("歷史檢驗沒有發現預測力"), "說明列寫明內外盤顏色、不是進場訊號、歷史檢驗沒有發現預測力");
+  ok(withData.includes("■ 外盤") && withData.includes("■ 內盤") && withData.includes("只顯示、歷史檢驗沒有預測力"), "說明列寫明內外盤顏色、只顯示、歷史檢驗沒有預測力");
+  const cap = find(render({ 13: prof }).tree, (e) => e.props && typeof e.props.title === "string" && e.props.title.includes("不是進場訊號"))[0];
+  ok(cap && text(cap).includes("價量分布 11/3 日盤"), "滑過說明列會顯示完整解釋（價值區定義、不是進場訊號、歷史檢驗沒有預測力）");
+  const swatches = find(render({ 13: prof }).tree, (e) => e.type === "span" && e.props.style && e.props.style.color && text(e).trim() === "■").map((e) => e.props.style.color);
+  eq(swatches, ["#e0636a", "#3fb58a"], "說明列的色塊：外盤紅、內盤綠（和直條同色）");
   ok(text(render({ 13: prof, 14: "價量分布暫時抓不到（後端要重啟成新版才有這個端點）" }).tree).includes("價量分布暫時抓不到"), "抓不到時顯示原因");
   const off = text(render({ 3: { ...C.DEFAULT_TOGGLES, profile: false }, 13: prof }).tree);
   ok(!off.includes("POC 44,445") && !off.includes("價量分布載入中"), "關掉就沒有說明列");

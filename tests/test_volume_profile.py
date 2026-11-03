@@ -134,7 +134,11 @@ def test_compute_one_session_by_hand(tmp_path):
     db = make_db(tmp_path / "t.db", day_ticks())
     r = vp.compute(db, "TMF", "day", 10, D, ts(D, 16, 0))
     assert r["code"] == "TMFK6" and r["label"] == "11/3 日盤" and r["complete"] is True and r["session"] == "day" and r["date"] == "2026-11-03"
-    assert [(x["price"], x["buy"], x["sell"], x["other"], x["total"]) for x in r["rows"]] == [(44440, 0, 4, 3, 7), (44450, 3, 0, 0, 3), (44460, 0, 6, 0, 6), (44470, 5, 0, 0, 5)]
+    assert r["row_bin"] == 1 and r["pbin"] == 10                                           # 畫面用的列是每 1 點一列；POC／價值區用 10 點一格
+    assert [(x["price"], x["buy"], x["sell"], x["other"], x["total"]) for x in r["rows"]] == [
+        (44444, 0, 0, 3, 3), (44449, 0, 4, 0, 4), (44450, 2, 0, 0, 2), (44455, 1, 0, 0, 1), (44460, 0, 6, 0, 6), (44470, 5, 0, 0, 5)]
+    coarse = vp.rebin_rows(r["rows"], 10)                                                  # 合併成 10 點一格＝以前的粗列
+    assert [(x["price"], x["buy"], x["sell"], x["other"], x["total"]) for x in coarse] == [(44440, 0, 4, 3, 7), (44450, 3, 0, 0, 3), (44460, 0, 6, 0, 6), (44470, 5, 0, 0, 5)]
     assert (r["total"], r["buy"], r["sell"], r["other"]) == (21, 8, 10, 3)
     assert (r["poc"], r["val"], r["vah"]) == (44445.0, 44440, 44470)             # POC 那格 7；70% ＝ 14.7，往上加兩格（3＋6）到 16
     assert (r["open"], r["high"], r["low"], r["last"]) == (44444, 44470, 44444, 44470)
@@ -155,12 +159,24 @@ def test_front_contract_is_the_one_with_most_volume(tmp_path):
     assert vp.compute(make_db(tmp_path / "t2.db", t2), "TMF", "day", 10, D, ts(D, 16, 0))["code"] == "TMFK6"     # 上個月的合約早就結算了，不是候選
 
 
-def test_pbin_changes_resolution(tmp_path):
+def test_pbin_only_changes_the_levels_not_the_rows(tmp_path):
     db = make_db(tmp_path / "t.db", day_ticks())
+    r10 = vp.compute(db, "TMF", "day", 10, D, ts(D, 16, 0))
     r5 = vp.compute(db, "TMF", "day", 5, D, ts(D, 16, 0))
-    assert [x["price"] for x in r5["rows"]] == [44440, 44445, 44450, 44455, 44460, 44470] and r5["total"] == 21
+    assert r5["rows"] == r10["rows"] and r5["total"] == 21 and r5["pbin"] == 5 and r5["row_bin"] == 1         # 列一樣（最細）
+    assert (r5["poc"], r5["val"], r5["vah"]) == (44462.5, 44440, 44475)                    # 5 點一格：[3,4,2,1,6,0,5]，POC 6 在 44460～44465；往上（0＋5）、往下（2＋1、再 3＋4）加到 ≥ 14.7
     r100 = vp.compute(db, "TMF", "day", 100, D, ts(D, 16, 0))
-    assert len(r100["rows"]) == 1 and r100["rows"][0]["price"] == 44400 and r100["poc"] == 44450.0 and (r100["val"], r100["vah"]) == (44400, 44500)
+    assert r100["poc"] == 44450.0 and (r100["val"], r100["vah"]) == (44400, 44500) and r100["rows"] == r10["rows"]
+
+
+def test_rebin_rows_by_hand():
+    rows = [vp._row(44444, 0, 0, 3), vp._row(44449, 0, 4, 0), vp._row(44450, 2, 0, 0), vp._row(44459, 1, 1, 1), vp._row(44460, 0, 6, 0)]
+    assert vp.rebin_rows(rows, 10) == [vp._row(44440, 0, 4, 3), vp._row(44450, 3, 1, 1), vp._row(44460, 0, 6, 0)]
+    assert vp.rebin_rows(rows, 5)[0] == vp._row(44440, 0, 0, 3) and [r["price"] for r in vp.rebin_rows(rows, 5)] == [44440, 44445, 44450, 44455, 44460]
+    assert vp.rebin_rows(rows, 1) == rows and vp.rebin_rows([], 10) == []
+    assert sum(r["total"] for r in vp.rebin_rows(rows, 25)) == sum(r["total"] for r in rows)         # 總量不變
+    assert [r["price"] % 25 for r in vp.rebin_rows(rows, 25)] == [0, 0]                      # 下緣是 step 的倍數
+    assert vp._n(4.0) == 4 and isinstance(vp._n(4.0), int) and vp._n(2.5) == 2.5
 
 
 def prev_ticks(code="TMFK6", d=date(2026, 11, 2), vol1=10, vol2=5):
@@ -306,7 +322,7 @@ def test_route_end_to_end_on_a_temp_database(monkeypatch, tmp_path):
     monkeypatch.setattr(rm, "time", types.SimpleNamespace(time=lambda: ts(D, 16, 0, 5)))
     j = TestClient(main.app).get("/api/market/profile?code=TMF&session=day").json()
     assert j["label"] == "11/3 日盤" and j["poc"] == 44445.0 and j["prev"]["label"] == "11/2 日盤" and j["prev"]["poc"] == 45005.0
-    assert [r["price"] for r in j["rows"]] == [44440, 44450, 44460, 44470]
+    assert [r["price"] for r in j["rows"]] == [44444, 44449, 44450, 44455, 44460, 44470] and j["row_bin"] == 1
 
 
 # ── 純顯示：策略、風控、下單模組不得引用 ──────────────────────────

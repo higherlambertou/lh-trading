@@ -35,8 +35,26 @@ def test_profile_front_end_is_display_only_and_wired_to_the_endpoint():
     api = (FRONT / "lib" / "api.ts").read_text(encoding="utf-8")
     assert "/market/profile" in api and "profile: (q" in api
     chart = (FRONT / "components" / "PriceChart.tsx").read_text(encoding="utf-8")
-    assert "api.market.profile" in chart and "ProfilePrimitive" in chart and "levelLines(profile)" in chart
-    assert "attachPrimitive" in chart
+    assert "api.market.profile" in chart and "ProfilePrimitive" in chart and "attachPrimitive" in chart
+    # 價位線與標籤都畫在繪圖層裡（跟著價格軸、避開 K 棒）；不再用座標軸上的價格線（會擠成一排色塊）
+    assert "levelLines" not in chart
+    assert "createPriceLine" not in (FRONT / "lib" / "profilePrimitive.ts").read_text(encoding="utf-8")
+
+
+def test_profile_reserves_blank_space_on_the_right_and_keeps_one_background_color():
+    """價量分布畫在 K 棒右邊的空白裡：開著就把最新一根往左推（rightOffset 與視野的右緣都加同樣的留白）；
+    直條用和圖背景混出來的實心色，所以背景色只能有一個來源；格線半透明，才不會在直條上切出深色細線（直條畫在格線下面）。"""
+    chart = (FRONT / "components" / "PriceChart.tsx").read_text(encoding="utf-8")
+    assert "PROFILE_PAD_BARS" in chart and "toggles.profile ? PROFILE_PAD_BARS : PAD_BARS" in chart
+    assert "ts.applyOptions({ rightOffset: pad })" in chart                      # scrollToRealTime 也會留同樣的空白
+    assert "to: agg.length + pad" in chart                                       # 第一次與換週期時視野右緣留白
+    assert "${pad}" in chart                                                     # 開關價量分布要重設視野
+    assert "toggles.vwap, toggles.profile]" in chart                             # 畫 K 棒那個效果的依賴（開關價量分布要重畫、重設視野）
+    assert "color: PANE_BG" in chart and '"#141420"' not in chart                # 圖背景色的唯一來源
+    grid = [ln for ln in chart.splitlines() if ln.strip().startswith("const GRID_COLOR")][0]
+    assert "rgba(" in grid
+    prof = (FRONT / "lib" / "volumeProfile.ts").read_text(encoding="utf-8")
+    assert 'export const PANE_BG = "#141420"' in prof
 
 
 @pytest.mark.skipif(shutil.which("node") is None or not (FRONT / "node_modules" / "typescript").exists(), reason="需要 node 與 frontend/node_modules")

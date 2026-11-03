@@ -11,12 +11,15 @@ import {
 import type { Position, Watch } from "@/lib/api";
 import { BAND_KEYS, KINDS, bandLines, bandText, edge, fmt as fmtP, hasClose, pickBand, type BandKey, type Kind, type RangeData } from "@/lib/range";
 import { ProfilePrimitive } from "@/lib/profilePrimitive";
-import { POLL_MS as PROFILE_POLL_MS, captionText, levelLines, type ProfileData } from "@/lib/volumeProfile";
+import { HELP_TEXT as PROFILE_HELP, PAD_FRAC, PANE_BG, POLL_MS as PROFILE_POLL_MS, SELL_COLOR, BUY_COLOR, captionText, type ProfileData } from "@/lib/volumeProfile";
 
 const STORE_KEY = "lh_chart_prefs";
 const POLL_MS = 3000;
 const FIRST_MINUTES = 1500;          // 第一次往前抓約 25 小時；之後只抓增量
+const GRID_COLOR = "rgba(100, 100, 230, 0.14)";                    // 約等於背景上的 #1e1e3a；半透明才不會在價量分布的直條上切出深色細線（直條畫在格線下面）
 const VISIBLE_BARS = 120;
+const PAD_BARS = 4;                  // 沒開價量分布時，最新一根右邊留幾根的空白
+const PROFILE_PAD_BARS = Math.round(VISIBLE_BARS * PAD_FRAC);          // 開了價量分布：留大一點的空白給它畫，不蓋住 K 棒
 
 const UP = "#ff5252";                // 與報價列一致：漲＝紅、跌＝綠
 const DOWN = "#00e676";
@@ -65,6 +68,7 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
   const refs = useRef<Refs>({ chart: null, candle: null, volume: null, ma5: null, ma20: null, ma60: null, vwap: null, profile: null });
   const lines = useRef<IPriceLine[]>([]);
   const drawn = useRef<{ key: string; n: number }>({ key: "", n: 0 });
+  const padRef = useRef<number>(-1);                                  // 目前套用的 rightOffset（沒變就不重設）
   const [ready, setReady] = useState(false);
   const [bars, setBars] = useState<Bar[]>([]);
   const [interval, setIntervalMin] = useState<Interval>(1);
@@ -106,8 +110,8 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
       if (disposed || !boxRef.current) return;
       const chart = lc.createChart(boxRef.current, {
         autoSize: true,
-        layout: { background: { type: lc.ColorType.Solid, color: "#141420" }, textColor: "#7070a0", fontSize: 11 },
-        grid: { vertLines: { color: "#1e1e3a" }, horzLines: { color: "#1e1e3a" } },
+        layout: { background: { type: lc.ColorType.Solid, color: PANE_BG }, textColor: "#7070a0", fontSize: 11 },
+        grid: { vertLines: { color: GRID_COLOR }, horzLines: { color: GRID_COLOR } },
         crosshair: { mode: lc.CrosshairMode.Normal },
         rightPriceScale: { borderColor: "#1e1e3a" },
         timeScale: { borderColor: "#1e1e3a", timeVisible: true, secondsVisible: false },
@@ -141,6 +145,7 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
       refs.current = { chart: null, candle: null, volume: null, ma5: null, ma20: null, ma60: null, vwap: null, profile: null };
       lines.current = [];
       drawn.current = { key: "", n: 0 };
+      padRef.current = -1;
       setReady(false);
     };
   }, []);
@@ -221,7 +226,9 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
     if (!ready || !r.candle || !r.volume || !r.chart) return;
     const time = (t: number) => (t + TZ_OFFSET) as UTCTimestamp;
     const ts = r.chart.timeScale();
-    const key = `${interval}|${agg.length ? agg[0].t : 0}`;           // 換週期或換了起點才重設視野；開關均線不動使用者的縮放
+    const pad = toggles.profile ? PROFILE_PAD_BARS : PAD_BARS;
+    const key = `${interval}|${agg.length ? agg[0].t : 0}|${pad}`;     // 換週期、換了起點、開關價量分布（右邊留白不同）才重設視野；開關均線不動使用者的縮放
+    if (padRef.current !== pad) { ts.applyOptions({ rightOffset: pad }); padRef.current = pad; }            // scrollToRealTime 也會留同樣的空白
     const range = ts.getVisibleLogicalRange();
     const atEnd = !range || drawn.current.n === 0 || range.to >= drawn.current.n - 1;   // 使用者本來就看著最新那一根才跟著走
     r.candle.setData(agg.map((b) => ({ time: time(b.t), open: b.o, high: b.h, low: b.l, close: b.c,
@@ -235,12 +242,12 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
     r.ma60?.setData(series(sma(closes, 60), toggles.ma60));
     r.vwap?.setData(series(vwap(agg), toggles.vwap));
     if (agg.length && (drawn.current.key !== key || drawn.current.n === 0)) {
-      ts.setVisibleLogicalRange({ from: Math.max(0, agg.length - VISIBLE_BARS), to: agg.length + 4 });
+      ts.setVisibleLogicalRange({ from: Math.max(0, agg.length - VISIBLE_BARS), to: agg.length + pad });
     } else if (atEnd) {
       ts.scrollToRealTime();
     }
     drawn.current = { key, n: agg.length };
-  }, [ready, agg, interval, toggles.ma5, toggles.ma20, toggles.ma60, toggles.vwap]);
+  }, [ready, agg, interval, toggles.ma5, toggles.ma20, toggles.ma60, toggles.vwap, toggles.profile]);
 
   // 水位線與持倉／停損停利線
   useEffect(() => {
@@ -270,10 +277,7 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
         add(l.price, l.title, st.color, true, st.style);
       }
     }
-    if (toggles.profile) {
-      for (const l of levelLines(profile)) add(l.price, l.title, l.color, l.style !== 0, l.style);        // 前一個日盤的 POC／價值區（虛線）與現在的 POC（實線）
-    }
-  }, [ready, bars, toggles.levels, toggles.position, toggles.band, toggles.profile, positions, watches, range, bandKey, bandKind, profile]);
+  }, [ready, bars, toggles.levels, toggles.position, toggles.band, positions, watches, range, bandKey, bandKind]);
 
   const setI = (i: Interval) => { setIntervalMin(i); save(i, toggles); };
   const setBK = (k: BandKey) => { setBandKey(k); save(interval, toggles, k, bandKind); };
@@ -315,9 +319,9 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
         ))}
       </div>
       {toggles.profile && (
-        <div className="mb-2 text-[10px] leading-snug text-[#7070a0]" aria-live="off">
+        <div className="mb-2 text-[11px] leading-snug text-[#8c8cb4]" title={PROFILE_HELP}>
           {profileErr ? <span className="text-[#ffc107]">{profileErr}</span> : captionText(profile)}
-          <span className="text-[#404060]">　<span className="text-[#ff5a5f]">紅</span>＝外盤、<span className="text-[#2ecc71]">綠</span>＝內盤｜POC＝成交最多的價位｜價值區＝涵蓋 70% 成交量｜只顯示、不是進場訊號；歷史檢驗沒有發現預測力</span>
+          <span className="text-[#5a5a80] whitespace-nowrap">　<span style={{ color: BUY_COLOR }}>■</span> 外盤　<span style={{ color: SELL_COLOR }}>■</span> 內盤　只顯示、歷史檢驗沒有預測力</span>
         </div>
       )}
       {toggles.band && (
