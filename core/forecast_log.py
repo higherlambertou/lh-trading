@@ -197,7 +197,8 @@ async def forecast_loop(path: Path, get_day: Callable[[str], Awaitable[Optional[
 
 
 async def tick(path: Path, now: datetime, get_day: Callable[[str], Awaitable[Optional[dict[str, Any]]]],
-               get_evening: Callable[[float], Optional[dict[str, Any]]], bars_fn: Callable[[str], list[dict[str, Any]]]) -> dict[str, Any]:
+               get_evening: Callable[[float], Optional[dict[str, Any]]], bars_fn: Callable[[str], list[dict[str, Any]]],
+               tx_dir: Optional[Path] = None) -> dict[str, Any]:
     now = now.astimezone(TAIPEI)
     m, today = now.hour * 60 + now.minute, now.date().isoformat()
     done: dict[str, Any] = {}
@@ -212,5 +213,5 @@ async def tick(path: Path, now: datetime, get_day: Callable[[str], Awaitable[Opt
         if nt.get("expect") and ev.get("prev_day"):
             done["night"] = await asyncio.to_thread(log_forecast, path, "night", ev["prev_day"], nt["expect"],
                                                     {k: nt.get(k) for k in ("r20n", "vix", "vix_date", "day_range", "n")})
-    done["filled"] = await asyncio.to_thread(fill_outcomes, path, bars_fn, now)
+    done["filled"] = await asyncio.to_thread(fill_outcomes, path, bars_fn, now, tx_dir or TX_DIR)       # tx_dir 給測試用：不要讓測試去讀會隨時間長出新資料的真實目錄
     return done

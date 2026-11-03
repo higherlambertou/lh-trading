@@ -74,22 +74,50 @@ def test_hit_rate_and_summary(tmp_path):
 
 def test_tick_logs_in_the_right_windows_and_fills_outcomes(tmp_path):
     p = tmp_path / "m.db"
+    tx = tmp_path / "tx"                                                                   # 空的期交所資料夾：不讀真實的 data/taifex/tx（那裡會隨時間長出 10/22 夜盤的資料，測試就變了）
     day = {"expect": E3, "r20": 600.0, "vix": 30.0, "vix_date": "2026-10-21"}
     ev = {"prev_day": "2026-10-22", "night": {"expect": {"lo": 600.0, "mid": 900.0, "hi": 1360.0}, "r20n": 684.0, "vix": 30.3, "vix_date": "2026-10-22", "day_range": 1120.0}}
     async def get_day(today):
         return day
     bars = {"2026-10-22": [{"date": "2026-10-22", "high": 1000.0, "low": 400.0}] * 300}
     calls = []
-    r = asyncio.run(fl.tick(p, tpe(2026, 10, 22, 9, 0), get_day, lambda now: calls.append(now) or ev, lambda t: bars.get(t, [])))
+    r = asyncio.run(fl.tick(p, tpe(2026, 10, 22, 9, 0), get_day, lambda now: calls.append(now) or ev, lambda t: bars.get(t, []), tx))
     assert r["day"] is True and "night" not in r and calls == []                          # 日盤時段只記日盤
-    r = asyncio.run(fl.tick(p, tpe(2026, 10, 22, 13, 50), get_day, lambda now: ev, lambda t: bars.get(t, [])))
+    r = asyncio.run(fl.tick(p, tpe(2026, 10, 22, 13, 50), get_day, lambda now: ev, lambda t: bars.get(t, []), tx))
     assert "day" not in r and r["filled"] == 0                                            # 14:00 之前不補今天的實際值
-    r = asyncio.run(fl.tick(p, tpe(2026, 10, 22, 16, 30), get_day, lambda now: ev, lambda t: bars.get(t, [])))
+    r = asyncio.run(fl.tick(p, tpe(2026, 10, 22, 16, 30), get_day, lambda now: ev, lambda t: bars.get(t, []), tx))
     assert r["night"] is True and r["filled"] == 1                                        # 今天日盤的實際值補上了
     with sqlite3.connect(p) as c:
         assert c.execute("SELECT realized FROM forecast_outcome WHERE kind='day'").fetchone()[0] == 600.0
-    asyncio.run(fl.tick(p, tpe(2026, 10, 24, 10, 0), get_day, lambda now: ev, lambda t: []))          # 週六：不記日盤
-    assert fl.pending(p) == [("night", "2026-10-22")]                                      # 夜盤要等期交所資料
+    asyncio.run(fl.tick(p, tpe(2026, 10, 24, 10, 0), get_day, lambda now: ev, lambda t: [], tx))          # 週六：不記日盤
+    assert fl.pending(p) == [("night", "2026-10-22")]                                      # 夜盤要等期交所資料（資料夾是空的）
+
+
+def test_tick_fills_the_night_outcome_once_the_taifex_rows_exist(tmp_path):
+    """期交所 TX 日行情裡有 10/22 晚上的盤後列（日期是 10/23）之後，隔天的 tick 就把夜盤的實際值補上。"""
+    p = tmp_path / "m.db"
+    tx = tmp_path / "tx"
+    tx.mkdir()
+    header = "交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,漲跌價,漲跌%,成交量,結算價,未沖銷契約數,最後最佳買價,最後最佳賣價,歷史最高價,歷史最低價,是否因訊息面暫停交易,交易時段,價差對單式委託成交量"
+    (tx / "tx_2026_10.csv").write_bytes((header + "\n2026/10/23,TX,202611  ,100,1400,800,101,1,1%,900,101,10,100,101,200,50,,盤後,\n").encode("cp950"))
+    fl.log_forecast(p, "night", "2026-10-22", E3, {})
+    n = fl.fill_outcomes(p, lambda t: [], tpe(2026, 10, 23, 16, 30), tx)
+    assert n == 1 and fl.pending(p) == []
+    with sqlite3.connect(p) as c:
+        assert c.execute("SELECT realized, source FROM forecast_outcome WHERE kind='night'").fetchone() == (600.0, "taifex_tx")
+
+
+def test_tick_without_tx_dir_uses_the_module_default(tmp_path, monkeypatch):
+    """正式跑的時候沒有指定 tx_dir：用模組的 TX_DIR（這裡換成暫存資料夾，確認真的有走這條路）。"""
+    p = tmp_path / "m.db"
+    tx = tmp_path / "tx"
+    tx.mkdir()
+    header = "交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,漲跌價,漲跌%,成交量,結算價,未沖銷契約數,最後最佳買價,最後最佳賣價,歷史最高價,歷史最低價,是否因訊息面暫停交易,交易時段,價差對單式委託成交量"
+    (tx / "tx_2026_10.csv").write_bytes((header + "\n2026/10/23,TX,202611  ,100,1400,800,101,1,1%,900,101,10,100,101,200,50,,盤後,\n").encode("cp950"))
+    monkeypatch.setattr(fl, "TX_DIR", tx)
+    fl.log_forecast(p, "night", "2026-10-22", E3, {})
+    r = asyncio.run(fl.tick(p, tpe(2026, 10, 23, 16, 30), None, lambda now: None, lambda t: []))
+    assert r["filled"] == 1 and fl.pending(p) == []
 
 
 def test_not_in_simulation(monkeypatch):
