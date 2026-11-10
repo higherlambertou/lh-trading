@@ -567,6 +567,17 @@ python -m core.notify watchdog --event freeze --detail down --mode live   # watc
 - **別當進場訊號**：歷史檢驗（發現 78）沒有發現前一日的 POC／價值區有磁吸或擋住的效果；小台與大台同一天的 POC 可能差很多（大台常被收盤前的量帶到收盤價附近）。
 - 測試：`python -m pytest tests/test_volume_profile.py tests/test_frontend_profile.py tests/test_frontend_chart.py -q`。
 
+### 持倉情境表（只顯示、不碰下單；update.md 2026-11-10）
+
+**需前端 build**。〈部位／損益〉下面（有期貨持倉才出現）：一行說「價格每漲／跌 100 點損益多少、再走幾點被追繳、再走幾點權益歸零」，點「展開」看 ±50～300 點的整張表。多空混合會抵銷；選擇權不在裡面；假設權益數是現在的值、各合約同點數漲跌、維持保證金不變、不含手續費與滑價。
+- **數字怪怪的**：先看畫面上有沒有「權益資料不是最新的」；權益與維持保證金來自保證金快取（約每 1～2 分鐘刷新）。維持保證金是 0（還沒取得）時只顯示損益、不顯示離追繳多遠。
+- 測試：`python -m pytest tests/test_frontend_scenario.py -q`。
+
+### 夜盤 1 分 K 歷史與離線研究（update.md 發現 81、82）
+
+研究用、與交易無關。`python -m core.night_history status` 看資料涵蓋（2020 起每年約 240 晚）；`python -m core.night_history fetch [--from 2020-03-02] [--until YYYY-MM-DD]` 補抓（**會另外登入券商一條連線、約 3 分鐘**，登入前會先查正式盤後端的連線數，太多就不登入；重跑是冪等的）。
+`python -m core.night_window_study run`、`python -m core.daily_indicator_study run` 只會跑一次，之後只印上次的結果（`--rerun` 才重跑，重跑前請先在 update.md 重新登記）。測試：`python -m pytest tests/test_night_history.py tests/test_night_window_study.py tests/test_daily_indicator_study.py -q`。
+
 ### 機率範圍帶（只顯示、不碰下單；update.md 發現 48）
 
 **需重啟後端＋前端 build**。回答「現在的價格，15 分鐘後有 80% 的機率落在哪裡」：以最新成交價為中心、用最近 30 分鐘的 σ（和〈建議停損停利〉同一個）乘上歷史實測的倍數，不是模擬。

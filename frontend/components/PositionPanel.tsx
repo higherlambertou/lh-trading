@@ -9,6 +9,7 @@ import {
 import type { Unprotected } from "@/lib/protection";
 import { posLimit, staleAge, type Cadence } from "@/lib/staleness";
 import UnprotectedBanner from "./UnprotectedBanner";
+import ScenarioCard from "./ScenarioCard";
 
 function Num({ value }: { value: number }) {
   const pos = value >= 0;
@@ -213,6 +214,7 @@ export default function PositionPanel() {
               })}
             </div>
           )}
+          {positions.length > 0 && <ScenarioCard positions={positions} last={quotes} margin={margin} stale={staleAge(dataAge, posAge, cadence) != null} />}
         </>
       )}
     </div>

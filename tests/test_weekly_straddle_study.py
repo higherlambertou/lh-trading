@@ -285,7 +285,7 @@ def test_report_and_empty():
 def test_not_imported_by_trading_modules():
     for d in ("strategies", "api", "core"):
         for p in (ROOT / d).rglob("*.py"):
-            if p.name in ("weekly_straddle_study.py", "drift_timing_study.py", "night_reversal_study.py", "call_put_study.py", "intraday_momentum_study.py", "volume_profile_study.py"):   # 其他離線研究借用檢定與資料定義（發現 72～78）
+            if p.name in ("weekly_straddle_study.py", "drift_timing_study.py", "night_reversal_study.py", "call_put_study.py", "intraday_momentum_study.py", "volume_profile_study.py", "night_window_study.py", "daily_indicator_study.py"):   # 其他離線研究借用檢定與資料定義（發現 72～82）
                 continue
             tree = ast.parse(p.read_text(encoding="utf-8"))
             names = [x.name for n in ast.walk(tree) if isinstance(n, ast.Import) for x in n.names]

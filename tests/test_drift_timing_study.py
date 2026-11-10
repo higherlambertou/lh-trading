@@ -152,7 +152,7 @@ def test_report_and_too_few():
 def test_not_imported_by_trading_modules():
     for d in ("strategies", "api", "core"):
         for p in (ROOT / d).rglob("*.py"):
-            if p.name in ("drift_timing_study.py", "night_reversal_study.py"):                  # night_reversal_study＝另一個離線研究，沿用同一份資料定義（發現 73）
+            if p.name in ("drift_timing_study.py", "night_reversal_study.py", "daily_indicator_study.py"):                  # night_reversal_study、daily_indicator_study＝另外的離線研究，沿用同一份資料定義（發現 73、82）
                 continue
             tree = ast.parse(p.read_text(encoding="utf-8"))
             names = [x.name for n in ast.walk(tree) if isinstance(n, ast.Import) for x in n.names]

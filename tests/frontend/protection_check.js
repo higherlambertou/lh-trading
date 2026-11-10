@@ -15,7 +15,7 @@ const transpile = (src, out) => {
   return require(out);
 };
 fs.writeFileSync(path.join(TMP, "lucide_stub.js"), "module.exports = new Proxy({}, { get: (_, n) => (p) => require('react').createElement('i', { 'data-icon': String(n) }) });");
-const map = { "@/lib/protection": path.join(TMP, "protection.js"), "@/lib/api": path.join(TMP, "api.js"), "./UnprotectedBanner": path.join(TMP, "banner.js"), "lucide-react": path.join(TMP, "lucide_stub.js"),
+const map = { "@/lib/protection": path.join(TMP, "protection.js"), "@/lib/api": path.join(TMP, "api.js"), "./UnprotectedBanner": path.join(TMP, "banner.js"), "./ScenarioCard": path.join(TMP, "scenario_card.js"), "@/lib/scenario": path.join(TMP, "scenario.js"), "lucide-react": path.join(TMP, "lucide_stub.js"),
               "@/lib/staleness": path.join(TMP, "staleness.js") };
 const orig = Module._resolveFilename;
 Module._resolveFilename = function (req, ...r) { return map[req] || orig.call(this, req, ...r); };
@@ -23,6 +23,8 @@ const P = transpile(path.join(FRONT, "lib", "protection.ts"), path.join(TMP, "pr
 transpile(path.join(FRONT, "lib", "api.ts"), path.join(TMP, "api.js"));
 const S = transpile(path.join(FRONT, "lib", "staleness.ts"), path.join(TMP, "staleness.js"));
 const Banner = transpile(path.join(FRONT, "components", "UnprotectedBanner.tsx"), path.join(TMP, "banner.js")).default;
+transpile(path.join(FRONT, "lib", "scenario.ts"), path.join(TMP, "scenario.js"));                                   // 部位面板底下的持倉情境表（它自己的測試在 scenario_check.js）
+transpile(path.join(FRONT, "components", "ScenarioCard.tsx"), path.join(TMP, "scenario_card.js"));
 const Panel = transpile(path.join(FRONT, "components", "PositionPanel.tsx"), path.join(TMP, "panel.js")).default;
 const e = React.createElement;
 let fail = 0;
