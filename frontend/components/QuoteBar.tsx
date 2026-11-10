@@ -110,7 +110,7 @@ export default function QuoteBar() {
   const codes = Object.keys(quotes).filter((c) => codeLabel(c) !== null);
 
   return (
-    <div className="flex items-center gap-4">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1">              {/* 手機寬度：整條會換到第二行、高低與時間藏起來，不會把版面撐寬 */}
       <span className={`flex items-center gap-1 text-[11px] ${connected ? "text-[#00e676]" : "text-[#ff5252]"}`}>
         {connected ? <Wifi size={11} /> : <WifiOff size={11} />}
         {connected ? "即時" : "斷線"}
@@ -141,13 +141,13 @@ export default function QuoteBar() {
               {Math.abs(chg) > 0 ? fmt(Math.abs(chg)) : ""}
             </span>
             {q.high > 0 && q.low > 0 && (
-              <span className="font-mono text-[10px] tabular-nums text-[#404060]">
+              <span className="hidden sm:inline font-mono text-[10px] tabular-nums text-[#404060]">
                 <span className="text-[#ff5252]">H {fmt(q.high)}</span>
                 {" / "}
                 <span className="text-[#00e676]">L {fmt(q.low)}</span>
               </span>
             )}
-            <span className="text-[10px] text-[#404060] tabular-nums">
+            <span className="hidden md:inline text-[10px] text-[#404060] tabular-nums">
               {tsToTime(q.ts)}
             </span>
           </div>

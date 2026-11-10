@@ -176,14 +176,14 @@ const base = (over = {}) => ({
 }
 
 // ── 整個面板（hooks 替身）──
-const NAMES = ["st", "err"];
-function renderPanel(forced = {}, props = {}) {
+const NAMES = ["st", "err", "open"];
+function renderPanel(forced = {}, props = {}, raw = false) {               // raw＝回原始 HTML（檢查 class）；預設只回文字
   let n = 0;
   React.useState = (init) => { const i = n++; return [Object.prototype.hasOwnProperty.call(forced, NAMES[i]) ? forced[NAMES[i]] : init, () => {}]; };
   React.useEffect = () => {}; React.useCallback = (f) => f;
   const out = renderToStaticMarkup(e(Panel, props));
   if (n !== NAMES.length) throw new Error(`useState 數量 ${n} ≠ 測試裡的 ${NAMES.length}：元件的 state 增減了，請同步更新 NAMES`);
-  return out.replace(/<[^>]+>/g, "").replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+  return raw ? out : out.replace(/<[^>]+>/g, "").replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
 }
 {
   const full = renderPanel({ st: base() });
@@ -191,6 +191,17 @@ function renderPanel(forced = {}, props = {}) {
     && full.includes("買賣掛單（五檔）") && full.includes("均價與基差") && full.includes("時段脈絡"));
   check("面板：外/內盤卡片下面有各合約外盤占比；舊後端沒有", full.includes("各合約外盤占比（口數）") && !renderPanel({ st: (() => { const o = base(); delete o.xc; return o; })() }).includes("各合約外盤占比"));
   check("面板：compact 模式也有三張卡片", renderPanel({ st: base() }, { compact: true }).includes("買賣掛單（五檔）"));
+  // compact（交易分頁）：只占一欄、卡片排兩欄、手機預設收起（內容 hidden lg:block）、標題列有「展開」鈕；完整版沒有這些
+  const compactHtml = renderPanel({ st: base() }, { compact: true }, true);
+  check("compact：不橫跨兩欄", !compactHtml.includes("lg:col-span-2"));
+  check("compact：卡片排兩欄", (compactHtml.match(/grid grid-cols-1 sm:grid-cols-2 gap-3/g) || []).length === 2 && !compactHtml.includes("md:grid-cols-3"));
+  check("compact：手機預設收起、寬螢幕照常顯示", compactHtml.includes('class="hidden lg:block space-y-4"'));
+  check("compact：標題列有展開鈕（只在窄螢幕）", /lg:hidden[^"]*"[^>]*>展開/.test(compactHtml) && compactHtml.includes('aria-expanded="false"'));
+  const openHtml = renderPanel({ st: base(), open: true }, { compact: true }, true);
+  check("compact：展開後內容顯示、鈕變收起", openHtml.includes('class="space-y-4"') && !openHtml.includes("hidden lg:block") && openHtml.includes(">收起"));
+  const fullHtml = renderPanel({ st: base() }, {}, true);
+  check("完整版：橫跨兩欄、三欄卡片、沒有展開鈕、內容永遠顯示", fullHtml.includes("lg:col-span-2") && (fullHtml.match(/md:grid-cols-3/g) || []).length === 2 && !fullHtml.includes("aria-expanded") && !fullHtml.includes("hidden lg:block"));
+  check("compact 收起時標題列還在（最新價看得到）", compactHtml.includes("盤中即時") && compactHtml.includes("每 3 秒更新"));
   check("面板：還沒有行情時不顯示卡片", !renderPanel({ st: base({ ready: false }) }).includes("買賣掛單（五檔）") && renderPanel({ st: null }).includes("尚未收到行情"));
   const old = base(); for (const k of ["book", "session_flow", "vwap", "basis", "ex_range", "ctx", "range_source", "session", "xc"]) delete old[k];
   const o = renderPanel({ st: old });

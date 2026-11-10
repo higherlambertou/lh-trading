@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Radio } from "lucide-react";
+import { Radio, ChevronDown, ChevronUp } from "lucide-react";
 import { api, LiveState, FlowWindow } from "@/lib/api";
 import IntradayCards, { CrossFlow } from "./IntradayCards";
 
@@ -52,10 +52,12 @@ function FlowRow({ label, w, up, down }: { label: string; w: FlowWindow | undefi
   );
 }
 
-// compact：放在「交易」分頁時用——版面緊，免責說明縮成一行（完整說明在「市場」分頁的同一個面板）
+// compact：放在「交易」分頁時用——只占一欄（下單面板旁邊）、卡片排兩欄、免責說明縮成一行（完整說明在「市場」分頁的同一個面板）；
+// 手機寬度預設收起只留標題列（六張卡片很長，會把下單面板推到好幾屏之外），點標題展開。
 export default function LiveStatePanel({ compact = false }: { compact?: boolean }) {
   const [st, setSt] = useState<LiveState | null>(null);
   const [err, setErr] = useState(false);
+  const [open, setOpen] = useState(false);                     // 只在 compact＋窄螢幕有作用（寬螢幕一律展開）
 
   const load = useCallback(async () => {
     try {
@@ -77,8 +79,9 @@ export default function LiveStatePanel({ compact = false }: { compact?: boolean 
   const cohText = st?.coherence === 1 ? "協調" : st?.coherence === -1 ? "矛盾" : st?.coherence === 0 ? "中性" : "—";
   const rangeColor = st?.range_label === "大波動" ? YELLOW : st?.range_label === "正常" ? GREEN : MUTED;
 
+  const cols = compact ? "grid grid-cols-1 sm:grid-cols-2 gap-3" : "grid grid-cols-1 md:grid-cols-3 gap-3";
   return (
-    <div className="lg:col-span-2 bg-[#141420] rounded-xl border border-[#1e1e3a] p-5 space-y-4">
+    <div className={`${compact ? "" : "lg:col-span-2 "}bg-[#141420] rounded-xl border border-[#1e1e3a] p-5 space-y-4`}>
       <div className="flex items-center gap-2">
         <Radio size={14} className="text-[#00e676]" />
         <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest">盤中即時</h2>
@@ -92,12 +95,19 @@ export default function LiveStatePanel({ compact = false }: { compact?: boolean 
         <span className="ml-auto text-[10px] text-[#404060]">
           {err ? "連線中斷，顯示舊資料" : "每 3 秒更新"}
         </span>
+        {compact && (
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
+            className="lg:hidden flex items-center gap-0.5 text-[11px] text-[#7070a0] hover:text-[#e0e0f0]">
+            {open ? "收起" : "展開"}{open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+        )}
       </div>
 
+      <div className={compact && !open ? "hidden lg:block space-y-4" : "space-y-4"}>
       {!st?.ready ? (
         <p className="text-[11px] text-[#404060]">尚未收到行情（券商連線並有成交後會顯示）。</p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className={cols}>
           <div className="bg-[#0d0d14] rounded-lg border border-[#1e1e3a] p-3 space-y-3">
             <div className="text-[10px] text-[#7070a0] uppercase tracking-widest">外/內盤（只算真實成交）</div>
             {(["20", "100", "300"] as const).map((k) => (
@@ -152,7 +162,7 @@ export default function LiveStatePanel({ compact = false }: { compact?: boolean 
         </div>
       )}
 
-      {st?.ready && <IntradayCards st={st} />}
+      {st?.ready && <IntradayCards st={st} cols={cols} />}
 
       {compact ? (
         <p className="text-[10px] text-[#404060]">只顯示、不影響下單；判讀門檻尚未經過歷史驗證，僅供參考（完整說明在「市場」分頁）。</p>
@@ -162,6 +172,7 @@ export default function LiveStatePanel({ compact = false }: { compact?: boolean 
         振幅比 ≥{th.big_move}× 大波動、≤{th.quiet}× 清淡）尚未經過歷史驗證，僅供參考。
       </p>
       )}
+      </div>
     </div>
   );
 }

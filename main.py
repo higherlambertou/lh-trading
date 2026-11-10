@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from typing import Optional
 from contextlib import asynccontextmanager
 
 import faulthandler
@@ -54,7 +55,7 @@ from core.live_state import live_state
 from api.routes_intel import router as intel_router
 from api.routes_signals import router as signals_router
 from api.routes_system import router as system_router
-from core import rollover
+from core import rollover, relogin
 from core.tick_store import tick_recorder
 from core.flow_store import flow_recorder
 from core.trade_log import current_mode, trade_log
@@ -88,6 +89,14 @@ async def _startup_bg() -> None:
         trade_log.record_positions(await broker.list_positions())
     except Exception as e:
         logger.warning("進場紀錄對帳：取得券商持倉失敗（略過）: %s", e)
+
+
+def _relogin_busy() -> Optional[str]:
+    """換證重啟前的空手檢查（core/relogin.py）：只讀部位／委託／監控的快取，不向券商發查詢。"""
+    from api.routes_order import _trades_cache, has_unfinished
+    from api.routes_position import _strategy_running, get_meta, get_positions
+    return relogin.busy_reason(get_positions(), get_meta().get("positions_age_sec"), has_unfinished(_trades_cache),
+                               manual_monitor.list_watches(), _strategy_running())
 
 
 @asynccontextmanager
@@ -124,6 +133,7 @@ async def lifespan(app: FastAPI):
     shadow_task = loop.create_task(shadow_loop(market_state.store))      # 順勢爆量訊號的影子模式（只記錄與通知、不下單；SIGNAL_SHADOW=false 關閉）
     rollover_task = loop.create_task(rollover.rollover_loop(lambda: broker.resolved_codes))   # 近月合約結算後要求 watchdog 重啟換月（ROLLOVER_RESTART=false 關閉）
     session_task = loop.create_task(session_watch_loop(lambda: bool(broker._known_subs), TradingDays(TwCalendar().check)))   # 券商連線假死偵測（/api/health 回報 stale → watchdog 重啟；SESSION_WATCH=false 關閉）
+    relogin_task = loop.create_task(relogin.relogin_loop(lambda: session_watch.connected_at, _relogin_busy))   # 每天空手的空檔換證重啟（登入 token 只有 24 小時；RELOGIN_RESTART=false 關閉，發現 80）
     taifex_task = loop.create_task(taifex_update_loop())                  # 期交所日資料自動更新（獨立子行程；只有正式盤跑；TAIFEX_UPDATE=false 關閉）
     gapfill_task = loop.create_task(gapfill_loop(market_state.store, broker.kbars, lambda: broker.is_connected))   # 走勢圖缺口回補（盤前／盤後各一次；只有正式盤；GAPFILL=false 關閉）
 
@@ -138,7 +148,7 @@ async def lifespan(app: FastAPI):
     for _name, _t in (("開機訂閱", startup_task), ("保證金與流量", cache_task), ("部位刷新", positions_task), ("委託清單", trades_task),
                       ("市場狀態", market_task), ("選擇權價差取樣", spread_task), ("盤前跨市場紀錄", premarket_task), ("當沖收盤提醒", reminder_task),
                       ("美國事件提醒", cpi_task), ("重啟後的持倉保護", protect_task), ("波動放大提醒", vol_task), ("盤前摘要", brief_task),
-                      ("週報", weekly_task), ("影子訊號", shadow_task), ("換月", rollover_task), ("連線假死偵測", session_task),
+                      ("週報", weekly_task), ("影子訊號", shadow_task), ("換月", rollover_task), ("換證", relogin_task), ("連線假死偵測", session_task),
                       ("期交所資料更新", taifex_task), ("走勢圖回補", gapfill_task), ("傍晚摘要", evening_task), ("預測紀錄", forecast_task),
                       ("手動停損監控", manual_monitor._task)):
         task_watch.register(_name, _t)                                    # 背景工作意外停止就推播、系統健康面板顯示（發現 69）
@@ -159,6 +169,7 @@ async def lifespan(app: FastAPI):
     brief_task.cancel()
     weekly_task.cancel()
     rollover_task.cancel()
+    relogin_task.cancel()
     session_task.cancel()
     taifex_task.cancel()
     gapfill_task.cancel()
@@ -224,6 +235,8 @@ def health() -> dict[str, str]:
         out["stale_reason"] = stale
     if rollover.wanted():                           # 近月合約已結算、要 watchdog 重啟換月（core/rollover.py）；只讀記憶體
         out["restart_wanted"] = rollover.wanted() or ""
+    elif relogin.wanted():                          # 空手的空檔換證（登入 token 只有 24 小時；core/relogin.py）
+        out["restart_wanted"] = relogin.wanted() or ""
     return out
 
 

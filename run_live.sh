@@ -115,6 +115,7 @@ health_state() {
             # restart_wanted=rollover：後端發現訂閱的近月合約已結算，要重新登入才會換到下個月（update.md 發現 38）
             case "$body" in
                 *'"restart_wanted":"rollover"'*) echo "rollover" ;;
+                *'"restart_wanted":"relogin"'*) echo "relogin" ;;       # 空手的空檔換證：登入 token 只有 24 小時（update.md 發現 80）
                 *) echo "healthy" ;;
             esac ;;
         # session=stale：後端行程活著、但券商那邊沒報價或查詢一直失敗（連線假死，update.md 發現 65）
@@ -239,10 +240,14 @@ while true; do
             fails=0
         fi
 
-        if [ "$state" = "rollover" ]; then          # 後端要求換月重啟：近月合約已結算，要重新登入才會取得下個月的合約
+        if [ "$state" = "rollover" ] || [ "$state" = "relogin" ]; then          # 後端要求有計畫的重啟：換月（近月合約已結算）或換證（登入 token 快滿 24 小時）；重啟＝重新登入
             now_s=$(date +%s)
             if [ "$elapsed" -ge "$ROLLOVER_MIN_UPTIME" ] && [ $((now_s - last_rollover)) -ge "$ROLLOVER_MIN_GAP" ]; then
-                log "換月：後端要求重啟（近月合約已結算）→ 正常關閉 PID=${CHILD_PID} 後重啟"
+                if [ "$state" = "relogin" ]; then
+                    log "換證：後端要求重啟（登入 token 快滿 24 小時，趁空手的空檔重新登入）→ 正常關閉 PID=${CHILD_PID} 後重啟"
+                else
+                    log "換月：後端要求重啟（近月合約已結算）→ 正常關閉 PID=${CHILD_PID} 後重啟"
+                fi
                 last_rollover=$now_s
                 planned=1
                 kill "$CHILD_PID" 2>/dev/null        # 先請它正常關閉（worker 才會登出券商、不留孤兒連線）

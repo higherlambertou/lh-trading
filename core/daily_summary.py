@@ -355,7 +355,7 @@ class MarketStateService:
             elif s["state"] == "REVERT":
                 mult = -1
             else:
-                return 0, f"今日市場狀態「{STATE_LABEL.get(s['state'], s['state'])}」，market_bias=自動 → 不進場"
+                return 0, f"今日市場狀態「{STATE_LABEL.get(s['state'], s['state'])}」：方向設定是「自動」，這個狀態不偏任何一邊，不進場"
         if s["direction"] == 0:
             return 0, "日K收盤貼近 20 日均線，無方向可偏，不進場"
         return s["direction"] * mult, ""

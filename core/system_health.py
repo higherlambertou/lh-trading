@@ -23,9 +23,10 @@ CONNECTION_LIMIT = 5
 DISK_WARN_GB = 10.0
 LOG_WARN_MB = 200.0
 _LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\[watchdog-\w+\]\s+(.*)$")
-_KINDS = (("stale", "判定券商連線假死"), ("freeze", "判定故障("), ("rollover", "換月：後端要求重啟"), ("gone", "進程已不存在"),
-          ("stop", "收到結束訊號"), ("start", "健康檢查目標"))
-KIND_TEXT = {"stale": "連線假死", "freeze": "凍結／斷線", "gone": "行程結束", "rollover": "換月", "stop": "手動停止", "start": "watchdog 啟動"}
+_KINDS = (("stale", "判定券商連線假死"), ("freeze", "判定故障("), ("rollover", "換月：後端要求重啟"), ("relogin", "換證：後端要求重啟"),
+          ("gone", "進程已不存在"), ("stop", "收到結束訊號"), ("start", "健康檢查目標"))
+KIND_TEXT = {"stale": "連線假死", "freeze": "凍結／斷線", "gone": "行程結束", "rollover": "換月", "relogin": "換證", "stop": "手動停止", "start": "watchdog 啟動"}
+PLANNED = ("rollover", "relogin")                     # 有計畫的重啟（換月、每天換證）：算次數、不算異常
 
 
 def item(key: str, title: str, status: str, text: str, detail: Optional[str] = None) -> dict[str, Any]:
@@ -97,8 +98,8 @@ def watchdog_events(text: str, now: float, days: int = 7) -> list[tuple[float, s
 def restarts_item(events: Optional[list[tuple[float, str, str]]], now: float, note: Optional[str] = None) -> dict[str, Any]:
     if events is None:
         return item("restarts", "自動重啟（近 7 天）", "off", note or "讀不到 watchdog 的 log")
-    auto = [e for e in events if e[1] in ("stale", "freeze", "gone", "rollover")]
-    counts = {k: sum(1 for e in auto if e[1] == k) for k in ("stale", "freeze", "gone", "rollover")}
+    auto = [e for e in events if e[1] in ("stale", "freeze", "gone", *PLANNED)]
+    counts = {k: sum(1 for e in auto if e[1] == k) for k in ("stale", "freeze", "gone", *PLANNED)}
     recent_bad = [e for e in auto if e[1] in ("stale", "freeze", "gone") and now - e[0] < 86400]
     if not auto:
         text = "近 7 天沒有自動重啟"

@@ -23,6 +23,12 @@ def _watch(fn: Callable[..., Any], *a: Any) -> None:
         pass
 
 
+def _retrieve_exception(fut: "asyncio.Future") -> None:
+    """已經沒人等的 future：把例外取出來丟掉（取消的沒有例外）。"""
+    if not fut.cancelled():
+        fut.exception()
+
+
 class BrokerClient:
     _instance: Optional["BrokerClient"] = None
 
@@ -173,6 +179,7 @@ class BrokerClient:
             return await asyncio.wait_for(asyncio.shield(fut), timeout)
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
+            fut.add_done_callback(_retrieve_exception)      # worker 的回覆（多半是錯誤）可能剛好在逾時之後才送到：沒人等它了，把例外收掉，asyncio 才不會記「Future exception was never retrieved」
             raise
 
     # ── 公開 API ──────────────────────────────────────────────────────

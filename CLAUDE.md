@@ -35,7 +35,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 ```
 **Windows（PowerShell，開發機）**：`.sh` 用了 `lsof`／`/tmp`／`trap`，改用 `run_sim.ps1`／`run_live.ps1`（`powershell -ExecutionPolicy Bypass -File .\run_live.ps1`；Ctrl+C 停止；log 在 `%TEMP%\lh_*.out.log`／`.err.log`，每次重啟覆寫）。長期掛機正式交易請用 Linux／macOS 家機的 `.sh`；`.ps1` 沒有位址檢查與換月。
 
-**watchdog 要點**（完整行為見 ARCHITECTURE.md〈watchdog〉）：每 15s 看 `/health`，六態——`healthy`／`nobroker`（200 但沒連券商）／`down`（逾時＝凍結）／`noiface`（`BIND_HOST` 不在本機＝Tailscale 斷線，不殺後端）／`rollover`（後端要求換月重啟，正常關閉後重啟）／`stale`（後端說券商連線假死：行程活著但查詢一直連線錯誤或報價停了，`core/session_watch.py`，正常關閉後重啟；只在交易時段判斷，發現 65；颱風假這類沒開盤的日子：日盤重啟一次後新連線仍沒有任何報價就不再重啟、推播一次，發現 76）。
+**watchdog 要點**（完整行為見 ARCHITECTURE.md〈watchdog〉）：每 15s 看 `/health`，六態——`healthy`／`nobroker`（200 但沒連券商）／`down`（逾時＝凍結）／`noiface`（`BIND_HOST` 不在本機＝Tailscale 斷線，不殺後端）／`rollover`／`relogin`（後端要求有計畫的重啟：換月，或每天空手的空檔換證——登入 token 只有 24 小時，`core/relogin.py`，發現 80；正常關閉後重啟）／`stale`（後端說券商連線假死：行程活著但查詢一直連線錯誤或報價停了，`core/session_watch.py`，正常關閉後重啟；只在交易時段判斷，發現 65；颱風假這類沒開盤的日子：日盤重啟一次後新連線仍沒有任何報價就不再重啟、推播一次，發現 76）。
 連上過之後 `nobroker`／`down` 連續 2 次（≈30s）就 kill -9 並重啟。**腳本鐵則**：log 用 `>>`（`>` 會清空正在跑那個的 log）；變數後面緊接全形標點要寫 `${var}`；
 長等待一律用 `isleep`（背景 sleep＋wait，否則 `pkill` 會被拖最長 10 分鐘）；`main.py` 啟動前先試綁 `BIND_HOST`（`core/bind_check.py`）。測試 `tests/test_watchdog_scripts.py`。
 
@@ -99,6 +99,7 @@ cd frontend && npm run dev      # 開發；正式用 npm run build && npm run st
 - **手動停損確認**：觸發後不立刻移除監看，用委託狀態確認再重送——**務必保留「先確認再重送」**，否則可能重複平倉變成反向開倉（`tests/test_manual_close.py`）。
 - **持倉保護**：手動停損監控落地（`data/manual_watches_<mode>.json`）、重啟後與券商部位對帳恢復（`reconcile`：部位不在的舊監看一律丟掉）；**策略不自動恢復**；新增 `ManualWatch` 欄位要決定進不進 `_SAVED_FIELDS`。
 - **換月**（`core/rollover.py`，發現 38）：後端偵測訂閱的近月已結算 → `/api/health` 帶 `restart_wanted` → watchdog 正常關閉重啟；只在合約檔更新後的時間點試，四次不成就通知放棄。`ROLLOVER_RESTART=false` 關閉。
+- **每天換證重啟**（`core/relogin.py`，發現 80）：shioaji 登入 token 只有 24 小時、到期 SDK 斷線不重登；後端在空手的空檔（14:00～14:50，補救 08:00～08:30）用同一條 `restart_wanted=relogin` 路徑要求 watchdog 重啟，讓到期永遠落在空檔。**空手檢查只讀快取**（部位、委託、監控、策略），查不到就不重啟；`RELOGIN_RESTART=false` 關閉。手動重啟後端最好也挑這個空檔。
 - **背景工作**：main.py 新增背景工作一律加進 `task_watch.register` 的清單（意外停止才會被發現；`tests/test_system_health.py` 檢查）。
 - **帳務查詢頻率**（`positions_refresh_loop` 等）：worker 單執行緒，查詢期間下單會排隊；**加輪詢或縮短間隔前先估總和**（見下方上限表）。`broker.kbars()` 只在盤前／盤後用。
 

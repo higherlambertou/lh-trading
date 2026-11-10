@@ -688,6 +688,31 @@
 
 ## 更新紀錄（新 → 舊）
 
+### 2026-11-10 — 系統評價後的三項：每天換證重啟（發現 80）、手機版與下單動線、幾個小瑕疵 — 待 commit
+- **起因**：你要我評價兩個系統、看哪裡能更直覺（評價存在 `data/prototypes/review_1110_*.png` 與記憶）。你選了 1（換證）、3（版面）、4（小項），通知洪水那項不動。
+- **發現 80：每天換證重啟（`core/relogin.py`）**
+  - 問題：永豐 shioaji 的登入 token 只有 24 小時，到期 SDK 主動斷線且不重登（shioaji.log「Received 401, proactively disconnecting Solace session」恰好在登入後 24 小時 ± 35 秒）。
+    之後查詢全部 Session error、報價停止，要等連線假死偵測（發現 65）在交易時段發現才重啟。11/04～11/10 每個交易日一次：16:54、17:00、17:06（夜盤剛開）、11/09 08:48、11/10 08:52（日盤剛開），
+    每次日盤約 4 分鐘、夜盤約 6 分鐘沒報價、**停損監控失效**，每週約 900 行 Session error；而且每次重啟把到期時間重設成「現在＋24 小時」，所以一直黏在開盤附近。
+  - 做法：在空手的空檔主動請 watchdog 重啟（重新登入＝新 token），走換月那條 `restart_wanted` 路徑（值是 `relogin`，換月優先）。
+    - 下午 14:00～14:50（日盤 13:45 收、夜盤 15:00 開）：只要 token 撐不到明天 13:50 就重啟 → 正常情況每天一次（含週末假日），token 永遠在 14:00 左右換新、到期落在隔天同一個空檔。
+    - 早上 08:00～08:30：只有會死在今天日盤裡（13:45 前到期）才重啟——補救用。
+    - 空手＝部位快取不超過 15 分鐘且沒有部位、沒有未完成委託、沒有手動停損停利監控、沒有策略在跑；任何一項查不到就延後（寧可讓假死偵測處理，也不帶倉重啟）。只讀快取、不查券商。
+    - 空檔過了還沒被重啟（沒用 watchdog）就收回要求。不推播。`RELOGIN_RESTART=false` 關閉。
+  - watchdog（`run_live.sh`／`run_sim.sh`）：`relogin` 態與 `rollover` 同一段處理（正常關閉、有計畫、不退避、最少間隔 300 秒），log 寫「換證：後端要求重啟…」；系統健康面板分類「換證」、不算異常。
+  - 測試 `tests/test_relogin.py`（25 項：兩個空檔的邊界、週末、已到期、10 天模擬每天剛好一次且到期都在 14:00～14:02、空手判斷、迴圈的延後／收回／例外、接線靜態檢查）；watchdog 腳本測試加 relogin（含整支腳本實跑）；系統健康測試加換證分類。
+  - **第一次生效**：重啟後端後，今天 14:00 若已過就等明天 14:00；在那之前 token 仍會在「這次重啟＋24 小時」到期一次。**自己重啟後端也請挑 14:00～14:50**。
+- **手機版與下單動線**
+  - 頁首行情條（微台＋台指＋高低＋時間）在 390px 的手機不換行，整頁被撐到 518px、瀏覽器縮小整個畫面。改成可換行，高低（<640px）與時間（<768px）藏起來。
+  - 交易分頁的順序改成：走勢圖 → 部位／損益｜停損停利監控＋委託紀錄 → 手動下單｜盤中即時 → 自動策略（摺疊）→ 進場判斷標記。原本「盤中即時」六張卡片橫跨整排、把下單面板推到桌面 2 屏、手機 7 屏之外；
+    現在它只占下單面板旁邊那一欄（卡片排兩欄），手機寬度預設收起只留標題列（點「展開」）。
+- **小項**：`broker._acall` 逾時後才到的回覆沒人收例外（一週 28 次「Future exception was never retrieved」）→ 逾時時掛一個 done callback 把例外取走（`tests/test_broker_timeout.py`）；
+  市場狀態表沒有策略跑過的日子不再顯示「scalp／結果」兩欄；ATM IV 輸入框的提示改成現在的值；盤中即時卡片與市場狀態的「market_bias=自動」程式字樣改成白話。
+- **沒做**：通知量（你說沒關係）；雲端備份（要先裝 Google Drive）。
+- **改了**：`core/relogin.py`（新）、`main.py`、`core/broker.py`、`core/system_health.py`、`core/daily_summary.py`、`run_live.sh`、`run_sim.sh`、`frontend/components/{QuoteBar,LiveStatePanel,IntradayCards,DashboardTabs,MarketStatePanel}.tsx`、
+  測試 `tests/test_relogin.py`（新）、`tests/test_broker_timeout.py`（新）、`tests/test_watchdog_scripts.py`、`tests/test_system_health.py`、`tests/frontend/intraday_check.js`、`tests/test_frontend_layout.py`（新）；文件 CLAUDE.md、ARCHITECTURE.md、OPERATION.md。
+- **要你做**：前端 `npm run build`＋重啟 `next start`；後端重啟（**挑 14:00～14:50 或 08:00～08:30 空手時**）。
+
 ### 2026-11-03（續）— 價量分布重新設計：你說「有夠難看」→ 畫成一座看得出形狀的山（發現 79）— 388602e
 - **起因**：你說走勢圖裡的價量分布有夠難看。看了你真實的畫面（夜盤、1 分，前後對照圖在 `data/prototypes/profile_redesign_*.png`），診斷出四個問題：
   1. 直條只是右下角一小堆，還被最新的 K 棒蓋住（圖的右邊沒有留白）；

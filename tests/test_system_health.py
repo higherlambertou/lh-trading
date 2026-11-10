@@ -40,6 +40,7 @@ WD = """2026-10-14 09:00:00  [watchdog-live]  判定故障(down) → kill -9 PID
 2026-10-22 10:57:30  [watchdog-live]  判定券商連線假死(stale) → 正常關閉 PID=2 後重啟
 2026-10-22 11:30:00  [watchdog-live]  判定故障(nobroker) → kill -9 PID=3 並重啟（自動重連）
 2026-10-22 12:00:00  [watchdog-live]  進程已不存在（登入失敗或自行結束），重啟
+2026-10-22 14:00:10  [watchdog-live]  換證：後端要求重啟（登入 token 快滿 24 小時，趁空手的空檔重新登入）→ 正常關閉 PID=5 後重啟
 2026-10-22 16:33:00  [watchdog-live]  收到結束訊號，關閉正式盤 (PID=4)…
 亂七八糟的一行
 """
@@ -47,12 +48,14 @@ WD = """2026-10-14 09:00:00  [watchdog-live]  判定故障(down) → kill -9 PID
 
 def test_watchdog_events_and_restarts_item():
     ev = sh.watchdog_events(WD, NOW)
-    assert [k for _, k, _ in ev] == ["start", "rollover", "stale", "freeze", "gone", "stop"]          # 10/14 那筆超過 7 天
+    assert [k for _, k, _ in ev] == ["start", "rollover", "stale", "freeze", "gone", "relogin", "stop"]          # 10/14 那筆超過 7 天
     it = sh.restarts_item(ev, NOW)
     assert it["status"] == "warn"                                                        # 24 小時內有假死／凍結
-    assert it["text"].startswith("近 7 天自動重啟 4 次（連線假死 1、凍結／斷線 1、行程結束 1、換月 1）") and "最近一次 10/22 12:00 行程結束" in it["text"]
+    assert it["text"].startswith("近 7 天自動重啟 5 次（連線假死 1、凍結／斷線 1、行程結束 1、換月 1、換證 1）") and "最近一次 10/22 14:00 換證" in it["text"]
     calm = sh.restarts_item(sh.watchdog_events(WD, ts(2026, 10, 24, 17, 0)), ts(2026, 10, 24, 17, 0))
-    assert calm["status"] == "ok"
+    assert calm["status"] == "ok"                                                        # 換證是有計畫的，不算異常
+    daily = [(NOW - 86400 * k, "relogin", "換證：後端要求重啟") for k in range(6, -1, -1)]
+    assert sh.restarts_item(daily, NOW)["status"] == "ok" and "換證 7" in sh.restarts_item(daily, NOW)["text"]
     assert sh.restarts_item([], NOW)["text"] == "近 7 天沒有自動重啟"
     assert sh.restarts_item(None, NOW, "讀不到 /tmp/x")["status"] == "off"
 

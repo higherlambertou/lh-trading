@@ -212,9 +212,9 @@ export function CrossFlow({ st }: { st: LiveState }) {
   );
 }
 
-export default function IntradayCards({ st }: { st: LiveState }) {
+export default function IntradayCards({ st, cols = "grid grid-cols-1 md:grid-cols-3 gap-3" }: { st: LiveState; cols?: string }) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div className={cols}>
       <BookCard st={st} />
       <VwapCard st={st} />
       <ContextCard st={st} />

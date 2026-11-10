@@ -131,6 +131,8 @@ export default function MarketStatePanel() {
 
   const h = st?.hurst;
   const iv = st?.iv;
+  const showScalp = rows.some((r) => r.scalp_on || r.trades > 0);          // 沒有策略跑過的日子，「scalp／結果」兩欄只是雜訊
+  const cols = ["日期", "Hurst", "IV%分位", "狀態", ...(showScalp ? ["scalp", "結果"] : []), "判斷依據", "備註"];
   const today = new Date().toLocaleDateString("sv");     // YYYY-MM-DD（本機時區）
 
   return (
@@ -222,7 +224,7 @@ export default function MarketStatePanel() {
                 <div className="text-[11px] text-[#ffc107]">IV 層未就緒，目前只依 Hurst 判斷</div>
               )}
               <div className="text-[11px] text-[#404060] font-mono">
-                方向 {st.direction_label}（scalp market_bias：1 順勢／-1 逆勢／2 依狀態自動）
+                方向 {st.direction_label}（策略的方向設定：1 順勢／-1 逆勢／2 依狀態自動）
               </div>
               <div className="text-[11px] text-[#ffc107]/80">僅供參考：由 Hurst 推出的方向偏向，配上盤中買賣力道，歷史上沒有差異（update.md 發現 14）；IV 百分位那一格仍有用（隱含波動能多預測當天振幅，發現 54）。</div>
             </Card>
@@ -241,7 +243,7 @@ export default function MarketStatePanel() {
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-[11px] text-[#7070a0]">手動輸入今日 ATM IV（%）</span>
         <input
-          type="number" step="0.1" min={0} max={300} value={ivInput} placeholder="18.5"
+          type="number" step="0.1" min={0} max={300} value={ivInput} placeholder={iv?.value != null ? `現在 ${iv.value.toFixed(1)}` : "例：18.5"}
           onChange={(e) => setIvInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") handleIv(); }}
           className={`${INPUT} w-20`}
@@ -260,14 +262,14 @@ export default function MarketStatePanel() {
         <table className="w-full text-[11px] font-mono">
           <thead>
             <tr className="text-[#7070a0] text-left">
-              {["日期", "Hurst", "IV%分位", "狀態", "scalp", "結果", "判斷依據", "備註"].map((t) => (
+              {cols.map((t) => (
                 <th key={t} className="font-normal px-1.5 py-1 whitespace-nowrap">{t}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={8} className="px-1.5 py-2 text-[#404060]">尚無日誌（每個交易日盤前自動產生）</td></tr>
+              <tr><td colSpan={cols.length} className="px-1.5 py-2 text-[#404060]">尚無日誌（每個交易日盤前自動產生）</td></tr>
             )}
             {rows.map((r) => (
               <tr key={r.date} className="border-t border-[#1e1e3a]">
@@ -283,11 +285,13 @@ export default function MarketStatePanel() {
                 <td className="px-1.5 py-1">
                   {r.market_state ? <Chip code={r.market_state} text={STATE_TEXT[r.market_state] ?? r.market_state} /> : "—"}
                 </td>
-                <td className="px-1.5 py-1">{r.scalp_on ? "是" : "否"}</td>
-                <td className="px-1.5 py-1 whitespace-nowrap">
-                  <span className={pnlColor(r.pnl)}>{r.result}</span>
-                  {r.trades > 0 && <span className={`${pnlColor(r.pnl)} ml-1`}>{money(r.pnl)}</span>}
-                </td>
+                {showScalp && <td className="px-1.5 py-1">{r.scalp_on ? "是" : "否"}</td>}
+                {showScalp && (
+                  <td className="px-1.5 py-1 whitespace-nowrap">
+                    <span className={pnlColor(r.pnl)}>{r.result}</span>
+                    {r.trades > 0 && <span className={`${pnlColor(r.pnl)} ml-1`}>{money(r.pnl)}</span>}
+                  </td>
+                )}
                 {(["basis", "notes"] as const).map((k) => (
                   <td key={k} className="px-1.5 py-1">
                     <input

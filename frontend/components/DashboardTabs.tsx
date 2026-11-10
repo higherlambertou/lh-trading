@@ -86,15 +86,16 @@ export default function DashboardTabs() {
             <div className={tab === "trade" ? "space-y-4" : "hidden"}>
               <MarketStrip />
               <PriceChart active={tab === "trade"} />
+              {/* 手動交易的動線：部位＋停損監控／委託在最上面、下單面板緊接著（旁邊是盤中即時，手機預設收起）、研究用的放最後 */}
               <div className={GRID}>
                 <PositionPanel />
+                <TradesPanel />
+                <OrderPanel />
+                <LiveStatePanel compact />
                 <Folded id="strategy" title="自動策略" defaultOpen={isSimMode()} keepMounted
                   why="7 個策略、154 組參數的回測扣掉成本後都沒有找到優勢（update.md 發現 22、23），正式盤預設收起；收起不會停止任何正在跑的策略。">
                   <StrategyPanel />
                 </Folded>
-                <LiveStatePanel compact />
-                <OrderPanel />
-                <TradesPanel />
                 <EntryLabelCard />
               </div>
             </div>

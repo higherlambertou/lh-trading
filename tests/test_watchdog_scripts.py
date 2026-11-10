@@ -224,6 +224,8 @@ def test_term_during_isleep_exits_promptly_and_leaves_no_sleep_behind(tmp_path, 
     ('{"status":"ok","broker_connected":"True"}', "healthy"),
     ('{"status":"ok","broker_connected":"True","restart_wanted":"rollover"}', "rollover"),
     ('{"status":"ok","broker_connected":"False","restart_wanted":"rollover"}', "nobroker"),        # 沒連上券商：先當斷線處理，不是換月
+    ('{"status":"ok","broker_connected":"True","restart_wanted":"relogin"}', "relogin"),           # 空手的空檔換證（發現 80）
+    ('{"status":"ok","broker_connected":"False","restart_wanted":"relogin"}', "nobroker"),
     ('{"status":"ok","broker_connected":"True","restart_wanted":"something_else"}', "healthy"),
     ('{"status":"ok","broker_connected":"False","session":"stale","stale_reason":"日盤中 200 秒沒有收到任何報價"}', "stale"),   # 連線假死（發現 65）
     ('{"status":"ok","broker_connected":"False"}', "nobroker"),
@@ -242,10 +244,11 @@ IFCONFIG_CMD = "printf '\\tinet 100.127.125.13 --> 100.127.125.13 netmask 0xffff
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
 def test_rollover_restart_is_planned_not_a_failure(script):
     text = script.read_text(encoding="utf-8")
-    i = text.index('if [ "$state" = "rollover" ]; then')
-    assert i < text.index('if [ "$state" = "healthy" ]; then')                    # 先處理換月旗標，再走一般健康分支
+    i = text.index('if [ "$state" = "rollover" ] || [ "$state" = "relogin" ]; then')
+    assert i < text.index('if [ "$state" = "healthy" ]; then')                    # 先處理換月／換證旗標，再走一般健康分支
     branch = text[i:text.index('if [ "$state" = "healthy" ]; then')]
     assert 'ROLLOVER_MIN_UPTIME' in branch and 'ROLLOVER_MIN_GAP' in branch and 'planned=1' in branch
+    assert "換月：後端要求重啟" in branch and "換證：後端要求重啟" in branch            # 兩種理由各自的 log（系統健康面板靠這個分類）
     assert 'kill "$CHILD_PID"' in branch and 'kill -9 "$CHILD_PID"' in branch      # 先正常關閉（worker 登出），逾時才 -9
     assert re.search(r'if \[ "\$planned" -eq 1 \]; then\s+consec_short=0', text)    # 有計畫的重啟不算短命、不退避
 
@@ -260,8 +263,9 @@ def _wait(cond, timeout, step=0.2):
 
 
 @pytest.mark.skipif(not HAS_BASH or shutil.which("pgrep") is None, reason="需要 bash")
+@pytest.mark.parametrize("flag,logged", [("rollover", "換月：後端要求重啟"), ("relogin", "換證：後端要求重啟")])
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
-def test_rollover_flag_restarts_the_backend_once_without_backoff(tmp_path, script):
+def test_rollover_flag_restarts_the_backend_once_without_backoff(tmp_path, script, flag, logged):
     """整支腳本（常數縮短、路徑換成暫存、假的 curl／後端）：健康 → 後端要求換月 → watchdog 正常關閉並重啟一次；
     旗標一直留著也不會連續重啟（最少間隔），而且不算短命重啟（沒有退避）。"""
     work, sim = tmp_path / "work", tmp_path / "sim"
@@ -299,13 +303,13 @@ def test_rollover_flag_restarts_the_backend_once_without_backoff(tmp_path, scrip
         first = pids()[0]
         assert _wait(lambda: "進入正常監看" in (sim / "wd.out").read_text(), 15), "沒進入正常監看"
         time.sleep(3)                                                        # 超過 ROLLOVER_MIN_UPTIME（2 秒）
-        (sim / "health.body").write_text('{"status":"ok","broker_connected":"True","restart_wanted":"rollover"}')
-        assert _wait(lambda: len(pids()) == 2, 20), "沒有因為換月旗標重啟"
+        (sim / "health.body").write_text('{"status":"ok","broker_connected":"True","restart_wanted":"%s"}' % flag)
+        assert _wait(lambda: len(pids()) == 2, 20), "沒有因為旗標重啟"
         assert not _alive(first), "舊的後端沒被關掉"
         time.sleep(4)                                                        # 旗標還在、新後端也過了最少存活時間：最少間隔（60 秒）要擋住
         assert len(pids()) == 2, "旗標一直在就連續重啟了"
         out = (sim / "wd.out").read_text()
-        assert out.count("換月：後端要求重啟") == 1
+        assert out.count(logged) == 1 and out.count("後端要求重啟") == 1
         assert "退避等待" not in out and "連續第" not in out, out
     finally:
         try:
