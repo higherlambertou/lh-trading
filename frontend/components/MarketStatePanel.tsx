@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, ReactNode } from "react";
+import { useState, useEffect, useCallback, ReactNode, Fragment } from "react";
 import { Compass, RefreshCw } from "lucide-react";
 import { api, MarketState, JournalRow, MarketStats } from "@/lib/api";
 
@@ -12,6 +12,7 @@ const COLOR: Record<string, string> = {
 export const STATE_TEXT: Record<string, string> = {
   TREND: "趨勢", REVERT: "均值回歸", UNCLEAR: "不明確", IV_LOW: "IV 偏低", IV_HIGH: "IV 偏高",
 };
+const NOTE_COLS = ["判斷依據", "備註"];
 const PHASE_TEXT: Record<string, string> = { early: "預算", pre: "盤前判斷", manual: "手動重算" };
 const INPUT =
   "bg-[#0d0d14] border border-[#1e1e3a] rounded px-2 py-1 text-[11px] font-mono text-[#e0e0f0] " +
@@ -134,6 +135,7 @@ export default function MarketStatePanel() {
   const showScalp = rows.some((r) => r.scalp_on || r.trades > 0);          // 沒有策略跑過的日子，「scalp／結果」兩欄只是雜訊
   const cols = ["日期", "Hurst", "IV%分位", "狀態", ...(showScalp ? ["scalp", "結果"] : []), "判斷依據", "備註"];
   const today = new Date().toLocaleDateString("sv");     // YYYY-MM-DD（本機時區）
+  const [expanded, setExpanded] = useState<string | null>(null);   // 窄螢幕：點了哪一列（展開判斷依據／備註的輸入框）
 
   return (
     <div className="lg:col-span-2 bg-[#141420] rounded-xl border border-[#1e1e3a] p-5 space-y-4">
@@ -172,7 +174,7 @@ export default function MarketStatePanel() {
         </p>
       ) : (
         <>
-          <div className="text-[10px] text-[#404060]">
+          <div className="help text-[10px] text-[#404060]">
             以下是盤前判斷：每日 {String(st.config?.pre_hhmm ?? 830).padStart(4, "0")} 算一次，盤中不變（即時狀態看下方「盤中即時」）
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -224,9 +226,9 @@ export default function MarketStatePanel() {
                 <div className="text-[11px] text-[#ffc107]">IV 層未就緒，目前只依 Hurst 判斷</div>
               )}
               <div className="text-[11px] text-[#404060] font-mono">
-                方向 {st.direction_label}（策略的方向設定：1 順勢／-1 逆勢／2 依狀態自動）
+                方向 {st.direction_label}<span className="help">（策略的方向設定：1 順勢／-1 逆勢／2 依狀態自動）</span>
               </div>
-              <div className="text-[11px] text-[#ffc107]/80">僅供參考：由 Hurst 推出的方向偏向，配上盤中買賣力道，歷史上沒有差異（update.md 發現 14）；IV 百分位那一格仍有用（隱含波動能多預測當天振幅，發現 54）。</div>
+              <div className="help text-[11px] text-[#ffc107]/80">僅供參考：由 Hurst 推出的方向偏向，配上盤中買賣力道，歷史上沒有差異（update.md 發現 14）；IV 百分位那一格仍有用（隱含波動能多預測當天振幅，發現 54）。</div>
             </Card>
           </div>
 
@@ -258,12 +260,13 @@ export default function MarketStatePanel() {
       </div>
 
       {/* ── 每日日誌 ─────────────────────────────────────────── */}
-      <div className="overflow-x-auto">
+      {/* 判斷依據／備註兩欄在窄螢幕藏起來（sm 以下），點那一列會在下面展開成兩個輸入框 */}
+      <div className="scroll-x">
         <table className="w-full text-[11px] font-mono">
           <thead>
             <tr className="text-[#7070a0] text-left">
               {cols.map((t) => (
-                <th key={t} className="font-normal px-1.5 py-1 whitespace-nowrap">{t}</th>
+                <th key={t} className={`font-normal px-1.5 py-1 whitespace-nowrap ${NOTE_COLS.includes(t) ? "hidden sm:table-cell" : ""}`}>{t}</th>
               ))}
             </tr>
           </thead>
@@ -272,8 +275,9 @@ export default function MarketStatePanel() {
               <tr><td colSpan={cols.length} className="px-1.5 py-2 text-[#404060]">尚無日誌（每個交易日盤前自動產生）</td></tr>
             )}
             {rows.map((r) => (
-              <tr key={r.date} className="border-t border-[#1e1e3a]">
-                <td className="px-1.5 py-1 whitespace-nowrap text-[#a0a0c0]">{r.date.slice(5)}</td>
+              <Fragment key={r.date}>
+              <tr className="border-t border-[#1e1e3a] sm:cursor-default cursor-pointer" onClick={() => setExpanded((x) => (x === r.date ? null : r.date))}>
+                <td className="px-1.5 py-1 whitespace-nowrap text-[#a0a0c0]">{r.date.slice(5)}{(draftOf(r).basis || draftOf(r).notes) && <span className="sm:hidden text-[#3b82f6]" title="有判斷依據或備註"> ✎</span>}</td>
                 <td className="px-1.5 py-1 whitespace-nowrap">
                   {r.hurst != null ? r.hurst.toFixed(2) : "—"}
                   {r.hurst_z != null && <span className="text-[#404060]"> z{r.hurst_z >= 0 ? "+" : ""}{r.hurst_z.toFixed(1)}</span>}
@@ -293,7 +297,7 @@ export default function MarketStatePanel() {
                   </td>
                 )}
                 {(["basis", "notes"] as const).map((k) => (
-                  <td key={k} className="px-1.5 py-1">
+                  <td key={k} className="hidden sm:table-cell px-1.5 py-1">
                     <input
                       value={draftOf(r)[k]}
                       onChange={(e) => setDraft(r, { [k]: e.target.value })}
@@ -305,6 +309,23 @@ export default function MarketStatePanel() {
                   </td>
                 ))}
               </tr>
+              {expanded === r.date && (
+                <tr className="sm:hidden">
+                  <td colSpan={cols.length - NOTE_COLS.length} className="px-1.5 pb-2 space-y-1">
+                    {(["basis", "notes"] as const).map((k) => (
+                      <input key={k}
+                        value={draftOf(r)[k]}
+                        onChange={(e) => setDraft(r, { [k]: e.target.value })}
+                        onBlur={() => saveNote(r)}
+                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                        placeholder={k === "basis" ? "你看到了什麼" : "備註"}
+                        className={`${INPUT} w-full`}
+                      />
+                    ))}
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>

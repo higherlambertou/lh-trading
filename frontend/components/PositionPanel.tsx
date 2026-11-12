@@ -109,9 +109,18 @@ export default function PositionPanel() {
         </p>
       ) : (
         <>
-          {/* Margin grid */}
-          {margin && (
-            <div className="grid grid-cols-2 gap-2 mb-4">
+          {/* 空手（部位資料是新的、確定沒有持倉）：一行就好——權益、今天已實現；保證金兩格是 0、未實現是 0，不用各占一格 */}
+          {margin && positions.length === 0 && posAge >= 0 && posAge <= posLimit(cadence) && (
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[11px] text-[#7070a0] mb-1">
+              <span className="text-sm text-[#404060]">目前無持倉</span>
+              <span>權益 <span className="font-mono text-sm text-[#e0e0f0]">{margin.equity.toLocaleString()}</span></span>
+              <span>今日已實現 <Num value={totalRealizedPnl} /></span>
+            </div>
+          )}
+
+          {/* Margin grid（有部位、或還不確定有沒有部位時的完整版） */}
+          {margin && !(positions.length === 0 && posAge >= 0 && posAge <= posLimit(cadence)) && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
               {[
                 { label: "權益數", value: margin.equity.toLocaleString(), plain: true },
                 { label: "未實現損益", value: Math.round(totalPnl), plain: false },
@@ -135,7 +144,7 @@ export default function PositionPanel() {
           {pnlList.length > 0 && (
             <div className="mb-4">
               <div className="text-[11px] text-[#7070a0] mb-2">已實現損益明細</div>
-              <div className="overflow-x-auto">
+              <div className="scroll-x">
                 <table className="w-full text-xs font-mono">
                   <thead>
                     <tr className="text-[#404060] border-b border-[#1e1e3a]">
@@ -172,7 +181,7 @@ export default function PositionPanel() {
                 部位資料已過期（{Math.round(posAge)} 秒前），無法確認是否有持倉
               </p>
             ) : (
-              <p className="text-sm text-[#404060] text-center py-6">目前無持倉</p>
+              !margin && <p className="text-sm text-[#404060] text-center py-6">目前無持倉</p>      // 有權益數時上面那一行已經寫了
             )
           ) : (
             <div className="space-y-2">

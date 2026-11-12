@@ -27,18 +27,22 @@ fs.writeFileSync(path.join(TMP, "suggest_stub.js"), "module.exports = { __esModu
 // 〈口數提示〉（SizeHint）也有自己的檢查（size_check.js）：同樣換成替身，只驗證它放在哪裡、吃哪三個值
 fs.writeFileSync(path.join(TMP, "size_stub.js"), "module.exports = { __esModule: true, default: function SizeHintStub() { return null; } };");
 fs.writeFileSync(path.join(TMP, "precheck_stub.js"), "module.exports = { __esModule: true, default: function PrecheckStub() { return null; } };");
+// 〈今日判斷〉一行（TodayHint）：純提醒，在 ui_check.js 檢查文字；這裡換成替身，只驗證它在送出鈕上面
+fs.writeFileSync(path.join(TMP, "today_stub.js"), "module.exports = { __esModule: true, default: function TodayHintStub() { return null; } };");
 const orig = Module._resolveFilename;
 Module._resolveFilename = function (req, ...r) {
   if (req === "@/lib/api") return path.join(TMP, "api_stub.js");
   if (req === "./SizeHint") return path.join(TMP, "size_stub.js");
   if (req === "./PrecheckCard") return path.join(TMP, "precheck_stub.js");
   if (req === "./StopSuggestCard") return path.join(TMP, "suggest_stub.js");
+  if (req === "./TodayHint") return path.join(TMP, "today_stub.js");
   if (req === "@/lib/optionSeries") return path.join(TMP, "optionSeries.js");
   return orig.call(this, req, ...r);
 };
 const SuggestCard = require(path.join(TMP, "suggest_stub.js")).default;
 const SizeHint = require(path.join(TMP, "size_stub.js")).default;
 const Precheck = require(path.join(TMP, "precheck_stub.js")).default;
+const TodayHint = require(path.join(TMP, "today_stub.js")).default;
 transpile(path.join(FRONT, "lib", "optionSeries.ts"), path.join(TMP, "optionSeries.js"));
 const Comp = transpile(path.join(FRONT, "components", "OrderPanel.tsx"), path.join(TMP, "panel.js")).default;
 
@@ -47,7 +51,9 @@ const NAMES = ["mode", "action", "quantity", "orderType", "limitPrice", "stopLos
                "contract", "priceType", "futPrice", "dayTrade",
                "right", "series", "seriesSel", "strikes", "strike", "exitBuffer", "optLoading", "optErr", "optQuote", "underlying"];
 const IDX = Object.fromEntries(NAMES.map((n, i) => [n, i]));
+// 方向預設是「沒選」（2026-11-12）：既有的案例都要先選好方向，這裡一律預設 Buy；要測沒選的情況就明確傳 action: null
 function render(forced = {}) {
+  forced = { action: "Buy", ...forced };
   const sets = [];
   let n = 0;
   React.useState = (init) => {
@@ -187,6 +193,36 @@ const lastPlace = () => [...calls].reverse().find((c) => c[0] === "place")?.[1];
   }
   check("期貨模式最上面有下單前檢查、選擇權模式沒有", find(render({ contract: "TMF" }).tree, (e) => e.type === Precheck).length === 1 && find(render({ mode: "option" }).tree, (e) => e.type === Precheck).length === 0);
   check("選擇權模式沒有口數提示（買方最大虧損是權利金，不是停損距離）", find(render({ mode: "option" }).tree, (e) => e.type === SizeHint).length === 0);
+
+  // ── 方向預設不選（2026-11-12）：送出鈕灰掉、寫「先選買多或賣空」、按了也不送；選了才變成「確認買多…」 ──
+  {
+    const { tree } = render({ action: null, contract: "TMF" });
+    const btn = buttons(tree).find((b) => text(b.props.children).includes("先選"));
+    check("沒選方向：送出鈕寫「先選買多或賣空」、disabled、灰底", !!btn && btn.props.disabled === true && btn.props.style.backgroundColor === "#1e1e3a" && !submit(tree), btn && J([text(btn.props.children), btn.props.disabled, btn.props.style]));
+    calls.length = 0; if (btn) await btn.props.onClick(); await tick();
+    check("沒選方向：就算呼叫 onClick 也不送單", calls.filter((c) => c[0] === "place").length === 0, J(calls));
+    const o = render({ action: null, mode: "option", seriesSel: "TXO|202610", strike: 49800, limitPrice: "120" }).tree;
+    check("選擇權沒選方向：寫「先選買進或賣出」", buttons(o).some((b) => text(b.props.children).includes("先選買進或賣出") && b.props.disabled === true));
+    const dirs = buttons(render({ action: null }).tree).filter((b) => ["買多", "賣空"].includes(text(b.props.children).trim()));
+    check("沒選方向：買多、賣空兩個鈕都沒有被選取（aria-pressed=false）", dirs.length === 2 && dirs.every((b) => b.props["aria-pressed"] === false), J(dirs.map((b) => b.props["aria-pressed"])));
+    const t2 = render({ action: "Buy" }).tree;
+    check("選了買多：送出鈕變成「確認買多 1 口（市價）」、綠底、可按", !!submit(t2) && submit(t2).props.disabled === false && submit(t2).props.style.backgroundColor === "#00e676");
+    const t3 = render({ action: "Sell", quantity: 2 }).tree;
+    check("選了賣空：紅底、寫 2 口", text(submit(t3).props.children).startsWith("確認賣空 2 口") && submit(t3).props.style.backgroundColor === "#ff1744");
+  }
+  // ── 動線（2026-11-12）：表單 → 口數提示 → 今日判斷 → 送出鈕 → 下單前檢查、建議停損停利（參考資料在送出鈕下面、不再切開表單） ──
+  {
+    const { tree } = render({ contract: "TMF", stopLoss: "30" });
+    const order = [];
+    (function walk(n) { if (Array.isArray(n)) return n.forEach(walk); if (!n || typeof n !== "object") return;
+      if (n.type === SizeHint) order.push("size"); if (n.type === TodayHint) order.push("today"); if (n.type === Precheck) order.push("precheck"); if (n.type === SuggestCard) order.push("suggest");
+      if (n.type === "button" && text(n.props.children).startsWith("確認")) order.push("submit"); if (n.type === "input" && n.props.placeholder === "例：50") order.push("tp");
+      walk(n.props && n.props.children); })(tree);
+    check("順序：停利欄 → 口數提示 → 今日判斷 → 送出鈕 → 下單前檢查 → 建議停損停利", J(order) === J(["tp", "size", "today", "submit", "precheck", "suggest"]), J(order));
+    const src = fs.readFileSync(path.join(FRONT, "components", "OrderPanel.tsx"), "utf8");
+    check("送出鈕不用 sticky（會蓋住標題與欄位）", !src.includes('className="sticky'));
+    check("選擇權模式沒有今日判斷那一行（它是期貨方向的盤前結論）", find(render({ mode: "option" }).tree, (e) => e.type === TodayHint).length === 0 && find(render({}).tree, (e) => e.type === TodayHint).length === 1);
+  }
   {
     const { tree, sets } = render({ contract: "TMF", stopLoss: "5", takeProfit: "6" });
     find(tree, (e) => e.type === SuggestCard)[0].props.onApply("102", "68");

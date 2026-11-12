@@ -71,7 +71,9 @@ const tick = () => new Promise((r) => setImmediate(r));
   {
     const h = harness({ [S.data]: null });
     const tx = strip(h.render({ stopLoss: "" }));
-    check("容器：沒填停損只提示怎麼用，不問後端", tx.includes("口數提示（只提醒，不擋單）") && tx.includes("填停損點數後，這裡會顯示依風險上限最多幾口") && tx.includes("假設停損會成交"), tx);
+    check("容器：沒填停損只有一行提示（沒有說明、沒有框），不問後端", tx.includes("口數提示（只提醒，不擋單）：填停損點數後，這裡會顯示依風險上限最多幾口") && !tx.includes("假設停損會成交"), tx);
+    const tf = strip(harness({ [S.data]: one }).render({ stopLoss: "30" }));
+    check("容器：填了停損才有數字與（收在說明裡的）風險定義", tf.includes("最多 1 口") && tf.includes("假設停損會成交"), tf);
     const calls = []; apiMod.api.risk.size = async (...a) => { calls.push(a); return one; };
     const r = h.effects[0][0](); await tick();
     check("容器：沒有停損時不呼叫後端", calls.length === 0 && r === undefined && h.st[S.data] === null);

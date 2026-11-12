@@ -164,6 +164,12 @@ kill -USR1 <pid>   # 所有 thread 的 Python 堆疊會印到 app log
   停止策略時，策略自己記有部位、或券商帳上有 TMF 部位（策略不知道的也算；查不到券商也先不停），一律回 409，`?force=true` 才強制停止；
   `STOP_POSITION_CHECK=false` 關掉券商那一層。`stop_all()`（關機）不經過這個檢查。
 
+- **前端的幾個慣例（2026-11-12，儀表板直覺性修正；靜態檢查在 `tests/test_frontend_layout.py`、渲染在 `tests/frontend/ui_check.js` 等）**：
+  ① 說明文字（方法、免責、資料來源）一律 `className="help"`，`app/globals.css` 用 `html:not([data-help="on"]) .help { display: none }` 收起，頁首 `HelpToggle.tsx` 切換並記在 `localStorage["help:on"]`，`app/layout.tsx` 的行內腳本在第一次繪製前讀回來；收進去的只能是說明，數字、警告、「更新失敗」要留在外面。
+  ② 下單面板：`action` 預設 `null`（沒選方向送出鈕 disabled、送單函式再擋一次）；順序＝方向 → 欄位 → `SizeHint` → `TodayHint` → 送出 → `PrecheckCard` → `StopSuggestCard`，參考卡預設收成一行摘要；**不用 sticky**（會蓋住標題與欄位）。
+  ③ 可橫捲的表格用 `className="scroll-x"`（純 CSS 的邊緣淡光；背景色寫死 `#141420`，只用在卡片裡）；窄螢幕塞不下的欄位用 `hidden sm:table-cell` 藏起來、資訊另外放（市場狀態的日表點列展開、全球市場表的日期放名稱下面）。
+  ④ 頁首行情條固定順序（`QuoteBar.codeRank`：TMF、TXF、MXF），不依報價先到的順序。空手時部位卡縮成一行（只有「部位資料是新的、確定沒有持倉」才縮；過期或還沒取得就維持完整版＋警告）。
+
 ### 市場狀態判斷（盤前 Hurst + IV → 策略對應 → 日誌）
 
 依《市場狀態判斷系統.md》：開倉前先判斷市場狀態。**預設只顯示＋警告，不擋下單**（`MARKET_STATE_GATE=off` 關警告）。

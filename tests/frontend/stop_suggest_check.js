@@ -124,8 +124,24 @@ const tick = () => new Promise((r) => setImmediate(r));
   {
     const h = harness({ [S.open]: false, [S.data]: d });
     const raw = h.render(), tx = strip(raw);
-    check("收合：只剩標題，沒有按鈕組與內容", tx.includes("▸ 建議停損停利（依波動）") && !tx.includes("持有約") && !tx.includes("停利 ") && !tx.includes("勝率高"), tx)
+    const mid = d.rows.find((r) => r.name === "平衡");
+    check("收合：標題旁只剩「平衡」那一組的停利停損與帶入鈕，沒有持有時間按鈕、沒有三組內容", tx.includes("▸ 建議停損停利（依波動）") && tx.includes(`停利 ${mid.tp}`) && tx.includes(`停損 ${mid.sl}`) && tx.includes("平衡・15 分鐘") && tx.includes("帶入")
+      && !tx.includes("持有約") && !tx.includes("高勝率型") && !tx.includes("高賺賠比型") && !tx.includes("勝率高") && !tx.includes("沒有技巧時的勝率"), tx)
     check("收合：也沒有機率範圍", !tx.includes("機率範圍"), tx);
+    check("pickSummary：挑「平衡」，沒有就第一組，沒資料是 null", C.pickSummary(d) === mid && C.pickSummary({ rows: [d.rows[0]] }) === d.rows[0] && C.pickSummary({ rows: [] }) === null && C.pickSummary(null) === null);
+    const applied2 = [];
+    { let k = 0; const vals = [false, 15, d, null]; React.useState = (init) => { const i = k++; return [i < vals.length ? vals[i] : init, () => {}]; }; React.useEffect = () => {}; React.useCallback = (f) => f; }
+    const tree = Card({ contract: "TMF", onApply: (sl, tp) => applied2.push([sl, tp]) });
+    const bs = []; (function walk(n) { if (!n || typeof n !== "object") return; if (Array.isArray(n)) return n.forEach(walk); if (n.type === "button") bs.push(n); walk(n.props && n.props.children); })(tree);
+    const apply = bs.find((b) => b.props.children === "帶入"); if (apply) apply.props.onClick();
+    check("收合：帶入鈕把平衡的停損、停利交給呼叫端", J(applied2) === J([[String(mid.sl), String(mid.tp)]]), J(applied2));
+    const h0 = harness({ [S.open]: false });
+    const t0 = strip(h0.render());
+    check("收合、還沒載入：只有標題", t0.includes("▸ 建議停損停利（依波動）") && !t0.includes("停利 ") && !t0.includes("帶入"), t0);
+    const he = harness({ [S.open]: false, [S.err]: "後端還沒有這個 API（要重啟後端才有）" });
+    check("收合、載入失敗：標題旁寫錯誤", strip(he.render()).includes("後端還沒有這個 API"));
+    const hd = harness(); hd.render();
+    check("預設收起（沒有記錄時）", hd.st[S.open] === false);
   }
   // 載入與輪詢
   {
@@ -139,9 +155,10 @@ const tick = () => new Promise((r) => setImmediate(r));
       cleanup();                                                       // 在還原替身之前呼叫
     } finally { global.setInterval = realSet; global.clearInterval = realClear; }
     check("載入：離開時清掉計時器", cleared === 99);
-    const h0 = harness({ [S.open]: false }); h0.render(); calls.length = 0;
-    const r0 = h0.effects[1](); await tick();
-    check("收合時不向後端要資料", calls.length === 0 && r0 === undefined);
+    const h0 = harness({ [S.open]: false }); h0.render({ contract: "TMF" }); calls.length = 0;
+    const realSet0 = global.setInterval; global.setInterval = () => 7;
+    try { h0.effects[1](); await tick(); } finally { global.setInterval = realSet0; }
+    check("收合時也要資料（標題旁那一組數字要是現在的），每 30 秒一次", J(calls) === J([["TMF", 15]]) && h0.st[S.data] === d, J(calls));
   }
   {
     apiMod.api.market.suggest = async () => { throw new Error('404 — {"detail":"Not Found"}'); };

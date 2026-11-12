@@ -60,6 +60,17 @@ check("部位面板：有持倉又沒保護 → 橫幅出現在標題下面、�
 check("部位面板：有持倉但有保護（空陣列）→ 沒有橫幅", !panel({ positions: POS, unprotected: [], posAge: 2, dataAge: 2 }).includes("沒有停損保護"));
 check("部位面板：沒有持倉 → 就算後端傳來資料也不畫橫幅（不會有「沒有持倉卻說沒保護」）", !panel({ positions: [], unprotected: fx.single, posAge: 2, dataAge: 2 }).includes("沒有停損保護"));
 check("部位面板：預設狀態（還沒載入）沒有橫幅", !panel({}).includes("沒有停損保護"));
+// 空手時縮成一行（2026-11-12）：權益、今日已實現；保證金兩格不出現；有部位才是五格
+const MARGIN = { equity: 80978, equity_amount: 80978, margin_call: 0, initial_margin: 0, maintenance_margin: 0 };
+const flat = panel({ positions: [], margin: MARGIN, pnlList: [], posAge: 2, dataAge: 2 });
+check("空手：一行「目前無持倉 · 權益 · 今日已實現」，沒有保證金格子", flat.includes("目前無持倉") && flat.includes("權益") && flat.includes("80,978") && flat.includes("今日已實現") && !flat.includes("原始保證金") && !flat.includes("維持保證金") && !flat.includes("未實現損益"), flat.slice(0, 600));
+check("空手：「目前無持倉」只出現一次", (flat.match(/目前無持倉/g) || []).length === 1);
+const held = panel({ positions: POS, margin: MARGIN, posAge: 2, dataAge: 2 });
+check("有部位：五格都在（權益、未實現、已實現、原始、維持）", ["權益數", "未實現損益", "已實現損益", "原始保證金", "維持保證金"].every((k) => held.includes(k)) && held.includes("49,000"), held.slice(0, 400));
+const unsure = panel({ positions: [], margin: MARGIN, posAge: 40, dataAge: 2, cadence: { positions_every: 5, margin_every: 60 } });
+check("部位資料過期：不能說空手，所以維持完整的格子＋過期警告", unsure.includes("部位資料已過期") && unsure.includes("原始保證金") && !unsure.includes("目前無持倉"), unsure.slice(0, 400));
+const nomargin = panel({ positions: [], posAge: 2, dataAge: 2 });
+check("沒有權益數：仍寫「目前無持倉」（置中那行）", nomargin.includes("目前無持倉") && !nomargin.includes("權益 "));
 check("過期門檻：平日部位 30 秒、保證金 150 秒；週末部位 360 秒、保證金 1500 秒", S.posLimit({ positions_every: 5, margin_every: 60 }) === 30 && S.marginLimit({ positions_every: 5, margin_every: 60 }) === 150
   && S.posLimit({ positions_every: 120 }) === 360 && S.marginLimit({ margin_every: 600 }) === 1500 && S.staleAge(45, 2, { positions_every: 5, margin_every: 60 }) === null && S.staleAge(200, 40, null) === 200);
 // 資料過期的判斷照刷新間隔（發現 69）：保證金本來就 60 秒刷新一次，45 秒不是過期；週末部位 2 分鐘刷新一次

@@ -11,6 +11,7 @@ import {
 // 依波動的建議停損停利（只顯示，不碰下單；update.md 發現 33）。
 // 重點不是「勝率高」：進場沒有資訊時，每筆期望值＝−成本，跟停損停利怎麼放無關；停利小、停損大只是把勝率換成賺賠比。
 // 這張卡告訴你：停損放在雜訊外要多遠、被雜訊掃到的機率多大、要靠時機比基準多贏幾個百分點才打平成本、單口虧多少。
+// 2026-11-12 起預設收起：收起時標題旁直接顯示「平衡」那一組的停利停損與帶入鈕（資料照常每 30 秒更新），點開才是完整內容。
 const OPEN_KEY = "stop_suggest_open";
 
 export function SuggestRows({ data, onApply }: { data: Suggest; onApply?: (sl: string, tp: string) => void }) {
@@ -35,7 +36,7 @@ export function SuggestRows({ data, onApply }: { data: Suggest; onApply?: (sl: s
             {lotsText(r, data.risk_pct) && <>・{lotsText(r, data.risk_pct)}</>}
           </div>
           {r.within && (
-            <div className="text-[10px] leading-snug text-[#404060]">
+            <div className="help text-[10px] leading-snug text-[#404060]">
               {data.horizon} 分鐘內（沒有技巧時）：停利先到 {pct(r.within.tp)}／停損先到 {pct(r.within.sl)}／都沒到 {pct(r.within.none)}{r.win_unstable ? "（不穩）" : ""}
             </div>
           )}
@@ -46,14 +47,18 @@ export function SuggestRows({ data, onApply }: { data: Suggest; onApply?: (sl: s
   );
 }
 
+/** 收起時代表這張卡的那一組：平衡；沒有就第一組。 */
+export const pickSummary = (data: Suggest | null): SuggestRow | null =>
+  data?.rows.find((r) => r.name === "平衡") ?? data?.rows[0] ?? null;
+
 export default function StopSuggestCard({ contract, onApply }: { contract: string; onApply: (sl: string, tp: string) => void }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [horizon, setHorizon] = useState<number>(15);
   const [data, setData] = useState<Suggest | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    try { if (localStorage.getItem(OPEN_KEY) === "0") setOpen(false); } catch { /* 沒有 localStorage（隱私模式等）就維持展開 */ }
+    try { if (localStorage.getItem(OPEN_KEY) === "1") setOpen(true); } catch { /* 沒有 localStorage（隱私模式等）就維持收起 */ }
   }, []);
 
   const toggle = useCallback(() => {
@@ -69,18 +74,27 @@ export default function StopSuggestCard({ contract, onApply }: { contract: strin
   }, [contract, horizon]);
 
   useEffect(() => {
-    if (!open) return;
-    load();
+    load();                                               // 收起時也要：標題旁的那一組數字要是現在的
     const id = setInterval(load, 30000);                  // 只讀本機資料庫與記憶體，30 秒一次就夠
     return () => clearInterval(id);
-  }, [open, load]);
+  }, [load]);
 
+  const brief = open ? null : pickSummary(data);
   return (
-    <div className="mb-3 rounded-lg border border-[#1e1e3a] p-3">
+    <div className="rounded-lg border border-[#1e1e3a] p-3">
       <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={toggle} className="text-[11px] text-[#7070a0] uppercase tracking-widest hover:text-[#e0e0f0]">
+        <button onClick={toggle} aria-expanded={open} className="text-[11px] text-[#7070a0] uppercase tracking-widest hover:text-[#e0e0f0]">
           {open ? "▾" : "▸"} 建議停損停利（依波動）
         </button>
+        {brief && (
+          <>
+            <span className="font-mono text-xs"><span className="text-[#00e676]">停利 {brief.tp}</span>　<span className="text-[#ff1744]">停損 {brief.sl}</span></span>
+            <span className="text-[10px] text-[#404060]">{brief.name}・{data!.horizon} 分鐘</span>
+            <button onClick={() => onApply(String(brief.sl), String(brief.tp))}
+              className="ml-auto text-[11px] px-2 py-0.5 rounded border border-[#1e1e3a] text-[#e0e0f0] hover:border-[#3b82f6] whitespace-nowrap">帶入</button>
+          </>
+        )}
+        {!open && !brief && err && <span className="text-[10px] text-[#ffc107]">{err}</span>}
         {open && (
           <div className="ml-auto flex items-center gap-1">
             <span className="text-[10px] text-[#404060]">持有約</span>
@@ -113,11 +127,11 @@ export default function StopSuggestCard({ contract, onApply }: { contract: strin
               {data.rows.length > 0 && (
                 <>
                   <SuggestRows data={data} onApply={onApply} />
-                  <div className="text-[10px] leading-snug text-[#7070a0]">
+                  <div className="help text-[10px] leading-snug text-[#7070a0]">
                     成本 {data.cost_pts} 點：要比「沒有技巧」的勝率多贏約 <span className="text-[#e0e0f0]">{needPts(Math.max(...data.rows.map((r) => r.need)))}</span> 個百分點才打平（成本 ÷ 停利＋停損）。
                     三種型態一樣：改比例只是把勝率換成賺賠比；持有越久、距離越遠，這個門檻越低。
                   </div>
-                  <div className="text-[10px] leading-snug text-[#404060]">
+                  <div className="help text-[10px] leading-snug text-[#404060]">
                     <span className="text-[#ffc107]">勝率高 ≠ 賺錢</span>：進場沒有資訊時，每筆期望值＝−成本，與停損停利怎麼放無關。這張卡只決定停損離雜訊多遠、倉位多大。
                     {data.calibrated && data.cal ? <>　掃到機率與「都沒到」是實測（{calText(data.cal, data.session)}）。</> : <>　沒有校準表，沒有實測的掃到機率。</>}
                     {data.equity != null && <>　權益 {money(data.equity)} 元、單筆風險上限 {data.risk_pct}%、成本是假設值（SUGGEST_COST_PTS）。</>}

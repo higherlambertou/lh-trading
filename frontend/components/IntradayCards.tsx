@@ -59,7 +59,7 @@ export function BookCard({ st }: { st: LiveState }) {
             <span>外盤 {pctPair(f.share)[0]} · 內盤 {pctPair(f.share)[1]}</span>
           </div>
           <div className="text-[10px] text-[#404060] font-mono">
-            外盤 {f.outside.toLocaleString("en-US")} 口 / 內盤 {f.inside.toLocaleString("en-US")} 口（整個時段，重啟後也在）
+            外盤 {f.outside.toLocaleString("en-US")} 口 / 內盤 {f.inside.toLocaleString("en-US")} 口<span className="help">（整個時段，重啟後也在）</span>
           </div>
         </div>
       )}
@@ -117,7 +117,7 @@ export function ContextCard({ st }: { st: LiveState }) {
       ) : c.session === "night" ? (
         <>
           <div className="text-sm text-[#e0e0f0]">夜盤 · 距收盤（{c.close_hhmm}）還有 {minutesText(c.mins_to_close)}</div>
-          <div className={EMPTY}>夜盤沒有足夠的歷史樣本，不提供時段倍數與預期振幅。</div>
+          <div className={`help ${EMPTY}`}>夜盤沒有足夠的歷史樣本，不提供時段倍數與預期振幅。</div>
         </>
       ) : (
         <>
@@ -150,7 +150,7 @@ export function ContextCard({ st }: { st: LiveState }) {
               <div className="text-[11px] text-[#7070a0] font-mono">
                 依 {c.day_iv.vix_date ? c.day_iv.vix_date.slice(5).replace("-", "/") : "前一天"} 臺指選擇權波動率指數 {c.day_iv.vix?.toFixed(2)}；近 20 日均 {price(c.day_iv.r20, 0)} 點
               </div>
-              <div className="text-[10px] text-[#404060] leading-snug">
+              <div className="help text-[10px] text-[#404060] leading-snug">
                 歷史檢驗：比只看近 20 日均，平方誤差約降 15%（平均絕對誤差降約 9%），但各年差很多（2022～2023 幾乎沒幫助），2025 年起區間實際涵蓋約 63%（略偏窄）。
                 只對整天的來回幅度有用；是範圍，不是目標價；範圍帶與建議停損沒有用它。
               </div>
@@ -173,7 +173,7 @@ export function ContextCard({ st }: { st: LiveState }) {
             c.proj_note && <div className={EMPTY}>{c.proj_note}</div>
           )}
           {c.proj && (
-            <div className="text-[10px] text-[#404060] leading-snug">
+            <div className="help text-[10px] text-[#404060] leading-snug">
               歷史檢驗（約 1,600 日）：比只看近 20 日均（{price(c.r20, 0)} 點）略準，樣本外誤差約降 6%，仍有約 ±40% 的不確定。是範圍，不是目標價。
             </div>
           )}
@@ -205,7 +205,7 @@ export function CrossFlow({ st }: { st: LiveState }) {
           </Fragment>
         ))}
       </div>
-      <div className="text-[10px] text-[#404060] leading-snug">
+      <div className="help text-[10px] text-[#404060] leading-snug">
         成交少於 {xc.min_trades} 筆的格子不顯示；微−大＝微台減大台（百分點）。只是並排顯示，兩者的差有沒有意義沒驗證過。
       </div>
     </div>

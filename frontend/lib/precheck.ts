@@ -75,3 +75,20 @@ export function eventLines(p: Precheck): string[] {
 }
 
 export const ivHigh = (p: Precheck): boolean => p.iv?.percentile != null && p.iv.percentile >= 80;
+
+/** 收合時的一行摘要：IV 百分位、最近的事件、預期振幅（晚上是夜盤、白天是日盤）。沒有的項目就不寫。 */
+export function summaryLine(p: Precheck): string {
+  const parts: string[] = [];
+  const iv = p.iv;
+  if (iv && iv.value != null) parts.push(iv.percentile != null ? `IV 第 ${Math.round(iv.percentile)} 百分位（${iv.label}）` : `IV ${iv.value.toFixed(1)}%`);
+  if (p.events == null) parts.push("事件：讀不到");
+  else if (p.events.length === 0) parts.push(`${p.event_hours} 小時內無重要事件`);
+  else parts.push(`${p.events[0].when} ${p.events[0].label}${p.events.length > 1 ? ` 等 ${p.events.length} 件` : ""}`);
+  const night = p.evening?.night?.expect, day = p.day_range.expect;
+  if (p.evening && night) parts.push(`夜盤預期振幅約 ${n0(night.mid)} 點`);
+  else if (day) parts.push(`日盤預期振幅約 ${n0(day.mid)} 點`);
+  return parts.join(" · ");
+}
+
+/** 摘要要不要標黃：IV 偏高或有事件。 */
+export const attention = (p: Precheck): boolean => ivHigh(p) || (p.events?.length ?? 0) > 0;

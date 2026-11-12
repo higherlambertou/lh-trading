@@ -7,6 +7,7 @@ import { defaultSeriesKey, parseSeriesKey, seriesKey, seriesShort, type OptionSe
 import PrecheckCard from "./PrecheckCard";
 import SizeHint from "./SizeHint";
 import StopSuggestCard from "./StopSuggestCard";
+import TodayHint from "./TodayHint";
 
 type Action = "Buy" | "Sell";
 type PriceType = "MKT" | "LMT";
@@ -34,8 +35,8 @@ function moneyness(strike: number, right: Right, spot: number, atm: number): str
 export default function OrderPanel() {
   const [mode, setMode] = useState<Mode>("future");
 
-  // 共用
-  const [action, setAction] = useState<Action>("Buy");
+  // 共用。方向預設不選：空手一進頁面不會出現「確認買多 1 口（市價）」的亮綠色按鈕，要先按買多或賣空才能送單（2026-11-12）。
+  const [action, setAction] = useState<Action | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [orderType, setOrderType] = useState("IOC");
   const [limitPrice, setLimitPrice] = useState("");
@@ -201,6 +202,7 @@ export default function OrderPanel() {
   const dayTradeOn = mode === "future" && dayTrade && DAYTRADE_CONTRACTS.includes(contract);
 
   const submitFuture = async () => {
+    if (!action) return;
     if (needsArm()) return;
     setBusy(true);
     try {
@@ -227,7 +229,7 @@ export default function OrderPanel() {
   };
 
   const submitOption = async () => {
-    if (!deliveryMonth || strike === "" || !limitPrice) return;
+    if (!action || !deliveryMonth || strike === "" || !limitPrice) return;
     if (needsArm()) return;
     setBusy(true);
     try {
@@ -259,6 +261,7 @@ export default function OrderPanel() {
   };
 
   const isBuy = action === "Buy";
+  const noSide = action == null;
   const isOption = mode === "option";
   // 最接近大盤現價的履約價 = 價平
   const atmStrike =
@@ -506,6 +509,7 @@ export default function OrderPanel() {
             <button
               key={a}
               onClick={() => setAction(a)}
+              aria-pressed={active}
               className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-semibold border transition-colors"
               style={{
                 borderColor: active ? `${color}60` : "#1e1e3a",
@@ -519,8 +523,6 @@ export default function OrderPanel() {
           );
         })}
       </div>
-
-      {!isOption && <PrecheckCard />}
 
       {/* 欄位 */}
       <div className="grid grid-cols-2 gap-3 mb-4">
@@ -644,7 +646,6 @@ export default function OrderPanel() {
       </div>
 
       {!isOption && <SizeHint contract={contract} stopLoss={stopLoss} quantity={quantity} />}
-      {!isOption && <StopSuggestCard contract={contract} onApply={(sl, tp) => { setStopLoss(sl); setTakeProfit(tp); }} />}
 
       {optErr && isOption && (
         <div className="mb-3 text-xs px-3 py-2 rounded border bg-[#ff1744]/10 text-[#ff1744] border-[#ff1744]/20">
@@ -652,42 +653,58 @@ export default function OrderPanel() {
         </div>
       )}
 
-      {/* 送出 */}
-      <button
-        onClick={isOption ? submitOption : submitFuture}
-        disabled={
-          busy ||
-          (!isOption && priceType === "LMT" && !limitPrice) ||
-          (isOption && (!deliveryMonth || strike === "" || !limitPrice))
-        }
-        className="w-full py-3 rounded-lg font-semibold text-sm transition-colors disabled:opacity-40"
-        style={{
-          backgroundColor: armed ? "#ff9800" : isBuy ? "#00e676" : "#ff1744",
-          color: armed || !isBuy ? "#fff" : "#0d0d14",
-        }}
-      >
-        {busy
-          ? "送出中..."
-          : armed
-          ? "⚠ 真錢下單 — 3 秒內再點一次確認"
-          : isOption
-          ? `確認${isBuy ? "買進" : "賣出"} ${seriesShort(series, seriesSel)} ${strike}${
-              right === "C" ? "C" : "P"
-            } ${quantity}口 @ ${limitPrice || "?"}`
-          : `確認${isBuy ? "買多" : "賣空"} ${quantity} 口${
-              priceType === "LMT" ? ` @ ${limitPrice}` : "（市價）"
-            }${dayTradeOn ? "【當沖】" : ""}`}
-      </button>
+      {/* 今日判斷（盤前的結論，純提醒）：下單前再看一眼，不用捲回頁首 */}
+      {!isOption && <TodayHint />}
 
-      {result && (
-        <div
-          className={`mt-3 text-xs px-3 py-2 rounded border ${
-            result.ok
-              ? "bg-[#00e676]/10 text-[#00e676] border-[#00e676]/20"
-              : "bg-[#ff1744]/10 text-[#ff1744] border-[#ff1744]/20"
-          }`}
+      {/* 送出：緊接在欄位下面（表單從方向鈕到這裡一個畫面看得完；參考資料放在下面）。
+          不用 sticky：貼底的鈕在卡片剛捲進畫面時會蓋在標題與欄位上，反而擋到要按的東西。 */}
+      <div>
+        <button
+          onClick={isOption ? submitOption : submitFuture}
+          disabled={
+            busy || noSide ||
+            (!isOption && priceType === "LMT" && !limitPrice) ||
+            (isOption && (!deliveryMonth || strike === "" || !limitPrice))
+          }
+          className="w-full py-3 rounded-lg font-semibold text-sm transition-colors disabled:opacity-40"
+          style={{
+            backgroundColor: noSide ? "#1e1e3a" : armed ? "#ff9800" : isBuy ? "#00e676" : "#ff1744",
+            color: noSide ? "#7070a0" : armed || !isBuy ? "#fff" : "#0d0d14",
+          }}
         >
-          {result.text}
+          {noSide
+            ? `先選${isOption ? "買進或賣出" : "買多或賣空"}`
+            : busy
+            ? "送出中..."
+            : armed
+            ? "⚠ 真錢下單 — 3 秒內再點一次確認"
+            : isOption
+            ? `確認${isBuy ? "買進" : "賣出"} ${seriesShort(series, seriesSel)} ${strike}${
+                right === "C" ? "C" : "P"
+              } ${quantity}口 @ ${limitPrice || "?"}`
+            : `確認${isBuy ? "買多" : "賣空"} ${quantity} 口${
+                priceType === "LMT" ? ` @ ${limitPrice}` : "（市價）"
+              }${dayTradeOn ? "【當沖】" : ""}`}
+        </button>
+
+        {result && (
+          <div
+            className={`mt-3 text-xs px-3 py-2 rounded border ${
+              result.ok
+                ? "bg-[#00e676]/10 text-[#00e676] border-[#00e676]/20"
+                : "bg-[#ff1744]/10 text-[#ff1744] border-[#ff1744]/20"
+            }`}
+          >
+            {result.text}
+          </div>
+        )}
+      </div>
+
+      {/* 參考資料：放在送出鈕下面、預設收成一行摘要，表單本身一個畫面就看得完 */}
+      {!isOption && (
+        <div className="mt-4 space-y-3">
+          <PrecheckCard />
+          <StopSuggestCard contract={contract} onApply={(sl, tp) => { setStopLoss(sl); setTakeProfit(tp); }} />
         </div>
       )}
     </div>

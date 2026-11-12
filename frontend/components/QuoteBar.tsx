@@ -30,6 +30,12 @@ function codeLabel(code: string): string | null {
   return null;
 }
 
+const CODE_ORDER = ["TMF", "TXF", "MXF"];
+export function codeRank(code: string): number {
+  const i = CODE_ORDER.findIndex((p) => code.startsWith(p));
+  return i < 0 ? CODE_ORDER.length : i;
+}
+
 function fmt(n: number) {
   return n.toLocaleString("zh-TW", { minimumFractionDigits: 0 });
 }
@@ -107,7 +113,8 @@ export default function QuoteBar() {
     };
   }, []);
 
-  const codes = Object.keys(quotes).filter((c) => codeLabel(c) !== null);
+  // 固定順序：微台在前、台指在後。依報價先到的順序排會每次載入不一樣（兩個位置會對調）。
+  const codes = Object.keys(quotes).filter((c) => codeLabel(c) !== null).sort((a, b) => codeRank(a) - codeRank(b));
 
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1">              {/* 手機寬度：整條會換到第二行、高低與時間藏起來，不會把版面撐寬 */}

@@ -1,3 +1,22 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* 說明文字（方法、免責、資料來源）：預設全部收起，頁首「說明」開關打開才顯示（記在這台瀏覽器；app/layout.tsx 在第一次繪製前就讀回來）。
+   只是 display:none，文字仍在頁面裡（搜尋、測試都看得到）。 */
+html:not([data-help="on"]) .help { display: none !important; }
+
+/* 可以橫向捲動的表格：左右兩邊還有內容時，邊緣有一道淡光提示（背景跟著內容捲、光暈固定在邊緣）。
+   背景色要和卡片一樣（#141420），所以只用在卡片裡。 */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background:
+    linear-gradient(90deg, #141420 30%, rgba(20, 20, 32, 0)),
+    linear-gradient(90deg, rgba(20, 20, 32, 0), #141420 70%) 100% 0,
+    radial-gradient(farthest-side at 0 50%, rgba(140, 140, 255, 0.35), rgba(140, 140, 255, 0)),
+    radial-gradient(farthest-side at 100% 50%, rgba(140, 140, 255, 0.35), rgba(140, 140, 255, 0)) 100% 0;
+  background-repeat: no-repeat;
+  background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
+  background-attachment: local, local, scroll, scroll;
+}

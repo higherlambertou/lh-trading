@@ -44,18 +44,22 @@ export function MarketsCard({ markets }: { markets: IntelMarket[] }) {
   return (
     <div className={`${CARD} space-y-2`}>
       <h2 className={H}>全球市場（日收盤；日期是該市場當地的交易日）</h2>
-      <div className="overflow-x-auto">
+      {/* 窄螢幕：日期欄藏起來、放到名稱下面一行（四欄塞不進 390px） */}
+      <div className="scroll-x">
         <table className="w-full">
-          <thead><tr><th className={TH}>項目</th><th className={`${TH} text-right`}>收盤</th><th className={`${TH} text-right`}>較前一日</th><th className={TH}>日期</th></tr></thead>
+          <thead><tr><th className={TH}>項目</th><th className={`${TH} text-right`}>收盤</th><th className={`${TH} text-right`}>較前一日</th><th className={`${TH} hidden sm:table-cell`}>日期</th></tr></thead>
           <tbody>
-            {markets.map((m) => (
+            {markets.map((m) => {
+              const dateColor = m.age_days != null && m.age_days > 3 ? WARN : MUTED;
+              return (
               <tr key={m.key} className="border-t border-[#1e1e3a]">
-                <td className="px-1.5 py-1 text-xs text-[#e0e0f0] whitespace-nowrap">{m.label}</td>
+                <td className="px-1.5 py-1 text-xs text-[#e0e0f0] sm:whitespace-nowrap">{m.label}<div className="sm:hidden text-[10px] font-mono" style={{ color: dateColor }}>{marketDate(m)}</div></td>
                 <td className={`${TD} text-right`} style={{ color: m.value == null ? MUTED : undefined }}>{marketValue(m)}</td>
                 <td className={`${TD} text-right`} style={{ color: upDown(m.kind === "rate" ? m.chg : m.chg) }}>{marketChange(m)}</td>
-                <td className="px-1.5 py-1 text-[10px] font-mono whitespace-nowrap" style={{ color: m.age_days != null && m.age_days > 3 ? WARN : MUTED }}>{marketDate(m)}</td>
+                <td className="hidden sm:table-cell px-1.5 py-1 text-[10px] font-mono whitespace-nowrap" style={{ color: dateColor }}>{marketDate(m)}</td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -76,7 +80,7 @@ export function ChipsCard({ chips }: { chips: IntelChips }) {
       {futures.map((f) => (
         <div key={f.commodity}>
           <div className="text-[11px] text-[#7070a0] mb-0.5">三大法人期貨 · {f.label}（未平倉淨口數，{dateText(f.date)}）</div>
-          <table className="w-full">
+          <div className="scroll-x"><table className="w-full min-w-[22rem]">
             <thead><tr><th className={TH}>身份別</th><th className={`${TH} text-right`}>淨未平倉</th><th className={`${TH} text-right`}>較前一日</th><th className={`${TH} text-right`}>多／空</th></tr></thead>
             <tbody>
               {f.rows.map((r) => (
@@ -88,13 +92,13 @@ export function ChipsCard({ chips }: { chips: IntelChips }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         </div>
       ))}
       {options && (
         <div>
           <div className="text-[11px] text-[#7070a0] mb-0.5">三大法人臺指選擇權（未平倉淨口數，{dateText(options.date)}）</div>
-          <table className="w-full">
+          <div className="scroll-x"><table className="w-full min-w-[22rem]">
             <thead><tr><th className={TH}>身份別</th><th className={`${TH} text-right`}>買權 Call</th><th className={`${TH} text-right`}>賣權 Put</th></tr></thead>
             <tbody>
               {options.rows.map((r) => (
@@ -105,7 +109,7 @@ export function ChipsCard({ chips }: { chips: IntelChips }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         </div>
       )}
       {pcr && (
@@ -118,7 +122,7 @@ export function ChipsCard({ chips }: { chips: IntelChips }) {
       {inst && (
         <div>
           <div className="text-[11px] text-[#7070a0] mb-0.5">現貨三大法人買賣超（億元，{dateText(inst.date)}）</div>
-          <table className="w-full">
+          <div className="scroll-x"><table className="w-full min-w-[22rem]">
             <thead><tr><th className={TH}>身份別</th><th className={`${TH} text-right`}>今天</th><th className={`${TH} text-right`}>近 5 日合計</th></tr></thead>
             <tbody>
               {inst.rows.map((r) => (
@@ -129,7 +133,7 @@ export function ChipsCard({ chips }: { chips: IntelChips }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         </div>
       )}
       {market && (
@@ -220,7 +224,7 @@ export default function IntelPanel() {
   return (
     <div className="space-y-4 lg:col-span-2">
       <div className="text-[11px] leading-snug text-[#7070a0]">
-        資料來自另一個系統（lh-intel）的資料庫，<span className="text-[#ffc107]">只顯示、不影響任何交易決策</span>；沒有任何策略或風控讀它。
+        <span className="text-[#ffc107]">只顯示、不影響交易</span><span className="help">：資料來自另一個系統（lh-intel）的資料庫，沒有任何策略或風控讀它</span>。
         {data?.available && <span className="text-[#505070]">　更新 {new Date(data.as_of * 1000).toLocaleTimeString("zh-TW", { hour12: false })}</span>}
       </div>
       {err && !data && <div className="text-xs text-[#ffc107]">{err}</div>}

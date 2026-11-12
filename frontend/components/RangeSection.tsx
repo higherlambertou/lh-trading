@@ -45,11 +45,11 @@ export function RangeBody({ data, horizon }: { data: RangeData; horizon: number 
       <div className="text-[11px] text-[#7070a0] leading-snug">
         以最新成交價 <span className="font-mono text-[#e0e0f0]">{data.price != null ? fmt(data.price) : "—"}</span> 為中心
         {data.stale && <span className="text-[#ffc107]">（這個價是{ageText(data.price_age_sec)}的，行情可能已經動了）</span>}
-        ；<span className="text-[#e0e0f0]">落點</span>＝{horizon} 分鐘後價格落在這裡的機率、<span className="text-[#e0e0f0]">期間</span>＝這段時間內最高最低都沒超出的機率（停損停利碰不碰到看這個）。
+        <span className="help">；<span className="text-[#e0e0f0]">落點</span>＝{horizon} 分鐘後價格落在這裡的機率、<span className="text-[#e0e0f0]">期間</span>＝這段時間內最高最低都沒超出的機率（停損停利碰不碰到看這個）。</span>
       </div>
       <RangeTable band={band} title={`${horizon} 分鐘`} />
       {close && <RangeTable band={close} title={`到收盤（剩 ${close.minutes} 分鐘）`} />}
-      <div className="text-[10px] leading-snug text-[#404060]">
+      <div className="help text-[10px] leading-snug text-[#404060]">
         <span className="text-[#ffc107]">只說會走多遠、不說往哪個方向</span>；不是進場訊號。範圍來自歷史實測（不是模擬）：{data.cal?.day_sessions ? `日盤 ${data.cal.day_sessions.toLocaleString()} 個時段（${data.cal.from} ~ ${data.cal.to}）` : "沒有日盤資料"}。
         {ho && <>　{ho}；標「⚠不穩」的格子沒通過。</>}
         {data.session === "day" && data.remaining != null && data.remaining < 90 && <>　接近收盤時價格比最近 30 分鐘的波動更容易放大，範圍偏窄的可能性較高。</>}

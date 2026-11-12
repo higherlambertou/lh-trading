@@ -18,6 +18,7 @@ import IntelPanel from "./IntelPanel";
 import PriceChart from "./PriceChart";
 import Folded from "./Folded";
 import SystemHealthPanel from "./SystemHealthPanel";
+import HelpToggle from "./HelpToggle";
 import { isSimMode } from "@/lib/api";
 
 type Tab = "trade" | "market" | "intel" | "analysis";
@@ -78,6 +79,7 @@ export default function DashboardTabs() {
             }`}
           >{t.label}</a>
         ))}
+        <HelpToggle />
       </nav>
 
       <main className="p-4 max-w-[1400px] mx-auto">
@@ -87,7 +89,8 @@ export default function DashboardTabs() {
               <MarketStrip />
               <PriceChart active={tab === "trade"} />
               {/* 手動交易的動線：部位＋停損監控／委託在最上面、下單面板緊接著（旁邊是盤中即時，手機預設收起）、研究用的放最後 */}
-              <div className={GRID}>
+              {/* items-start：兩欄各自照內容高度，空手時右邊的委託卡不會被撐成一大塊空白 */}
+              <div className={`${GRID} lg:items-start`}>
                 <PositionPanel />
                 <TradesPanel />
                 <OrderPanel />

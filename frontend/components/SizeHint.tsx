@@ -5,7 +5,7 @@ import { api, apiErrorDetail } from "@/lib/api";
 import { friendlySizeError, lotsLine, openRiskLine, perLotLine, qtyLine, warnLines, REASON_TEXT, type Size } from "@/lib/size";
 
 // 口數提示（只顯示，不擋單；update.md 發現 51）：依你填的停損點數與單筆風險上限算「最多幾口」，並扣掉手動停損監控裡已佔用的風險。
-// 口數仍是你自己填；這裡只是讓你在按下送出前看到「這樣的風險是權益的幾 %」。
+// 口數仍是你自己填；這裡只是讓你在按下送出前看到「這樣的風險是權益的幾 %」。放在欄位正下方、沒填停損只有一行提示。
 export function SizeBody({ s }: { s: Size }) {
   const over = s.qty_over === true;
   const noLots = s.lots == null || s.lots < 1;
@@ -40,14 +40,16 @@ export default function SizeHint({ contract, stopLoss, quantity }: { contract: s
     return () => { cancelled = true; clearTimeout(t); clearInterval(id); };
   }, [has, contract, stop, quantity]);
 
+  if (!has) {
+    return <div className="mb-3 text-[10px] text-[#404060]">口數提示（只提醒，不擋單）：{REASON_TEXT.stop_missing}</div>;
+  }
   return (
     <div className="mb-3 rounded-lg border border-[#1e1e3a] px-3 py-2">
-      <div className="text-[11px] text-[#7070a0] uppercase tracking-widest mb-1">口數提示（只提醒，不擋單）</div>
-      {!has && <div className="text-[11px] text-[#7070a0]">{REASON_TEXT.stop_missing}</div>}
-      {has && err && !data && <div className="text-xs text-[#ffc107]">{err}</div>}
-      {has && data && <SizeBody s={data} />}
-      {has && err && data && <div className="text-[10px] text-[#ffc107]">更新失敗：{err}</div>}
-      <div className="mt-1 text-[10px] leading-snug text-[#404060]">風險＝到停損的距離（含滑價緩衝）；假設停損會成交，跳空或極端行情可能更差。</div>
+      <div className="text-[10px] text-[#7070a0] mb-0.5">口數提示（只提醒，不擋單）</div>
+      {err && !data && <div className="text-xs text-[#ffc107]">{err}</div>}
+      {data && <SizeBody s={data} />}
+      {err && data && <div className="text-[10px] text-[#ffc107]">更新失敗：{err}</div>}
+      <div className="help mt-1 text-[10px] leading-snug text-[#404060]">風險＝到停損的距離（含滑價緩衝）；假設停損會成交，跳空或極端行情可能更差。</div>
     </div>
   );
 }

@@ -209,6 +209,14 @@ export function captionText(p: ProfileData | null, err: string | null = null): s
   return s;
 }
 
+/** 窄螢幕用的短版：只有 POC 與價值區（完整版在寬螢幕；外內盤比例與前一個日盤收進說明）。 */
+export function captionShort(p: ProfileData | null, err: string | null = null): string {
+  if (err) return err;
+  if (!p) return "價量分布載入中…";
+  if (!p.rows.length) return p.note || `${p.label ?? "這個時段"}還沒有成交`;
+  return `${p.label}${p.complete ? "" : "（進行中）"}：POC ${num(p.poc)}　價值區 ${num(p.val)}～${num(p.vah)}`;
+}
+
 /** 滑過說明列時顯示的完整解釋。 */
 export const HELP_TEXT = "POC＝成交最多的價位；價值區＝涵蓋 70% 成交量的區間（VAH 上緣、VAL 下緣）。紅＝外盤（買方主動）、綠＝內盤（賣方主動）。"
   + "只顯示成交落在哪些價位，不是進場訊號；歷史檢驗（2020 年起 1,458 天）沒有發現前一日的 POC／價值區有磁吸或擋住的預測力。";

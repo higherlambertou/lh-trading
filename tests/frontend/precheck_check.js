@@ -39,5 +39,12 @@ check("沒有命中率資料就不顯示那一行", L.hitsLine(f) === null && ht
 const raw = renderToStaticMarkup(React.createElement(C.PrecheckBody, { p: f }));
 check("IV 偏高與有事件時標黃色、有 📅", (raw.match(/color:#ffc107/g) || []).length >= 2 && raw.includes("📅"), raw);
 check("沒事件時不標黃", !renderToStaticMarkup(React.createElement(C.PrecheckBody, { p: q })).includes("📅"));
+// 收合時的一行摘要（2026-11-12）
+const sf = L.summaryLine(f), sq = L.summaryLine(q), se = L.summaryLine(e0), sev = L.summaryLine(ev);
+check("摘要（完整）：IV 百分位、最近的事件、日盤預期振幅，用「 · 」隔開", sf.includes("IV 第 85 百分位（偏高）") && sf.includes("今晚 21:30 美國 CPI") && sf.includes("日盤預期振幅約 682 點") && sf.split(" · ").length === 3 && !sf.includes("歷史上"), sf);
+check("摘要（安靜）：IV 沒有百分位就寫數字、沒有事件", sq.includes("IV 18.0%") && sq.includes("36 小時內無重要事件"), sq);
+check("摘要（沒資料）：沒有 IV 就不寫 IV、事件讀不到", !se.includes("IV") && se.includes("事件：讀不到") && !BAD.test(se), se);
+check("摘要（傍晚）：寫夜盤的預期振幅、不寫日盤", sev.includes("夜盤預期振幅約 899 點") && !sev.includes("日盤預期振幅"), sev);
+check("attention：IV 偏高或有事件才標黃", L.attention(f) && !L.attention(q) && !L.attention(e0));
 console.log(fail ? `\n${fail} 項失敗` : "\n全部通過");
 process.exit(fail ? 1 : 0);

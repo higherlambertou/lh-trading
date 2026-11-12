@@ -86,7 +86,7 @@ export default function EntryLabelCard() {
         <h2 className="text-[11px] text-[#7070a0] uppercase tracking-widest">進場判斷標記</h2>
         {unlabeled > 0 && <span className="text-[10px] text-[#ffc107]">{unlabeled} 筆還沒標</span>}
       </div>
-      <div className="text-[10px] leading-snug text-[#7070a0]">
+      <div className="help text-[10px] leading-snug text-[#7070a0]">
         進場時憑直覺標一下：你覺得現在是 {TREND_OPTIONS.map((o) => trendText(o.id)).join("／")}？只是記錄，不影響下單。出場後才補的會標成「事後」。
       </div>
       {err && <div className="text-xs text-[#ffc107]">{err}</div>}

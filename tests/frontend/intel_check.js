@@ -53,9 +53,10 @@ check("friendlyIntelError：舊後端沒有這個 API 時講白話", L.friendlyI
 const tm = text(e(C.MarketsCard, { markets: S.markets }));
 check("市場：加權指數與臺指選擇權波動率指數排在最前面（後端的數字）", S.markets[0].key === "TAIEX" && S.markets[1].key === "VIXTW" && tm.includes("加權指數") && tm.includes("46,822.08") && tm.includes("臺指選擇權波動率指數") && tm.includes("26.37") && tm.includes(L.marketChange(M("TAIEX"))) && L.marketChange(M("VIXTW")) === "−4.24（−13.85%）", L.marketChange(M("VIXTW")));
 check("市場：每一項的名稱、收盤、較前一日（後端的數字）", S.markets.every((m) => tm.includes(m.label)) && tm.includes(L.marketValue(M("VIX"))) && tm.includes(L.marketChange(M("VIX"))) && tm.includes(L.marketChange(M("US10Y"))) && tm.includes("bp"), tm);
-check("市場：沒有資料的項目顯示破折號與「沒有資料」，不是 0", tm.includes("日經 225") && /日經 225——沒有資料/.test(tm) && !/日經 225 ?0/.test(tm), tm);
+check("市場：沒有資料的項目顯示破折號與「沒有資料」，不是 0（日期在名稱下面一份、右欄一份：窄螢幕只看得到前者）", tm.includes("日經 225") && /日經 225 沒有資料 ——沒有資料/.test(tm) && !/日經 225 ?0/.test(tm), tm);
 check("市場：超過 3 天沒更新的日期標「N 天前」（黃色）", /10\/09・10 天前/.test(tm) && renderToStaticMarkup(e(C.MarketsCard, { markets: S.markets })).includes("color:#ffc107"));
 const rawM = renderToStaticMarkup(e(C.MarketsCard, { markets: S.markets }));
+check("市場：窄螢幕的日期放在名稱下面（sm:hidden）、右欄在 sm 以上才顯示", /class="sm:hidden text-\[10px\] font-mono"[^>]*>10\/16</.test(rawM) && /class="hidden sm:table-cell[^"]*"[^>]*>10\/16</.test(rawM), rawM.slice(0, 500));
 check("市場：漲紅跌綠（VIX 漲＝紅、費半跌＝綠）", new RegExp(`color:${L.UP}[^>]*>\\+3\\.53`).test(rawM) && new RegExp(`color:${L.DOWN}[^>]*>−443\\.93`).test(rawM), rawM.slice(0, 400));
 
 const te = text(e(C.EventsCard, { events: S.events }));
@@ -111,7 +112,7 @@ const tick = () => new Promise((r) => setImmediate(r));
 (async () => {
   {
     const p = text(e(Panel)); // 預設 state：什麼都還沒載入
-    check("容器：還沒載入時只有說明（只顯示、不影響交易）", p.includes("只顯示、不影響任何交易決策") && !p.includes("近期事件") && !p.includes("資訊系統沒有資料"), p);
+    check("容器：還沒載入時只有說明（只顯示、不影響交易）", p.includes("只顯示、不影響交易") && p.includes("沒有任何策略或風控讀它") && !p.includes("近期事件") && !p.includes("資訊系統沒有資料"), p);
     const full = strip(harness({ 0: S }).render());
     check("容器：載入後有五個區塊與更新時間", ["資訊服務在跑", "近期事件", "全球市場", "籌碼", "最新新聞標題", "更新 "].every((x) => full.includes(x)), full.slice(0, 300));
     const un = strip(harness({ 0: fx.unavailable }).render());

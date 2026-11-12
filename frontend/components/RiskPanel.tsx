@@ -209,7 +209,7 @@ export default function RiskPanel() {
         </>
       )}
 
-      <p className="text-[10px] text-[#404060] leading-relaxed">
+      <p className="help text-[10px] text-[#404060] leading-relaxed">
         理論估算：假設每筆獨立、損益固定，不含跳空與滑價；結果對「勝率」與「賺賠比」的估計非常敏感。
         成交紀錄不足 30 筆時，勝率是假設值，不是實測——預設用「無技巧基準」（隨機進場的勝率），進場有沒有優勢要看成交紀錄。
       </p>

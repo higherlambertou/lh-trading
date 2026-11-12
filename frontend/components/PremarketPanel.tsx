@@ -36,7 +36,7 @@ export function StatusChips({ s }: { s: PmStatus }) {
 export function FeatureTable({ features, calendar }: { features: Record<string, PmField>; calendar: PmCalendar }) {
   return (
     <div className="space-y-1.5">
-      <div className="overflow-x-auto">
+      <div className="scroll-x">
         <table className="w-full max-w-3xl">
           <thead><tr><th className={TH}>欄位</th><th className={TH}>值</th><th className={TH}>來源</th><th className={TH}>資料時間（台北）</th></tr></thead>
           <tbody>
@@ -72,7 +72,7 @@ export function FeatureTable({ features, calendar }: { features: Record<string, 
 // 最近的紀錄：一天一列（備註另起一行，不然手機上備註欄會被壓得一字一行）；缺值的格子顯示「—」（滑鼠移上去看原因）
 export function RecentTable({ rows }: { rows: PmSnapshot[] }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="scroll-x">
       <table className="w-full max-w-2xl">
         <thead><tr><th className={THS}>台股交易日</th>{PM_KEYS.map((k) => <th key={k} className={THS} title={PM_LABEL[k].name}>{PM_LABEL[k].short}</th>)}</tr></thead>
         {rows.map((r) => {
@@ -138,7 +138,7 @@ export default function PremarketPanel() {
         <Globe2 size={14} className="text-[#3b82f6]" />
         <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest">盤前跨市場快照</h2>
         {status && <StatusChips s={status} />}
-        <span className="text-[10px] text-[#404060]">只記錄、不影響任何交易決策。</span>
+        <span className="help text-[10px] text-[#404060]">只記錄、不影響任何交易決策。</span>
       </div>
 
       {err && <div className="text-xs text-[#ff1744]">{err}</div>}
@@ -199,7 +199,7 @@ export default function PremarketPanel() {
         </div>
       )}
 
-      <div className="text-[10px] text-[#404060] leading-snug">
+      <div className="help text-[10px] text-[#404060] leading-snug">
         歷史預檢（2017-05 起、樣本外 1,682 天，update.md 發現 31）：VIX 對日盤波動有穩定的增量，費半沒有，隔夜資訊對方向沒有。預檢只決定要不要繼續記錄，不決定上線；
         前向紀錄累積到 250 個交易日以上再用同一套標準獨立確認。
       </div>

@@ -216,7 +216,7 @@ export default function BacktestPanel() {
           {heavy ? "選了全部策略或多組對照，會比較久（每次最多開 " : "單一策略通常幾秒～半分鐘（每次最多開 "}{info?.workers ?? 2} 個平行行程，同時只跑一個回測）
         </span>
       </div>
-      <p className="text-[10px] text-[#404060] leading-relaxed">
+      <p className="help text-[10px] text-[#404060] leading-relaxed">
         沒有 scalp：它是逐筆的限價單狀態機（訊號看最近 20 筆成交、停利是掛在券商的限價單），1 分 K 沒有這些資訊，回測出來的數字不可信。
         scalp 請看〈風險〉面板（用成交紀錄的真實損益）；細節見下方「怎麼讀」。
       </p>

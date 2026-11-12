@@ -140,16 +140,15 @@ export default function TradesPanel() {
   };
 
   return (
-    <div className="bg-[#141420] rounded-xl border border-[#1e1e3a] p-5 flex flex-col gap-5">
+    <div className="bg-[#141420] rounded-xl border border-[#1e1e3a] p-5 flex flex-col gap-4">
 
       {/* ── 停損停利監控 ─────────────────────────────── */}
       <div>
-        <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest mb-3">
-          停損停利監控
-        </h2>
-        {watches.length === 0 ? (
-          <p className="text-sm text-[#404060] text-center py-3">無監控中的部位</p>
-        ) : (
+        <div className="flex items-baseline gap-3 mb-2">
+          <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest">停損停利監控</h2>
+          {watches.length === 0 && <span className="text-xs text-[#404060]">無監控中的部位</span>}
+        </div>
+        {watches.length > 0 && (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[11px] text-[#7070a0]">
@@ -176,13 +175,12 @@ export default function TradesPanel() {
 
       {/* ── 委託紀錄 ─────────────────────────────────── */}
       <div>
-        <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest mb-3">
-          委託紀錄
-        </h2>
-        {trades.length === 0 ? (
-          <p className="text-sm text-[#404060] text-center py-3">今日無委託紀錄</p>
-        ) : (
-          <div className="overflow-x-auto">
+        <div className="flex items-baseline gap-3 mb-2">
+          <h2 className="text-xs font-semibold text-[#7070a0] uppercase tracking-widest">委託紀錄</h2>
+          {trades.length === 0 && <span className="text-xs text-[#404060]">今日無委託紀錄</span>}
+        </div>
+        {trades.length > 0 && (
+          <div className="scroll-x">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-[11px] text-[#7070a0] border-b border-[#1e1e3a]">

@@ -11,7 +11,7 @@ import {
 import type { Position, Watch } from "@/lib/api";
 import { BAND_KEYS, KINDS, bandLines, bandText, edge, fmt as fmtP, hasClose, pickBand, type BandKey, type Kind, type RangeData } from "@/lib/range";
 import { ProfilePrimitive } from "@/lib/profilePrimitive";
-import { HELP_TEXT as PROFILE_HELP, PAD_FRAC, PANE_BG, POLL_MS as PROFILE_POLL_MS, SELL_COLOR, BUY_COLOR, captionText, type ProfileData } from "@/lib/volumeProfile";
+import { HELP_TEXT as PROFILE_HELP, PAD_FRAC, PANE_BG, POLL_MS as PROFILE_POLL_MS, SELL_COLOR, BUY_COLOR, captionShort, captionText, type ProfileData } from "@/lib/volumeProfile";
 
 const STORE_KEY = "lh_chart_prefs";
 const POLL_MS = 3000;
@@ -135,7 +135,7 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
         const d = p.seriesData.get(candle) as { open: number; high: number; low: number; close: number } | undefined;
         if (!p.time || !d) { setLegend(""); return; }
         const t = (p.time as number) - TZ_OFFSET;
-        setLegend(`${hhmm(t)}  開 ${fmt(d.open)}  高 ${fmt(d.high)}  低 ${fmt(d.low)}  收 ${fmt(d.close)}`);
+        setLegend(`${hhmm(t)}  收 ${fmt(d.close)}  開 ${fmt(d.open)}  高 ${fmt(d.high)}  低 ${fmt(d.low)}`);
       });
       setReady(true);
     })();
@@ -320,8 +320,8 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
       </div>
       {toggles.profile && (
         <div className="mb-2 text-[11px] leading-snug text-[#8c8cb4]" title={PROFILE_HELP}>
-          {profileErr ? <span className="text-[#ffc107]">{profileErr}</span> : captionText(profile)}
-          <span className="text-[#5a5a80] whitespace-nowrap">　<span style={{ color: BUY_COLOR }}>■</span> 外盤　<span style={{ color: SELL_COLOR }}>■</span> 內盤　只顯示、歷史檢驗沒有預測力</span>
+          {profileErr ? <span className="text-[#ffc107]">{profileErr}</span> : <><span className="sm:hidden">{captionShort(profile)}</span><span className="hidden sm:inline">{captionText(profile)}</span></>}
+          <span className="help text-[#5a5a80] whitespace-nowrap">　<span style={{ color: BUY_COLOR }}>■</span> 外盤　<span style={{ color: SELL_COLOR }}>■</span> 內盤　只顯示、歷史檢驗沒有預測力</span>
         </div>
       )}
       {toggles.band && (
@@ -359,7 +359,7 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
                     <span key={l.p} className="font-mono text-[#e0e0f0]"> {l.p}% ±{fmtP(l[bandKind]!.d)}</span>
                   ))}
                   {lv80 && <>　80% ＝ {fmtP(edge(lv80.lo, "lo"))} ~ {fmtP(edge(lv80.hi, "hi"))}</>}
-                  <span className="text-[#404060]">　只說會走多遠、不說往哪個方向；線上標「?」＝這格樣本外驗證沒通過</span>
+                  <span className="help text-[#404060]">　只說會走多遠、不說往哪個方向；線上標「?」＝這格樣本外驗證沒通過</span>
                   {range.stale && <span className="text-[#ffc107]">　（最新成交價是舊的，線以那個價為中心）</span>}
                   {b.few && <span className="text-[#ffc107]">　（夜盤實測樣本少）</span>}
                 </>
@@ -368,7 +368,8 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
           </div>
         </div>
       )}
-      <div className="text-[11px] font-mono text-[#7070a0] mb-1 h-4 truncate" aria-live="off">{legend || (last ? `${hhmm(last.t)}  開 ${fmt(last.o)}  高 ${fmt(last.h)}  低 ${fmt(last.l)}  收 ${fmt(last.c)}  量 ${last.v}（外盤 ${last.b}／內盤 ${last.s}）` : "")}</div>
+      {/* 收盤放在開高低前面：窄螢幕截掉的是後面的量，不是收盤價 */}
+      <div className="text-[11px] font-mono text-[#7070a0] mb-1 h-4 truncate" aria-live="off">{legend || (last ? `${hhmm(last.t)}  收 ${fmt(last.c)}  開 ${fmt(last.o)}  高 ${fmt(last.h)}  低 ${fmt(last.l)}  量 ${last.v}（外盤 ${last.b}／內盤 ${last.s}）` : "")}</div>
       <div className="relative">
         <div ref={boxRef} className="w-full h-[300px] md:h-[420px]" />
         {ready && bars.length === 0 && (
@@ -378,7 +379,7 @@ export default function PriceChart({ active = true }: { active?: boolean }) {
         )}
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-x-3 text-[10px] text-[#505070]">
-        <span>資料：微台真實成交的 1 分 K，後端沒開著的分鐘沒有資料（K 棒會有缺口）。VWAP 是用 1 分 K 估的，不是交易所的值。只顯示、不下單。</span>
+        <span className="help">資料：微台真實成交的 1 分 K，後端沒開著的分鐘沒有資料（K 棒會有缺口）。VWAP 是用 1 分 K 估的，不是交易所的值。只顯示、不下單。</span>
         {err && <span className="text-[#ffc107]">⚠ {err}</span>}
         {updatedAt && !err && <span>更新 {new Date(updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</span>}
       </div>

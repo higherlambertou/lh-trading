@@ -55,7 +55,7 @@ export default function ScenarioCard({ positions, last, margin, stale = false }:
           </table>
         </div>
       )}
-      <div className="mt-1 text-[10px] leading-snug text-[#404060]">{FOOT_TEXT}{hasOthers(positions) ? OPTION_NOTE : ""}</div>
+      <div className="help mt-1 text-[10px] leading-snug text-[#404060]">{FOOT_TEXT}{hasOthers(positions) ? OPTION_NOTE : ""}</div>
     </div>
   );
 }
