@@ -118,60 +118,7 @@ export default function PositionPanel() {
             </div>
           )}
 
-          {/* Margin grid（有部位、或還不確定有沒有部位時的完整版） */}
-          {margin && !(positions.length === 0 && posAge >= 0 && posAge <= posLimit(cadence)) && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
-              {[
-                { label: "權益數", value: margin.equity.toLocaleString(), plain: true },
-                { label: "未實現損益", value: Math.round(totalPnl), plain: false },
-                { label: "已實現損益", value: totalRealizedPnl, plain: false },
-                { label: "原始保證金", value: margin.initial_margin.toLocaleString(), plain: true },
-                { label: "維持保證金", value: margin.maintenance_margin.toLocaleString(), plain: true },
-              ].map(({ label, value, plain }) => (
-                <div key={label} className="bg-[#0d0d14] rounded-lg p-3">
-                  <div className="text-[11px] text-[#7070a0] mb-1">{label}</div>
-                  {plain ? (
-                    <div className="font-mono text-sm text-[#e0e0f0]">{value}</div>
-                  ) : (
-                    <Num value={value as number} />
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Realized PnL detail */}
-          {pnlList.length > 0 && (
-            <div className="mb-4">
-              <div className="text-[11px] text-[#7070a0] mb-2">已實現損益明細</div>
-              <div className="scroll-x">
-                <table className="w-full text-xs font-mono">
-                  <thead>
-                    <tr className="text-[#404060] border-b border-[#1e1e3a]">
-                      <th className="text-left pb-1.5 font-normal">商品</th>
-                      <th className="text-right pb-1.5 font-normal">口數</th>
-                      <th className="text-right pb-1.5 font-normal">均價</th>
-                      <th className="text-right pb-1.5 font-normal">損益</th>
-                      <th className="text-right pb-1.5 font-normal">日期</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#0d0d14]">
-                    {pnlList.map((pl, i) => (
-                      <tr key={pl.dseq || i} className="hover:bg-[#1a1a2e]/40">
-                        <td className="py-1.5 text-[#e0e0f0]">{pl.code}</td>
-                        <td className="text-right text-[#7070a0]">{pl.quantity}</td>
-                        <td className="text-right text-[#7070a0]">{pl.price.toLocaleString()}</td>
-                        <td className="text-right"><Num value={pl.pnl} /></td>
-                        <td className="text-right text-[#404060]">{pl.date || "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Positions */}
+          {/* 持倉列：有部位時最先看到（以前排在五格數字與已實現明細的下面，手機要滑兩個螢幕） */}
           {positions.length === 0 ? (
             // 沒有資料 ≠ 沒有持倉：從未取得或已過期時不能說「目前無持倉」（曾因後端沒刷新部位而永遠顯示這句）
             posAge < 0 ? (
@@ -184,7 +131,7 @@ export default function PositionPanel() {
               !margin && <p className="text-sm text-[#404060] text-center py-6">目前無持倉</p>      // 有權益數時上面那一行已經寫了
             )
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2 mb-4">
               {positions.map((p, i) => {
                 const { pnl, last } = livePnl(p);
                 return (
@@ -223,7 +170,61 @@ export default function PositionPanel() {
               })}
             </div>
           )}
+          {/* Margin grid（有部位、或還不確定有沒有部位時的完整版） */}
+          {margin && !(positions.length === 0 && posAge >= 0 && posAge <= posLimit(cadence)) && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+              {[
+                { label: "權益數", value: margin.equity.toLocaleString(), plain: true },
+                { label: "未實現損益", value: Math.round(totalPnl), plain: false },
+                { label: "已實現損益", value: totalRealizedPnl, plain: false },
+                { label: "原始保證金", value: margin.initial_margin.toLocaleString(), plain: true },
+                { label: "維持保證金", value: margin.maintenance_margin.toLocaleString(), plain: true },
+              ].map(({ label, value, plain }) => (
+                <div key={label} className="bg-[#0d0d14] rounded-lg p-3">
+                  <div className="text-[11px] text-[#7070a0] mb-1">{label}</div>
+                  {plain ? (
+                    <div className="font-mono text-sm text-[#e0e0f0]">{value}</div>
+                  ) : (
+                    <Num value={value as number} />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {positions.length > 0 && <ScenarioCard positions={positions} last={quotes} margin={margin} stale={staleAge(dataAge, posAge, cadence) != null} />}
+
+          {/* Realized PnL detail */}
+          {pnlList.length > 0 && (
+            <div className="mt-4 mb-4">
+              <div className="text-[11px] text-[#7070a0] mb-2">已實現損益明細</div>
+              <div className="scroll-x">
+                <table className="w-full text-xs font-mono">
+                  <thead>
+                    <tr className="text-[#404060] border-b border-[#1e1e3a]">
+                      <th className="text-left pb-1.5 font-normal">商品</th>
+                      <th className="text-right pb-1.5 font-normal">口數</th>
+                      <th className="text-right pb-1.5 font-normal">均價</th>
+                      <th className="text-right pb-1.5 font-normal">損益</th>
+                      <th className="text-right pb-1.5 font-normal">日期</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#0d0d14]">
+                    {pnlList.map((pl, i) => (
+                      <tr key={pl.dseq || i} className="hover:bg-[#1a1a2e]/40">
+                        <td className="py-1.5 text-[#e0e0f0]">{pl.code}</td>
+                        <td className="text-right text-[#7070a0]">{pl.quantity}</td>
+                        <td className="text-right text-[#7070a0]">{pl.price.toLocaleString()}</td>
+                        <td className="text-right"><Num value={pl.pnl} /></td>
+                        <td className="text-right text-[#404060]">{pl.date || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
         </>
       )}
     </div>

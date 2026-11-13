@@ -144,3 +144,11 @@ def test_live_state_marks_day_range_as_closed_at_night_and_chart_caption_is_shor
     assert "收 ${fmt(last.c)}  開 ${fmt(last.o)}" in chart and "收 ${fmt(d.close)}  開 ${fmt(d.open)}" in chart        # 收盤放前面，窄螢幕截掉的是量
     prof = (FRONT / "lib" / "volumeProfile.ts").read_text(encoding="utf-8")
     assert "export function captionShort(" in prof
+
+
+def test_position_panel_shows_the_position_rows_before_the_numbers():
+    """2026-11-13：持倉列在五格數字與已實現明細的上面（有部位時最先要看的是部位本身）；渲染順序在 protection_check.js。"""
+    src = _read("PositionPanel.tsx")
+    idx = [src.index(k) for k in ("{/* 空手（部位資料是新的", "{/* 持倉列：有部位時最先看到", "{/* Margin grid", "<ScenarioCard ", "{/* Realized PnL detail */}")]
+    assert idx == sorted(idx), idx
+    assert '<div className="space-y-2 mb-4">' in src

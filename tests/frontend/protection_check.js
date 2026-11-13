@@ -60,6 +60,19 @@ check("部位面板：有持倉又沒保護 → 橫幅出現在標題下面、�
 check("部位面板：有持倉但有保護（空陣列）→ 沒有橫幅", !panel({ positions: POS, unprotected: [], posAge: 2, dataAge: 2 }).includes("沒有停損保護"));
 check("部位面板：沒有持倉 → 就算後端傳來資料也不畫橫幅（不會有「沒有持倉卻說沒保護」）", !panel({ positions: [], unprotected: fx.single, posAge: 2, dataAge: 2 }).includes("沒有停損保護"));
 check("部位面板：預設狀態（還沒載入）沒有橫幅", !panel({}).includes("沒有停損保護"));
+// 順序（2026-11-13）：橫幅 → 持倉列 → 五格 → 情境表 → 已實現損益明細（持倉最先看到，以前排在五格與明細下面、手機要滑兩個螢幕）
+{
+  const MG = { equity: 80978, equity_amount: 80978, margin_call: 0, initial_margin: 15000, maintenance_margin: 11500 };
+  const PL = [{ code: "TMFJ6", quantity: 1, price: 48800, pnl: -2520, date: "2026-11-12", dseq: "1" }];
+  const h = panel({ positions: POS, margin: MG, pnlList: PL, unprotected: fx.single, posAge: 2, dataAge: 2, quotes: { TMFJ6: 49010 } });
+  const at = (k) => h.indexOf(k);
+  const order = [at("沒有停損保護"), at("49,000"), at("權益數"), at("情境表"), at("已實現損益明細")];
+  check("有部位：順序＝橫幅 → 持倉列 → 五格 → 情境表 → 已實現損益明細", order.every((x) => x >= 0) && order.every((x, i) => i === 0 || x > order[i - 1]), JSON.stringify(order));
+  const flat0 = panel({ positions: [], margin: MG, pnlList: PL, posAge: 2, dataAge: 2 });
+  check("空手：已實現損益明細仍在（一行摘要之後）", flat0.indexOf("今日已實現") >= 0 && flat0.indexOf("已實現損益明細") > flat0.indexOf("今日已實現"), flat0.slice(0, 500));
+  const stale0 = panel({ positions: [], margin: MG, pnlList: PL, posAge: 40, dataAge: 2, cadence: { positions_every: 5, margin_every: 60 } });
+  check("部位資料過期：警告句在五格上面（先說「無法確認是否有持倉」）", stale0.indexOf("部位資料已過期") >= 0 && stale0.indexOf("部位資料已過期") < stale0.indexOf("權益數"), stale0.slice(0, 500));
+}
 // 空手時縮成一行（2026-11-12）：權益、今日已實現；保證金兩格不出現；有部位才是五格
 const MARGIN = { equity: 80978, equity_amount: 80978, margin_call: 0, initial_margin: 0, maintenance_margin: 0 };
 const flat = panel({ positions: [], margin: MARGIN, pnlList: [], posAge: 2, dataAge: 2 });
